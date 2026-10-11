@@ -58,6 +58,10 @@ form.addEventListener("submit", async (e) => {
 	try {
 		// トークンは使い捨てで寿命が短いので、つなぐ直前に取り直す
 		const s = await session();
+		// 画面の場所を出してから大きさを測る(clientHeight を読むとレイアウトがその場で決まる)
+		form.hidden = true;
+		toolbar.hidden = false;
+		screen.classList.remove("idle");
 		const config = ui
 			.configBuilder()
 			.withUsername(String(data.get("username")))
@@ -68,12 +72,10 @@ form.addEventListener("submit", async (e) => {
 			.withAuthToken(s.token)
 			.withDesktopSize({
 				width: screen.clientWidth || innerWidth,
-				height: (screen.clientHeight || innerHeight) - 40,
+				height: screen.clientHeight || innerHeight,
 			})
 			.withExtension(displayControl(true))
 			.build();
-		form.hidden = true;
-		toolbar.hidden = false;
 		ui.setVisibility(true);
 		const info = await ui.connect(config);
 		status.textContent = "";
@@ -83,6 +85,7 @@ form.addEventListener("submit", async (e) => {
 		status.textContent = `つなげなかった: ${describe(err)}`;
 	}
 	toolbar.hidden = true;
+	screen.classList.add("idle");
 	form.hidden = false;
 	(form.elements.namedItem("password") as HTMLInputElement).value = "";
 });
