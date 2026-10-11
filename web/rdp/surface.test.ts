@@ -313,6 +313,33 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 		expect(draws.slice(2)).toEqual(["0,0 64x64"]);
 	});
 
+	test("コマンドの範囲で切られた(見える範囲が狭い)新しいタイルは、古いタイルを置き換えない(Windows で前の絵が残った)", () => {
+		const { draws, scheduled, cmds, r } = setup();
+		cmds(
+			setBits(
+				0x0006,
+				[0, 0, 64, 64],
+				RFX_ID,
+				64,
+				64,
+				rfxStream(full, [tile(0, 0)]),
+			),
+			// 同じ位置のタイルだが、コマンドの範囲は左半分だけ
+			setBits(
+				0x0006,
+				[0, 0, 32, 64],
+				RFX_ID,
+				64,
+				64,
+				rfxStream(full, [tileB(0, 0)]),
+			),
+		);
+		scheduled[0]?.();
+		expect(r.coalesced).toBe(0);
+		expect(draws.length).toBe(2);
+		expect(draws[0]).toBe("0,0 64x64");
+	});
+
 	test("生のビットマップが間に入ったら、その前に保留を描く(順序を保つ)", () => {
 		const { draws, scheduled, cmds } = setup();
 		const bgra = Uint8Array.of(1, 2, 3, 0, 4, 5, 6, 0);
