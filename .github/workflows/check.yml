@@ -1,9 +1,8 @@
 name: Check
 
+# PR ごと。main に入ったあとは release.yml が試験とビルドをもう一度やって(版が新しければ)リリースする
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
 
 jobs:
@@ -15,6 +14,13 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.401
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.nuget/packages
+          key: check-${{ runner.os }}-${{ hashFiles('bun.lock', '**/*.csproj') }}
+          restore-keys: check-${{ runner.os }}-
       - run: bun i --frozen-lockfile
       - run: bunx biome ci
       - run: bunx tsc --noEmit
@@ -32,18 +38,27 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.401
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.nuget/packages
+            ~/.dotnet/tools
+            ~/.wix
+          key: package-${{ runner.os }}-${{ hashFiles('bun.lock', '**/*.csproj') }}-wix5.0.2
+          restore-keys: package-${{ runner.os }}-
       - run: bun i --frozen-lockfile
       - run: bun run build:web
       # Windows でも試験を回す(CNG など、Linux と違うところで落ちることがある)
       - run: dotnet run --project tests/Mado.Tests.csproj
       - run: dotnet publish server/Mado.csproj -c Release -r win-x64 -o publish
       - run: dotnet publish tray/MadoTray.csproj -c Release -r win-x64 -o publish
-      - run: |
-          dotnet tool install --global wix --version 5.0.2
-          wix extension add -g WixToolset.Firewall.wixext/5.0.2
-          wix extension add -g WixToolset.Util.wixext/5.0.2
       - shell: pwsh
         run: |
+          # キャッシュに入っていれば入れ直さない
+          if (-not (Get-Command wix -ErrorAction SilentlyContinue)) { dotnet tool install --global wix --version 5.0.2 }
+          wix extension add -g WixToolset.Firewall.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
           $version = ([xml](Get-Content server/Mado.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
           wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext `
             -d Version=$version -d PublishDir=publish -o dist/mado.msi

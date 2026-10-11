@@ -1,14 +1,20 @@
 name: Release
 
-# v* のタグで MSI を作り、リリースに載せる。
+# main に入ったら、server/Mado.csproj の版のタグがまだ無ければ MSI を作ってリリースする(タグもここで打つ)。
+# 版を上げない変更(依存の更新など)はリリースしない。
 # - mado.msi: サービス・タスクトレイ・ファイアウォール・ProgramData の権限まで入れる(installer/mado.wxs)
 # - mado.msi.sig: ECDSA P-256 の署名(`mado <タグ> <MSI の SHA-256>`)。動いている mado はこれを確かめてから入れる(server/Updater.cs)
 # - mado.msi.sha256 と出どころの証明(gh attestation verify): 入れる側(gitops の setup.ps1)が確かめる
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,39 +25,64 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 10.0.401
       - id: version
         shell: pwsh
         run: |
-          # exe と MSI に入る版(server/Mado.csproj)とタグが食い違わないこと
           $version = ([xml](Get-Content server/Mado.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "タグ $env:GITHUB_REF_NAME と Mado.csproj の版 $version が違う" }
-          "version=$version" >> $env:GITHUB_OUTPUT
-      - run: bun i --frozen-lockfile
-      - run: bun run build:web
-      - run: dotnet run --project tests/Mado.Tests.csproj
-      - run: dotnet publish server/Mado.csproj -c Release -r win-x64 -o publish
-      - run: dotnet publish tray/MadoTray.csproj -c Release -r win-x64 -o publish
-      - run: |
-          dotnet tool install --global wix --version 5.0.2
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          # その版のリリースがもうあれば何もしない
+          gh release view "v$version" --repo $env:GITHUB_REPOSITORY 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { "v$version はもうある。リリースしない"; "release=false" >> $env:GITHUB_OUTPUT }
+          else { "release=true" >> $env:GITHUB_OUTPUT }
+          exit 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - if: steps.version.outputs.release == 'true'
+        uses: oven-sh/setup-bun@v2
+      - if: steps.version.outputs.release == 'true'
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.401
+      - if: steps.version.outputs.release == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.nuget/packages
+            ~/.dotnet/tools
+            ~/.wix
+          key: release-${{ runner.os }}-${{ hashFiles('bun.lock', '**/*.csproj') }}-wix5.0.2
+          restore-keys: release-${{ runner.os }}-
+      - if: steps.version.outputs.release == 'true'
+        run: bun i --frozen-lockfile
+      - if: steps.version.outputs.release == 'true'
+        run: bun run build:web
+      - if: steps.version.outputs.release == 'true'
+        run: dotnet run --project tests/Mado.Tests.csproj
+      - if: steps.version.outputs.release == 'true'
+        run: dotnet publish server/Mado.csproj -c Release -r win-x64 -o publish
+      - if: steps.version.outputs.release == 'true'
+        run: dotnet publish tray/MadoTray.csproj -c Release -r win-x64 -o publish
+      - if: steps.version.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          # キャッシュに入っていれば入れ直さない
+          if (-not (Get-Command wix -ErrorAction SilentlyContinue)) { dotnet tool install --global wix --version 5.0.2 }
           wix extension add -g WixToolset.Firewall.wixext/5.0.2
           wix extension add -g WixToolset.Util.wixext/5.0.2
-      - shell: pwsh
-        run: |
           wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext `
-            -d Version=${{ steps.version.outputs.version }} -d PublishDir=publish -o dist/mado.msi
+            -d Version=$("${{ steps.version.outputs.tag }}".TrimStart('v')) -d PublishDir=publish -o dist/mado.msi
           $sha = (Get-FileHash dist/mado.msi -Algorithm SHA256).Hash.ToLower()
           $sha + '  mado.msi' | Set-Content dist/mado.msi.sha256 -NoNewline
       # 自動更新のための署名。秘密鍵は secret の MADO_SIGNING_KEY(PKCS#8 の base64)。署名したあと、exe に入れた公開鍵で確かめ直す
-      - shell: pwsh
+      - if: steps.version.outputs.release == 'true'
+        shell: pwsh
         env:
           MADO_SIGNING_KEY: ${{ secrets.MADO_SIGNING_KEY }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           $sha = (Get-FileHash dist/mado.msi -Algorithm SHA256).Hash.ToLower()
-          $message = [Text.Encoding]::UTF8.GetBytes("mado $env:GITHUB_REF_NAME $sha")
+          $message = [Text.Encoding]::UTF8.GetBytes("mado $env:TAG $sha")
           $key = [Security.Cryptography.ECDsa]::Create()
           $key.ImportPkcs8PrivateKey([Convert]::FromBase64String($env:MADO_SIGNING_KEY), [ref]0)
           $sig = $key.SignData($message, [Security.Cryptography.HashAlgorithmName]::SHA256)
@@ -60,10 +91,14 @@ jobs:
           $pub.ImportSubjectPublicKeyInfo([Convert]::FromBase64String($embedded), [ref]0)
           if (-not $pub.VerifyData($message, $sig, [Security.Cryptography.HashAlgorithmName]::SHA256)) { throw '署名が Updater.cs の PublicKey で確かめられない' }
           [Convert]::ToBase64String($sig) | Set-Content dist/mado.msi.sig -NoNewline
-      - uses: actions/attest-build-provenance@v4
+      - if: steps.version.outputs.release == 'true'
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/mado.msi
-      - shell: pwsh
-        run: gh release create $env:GITHUB_REF_NAME dist/mado.msi dist/mado.msi.sha256 dist/mado.msi.sig --generate-notes --verify-tag
+      # タグはここで、このコミットに打つ
+      - if: steps.version.outputs.release == 'true'
+        shell: pwsh
+        run: gh release create $env:TAG dist/mado.msi dist/mado.msi.sha256 dist/mado.msi.sig --target $env:GITHUB_SHA --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
