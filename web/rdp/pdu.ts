@@ -1,6 +1,7 @@
 // 接続の手順([MS-RDPBCGR] 1.3.1.1)で使う PDU。Client Info、ライセンス、Share Control / Share Data、能力セット。
 
 import { Reader, Writer } from "./bytes";
+import { keyboardSubType, keyboardType } from "./mcs";
 
 /** MCS のユーザー ID のうち、サーバー(Share Control の出し元)は 1002 */
 export const SERVER_ID = 0x03ea;
@@ -468,8 +469,8 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 				.u16(0x0001 | 0x0004 | 0x0010 | 0x0020)
 				.u16(0)
 				.u32(c.keyboardLayout)
-				.u32(4) // keyboardType
-				.u32(0)
+				.u32(keyboardType(c.keyboardLayout))
+				.u32(keyboardSubType(c.keyboardLayout))
 				.u32(12)
 				.zeros(64)
 				.done(),

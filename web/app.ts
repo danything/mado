@@ -105,6 +105,7 @@ form.addEventListener("submit", async (e) => {
 			destination: target,
 			username,
 			password: field("password").value,
+			keyboardLayout: await detectKeyboardLayout(),
 			width: even(width),
 			height,
 			signal: abort.signal,
@@ -212,6 +213,32 @@ function autoScale(size: string): number {
 	const m = size.match(/^auto(?:@([\d.]+))?$/);
 	const k = m?.[1] ? Number(m[1]) : 1;
 	return k > 0 && k <= 1 ? k : 1;
+}
+
+/**
+ * キーボード配列。OS の配列がはっきり US の形なら米国(0x0409)、それ以外は日本語(0x0411)。
+ * 調べられないブラウザ(Chromium 以外)は日本語にする
+ */
+async function detectKeyboardLayout(): Promise<number> {
+	const kb = (
+		navigator as Navigator & {
+			keyboard?: { getLayoutMap(): Promise<Map<string, string>> };
+		}
+	).keyboard;
+	try {
+		const map = await kb?.getLayoutMap();
+		// JIS の目印: ¥・ろのキーがある、または [ の位置が @・' の位置が : になる。どれも無く、US の形(' と [)なら米国
+		if (map) {
+			const jis =
+				map.has("IntlYen") ||
+				map.has("IntlRo") ||
+				map.get("BracketLeft") === "@" ||
+				map.get("Quote") === ":";
+			const us = map.get("BracketLeft") === "[" && map.get("Quote") === "'";
+			if (!jis && us) return 0x0409;
+		}
+	} catch {}
+	return 0x0411;
 }
 
 function describe(err: unknown): string {

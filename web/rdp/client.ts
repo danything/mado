@@ -232,7 +232,7 @@ export class RdpClient {
 				pdu.clientCapabilities({
 					width: this.width,
 					height: this.height,
-					keyboardLayout: 0x0411,
+					keyboardLayout: s.keyboardLayout,
 				}),
 			),
 		);

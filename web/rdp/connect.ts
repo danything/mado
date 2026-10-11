@@ -43,6 +43,8 @@ export type Session = {
 	channelOptions: Map<string, number>;
 	shareId: number;
 	serverCapabilities: Map<number, Uint8Array>;
+	/** 宣言したキーボード配列(再アクティベーションでも同じものを言う) */
+	keyboardLayout: number;
 	width: number;
 	height: number;
 	/** 同期の途中で届いた Fast-Path の PDU(画面の更新を取りこぼさない) */
@@ -254,6 +256,7 @@ export async function establish(
 		channelOptions: new Map(channels.map((c) => [c.name, c.options])),
 		shareId,
 		serverCapabilities: demand.capabilities,
+		keyboardLayout: o.keyboardLayout ?? 0x0411,
 		width: o.width,
 		height: o.height,
 		pending,
