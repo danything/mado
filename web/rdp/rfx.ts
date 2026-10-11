@@ -21,8 +21,8 @@ const CBT_TILE = 0xcac3;
 export const ENTROPY_RLGR1 = 0x01;
 export const ENTROPY_RLGR3 = 0x04;
 
-/** 1 つの Tileset に入れてよいタイル数・領域の矩形数の上限 */
-const MAX_TILES = 1 << 14;
+/** 1 つのメッセージのタイル数の上限(8K でも 2000 余り)。空のタイルでも 64x64x4 バイトずつ確保するので、最悪でも 64MB に収める */
+const MAX_TILES = 1 << 12;
 const MAX_RECTS = 1 << 12;
 const MAX_QUANT = 16;
 
