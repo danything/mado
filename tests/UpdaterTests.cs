@@ -131,4 +131,15 @@ public class UpdaterTests
         await Assert.That((await u.Check()).Available).IsFalse();
         await Assert.That(await u.Apply(() => true)).IsFalse();
     }
+
+    [Test]
+    public async Task 入れ損ねても同じ版は_1_時間は起動し直さない()
+    {
+        var (u, _, launched, _) = Setup(goodSig: true);
+        await u.Check();
+        await Assert.That(await u.Apply(() => true)).IsTrue();
+        // msiexec が失敗してまだ古い版のまま(Available のまま)でも、すぐには入れ直さない
+        await Assert.That(await u.Apply(() => true)).IsFalse();
+        await Assert.That(launched.Count).IsEqualTo(1);
+    }
 }
