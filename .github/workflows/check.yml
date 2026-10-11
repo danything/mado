@@ -55,8 +55,10 @@ jobs:
       - run: dotnet publish tray/MadoTray.csproj -c Release -r win-x64 -o publish
       - shell: pwsh
         run: |
-          # キャッシュに入っていれば入れ直さない
-          if (-not (Get-Command wix -ErrorAction SilentlyContinue)) { dotnet tool install --global wix --version 5.0.2 }
+          # キャッシュに入っていれば入れ直さない(PATH に載っているかに頼らず、ファイルで見る)
+          $tools = Join-Path $env:USERPROFILE '.dotnet\tools'
+          if (-not (Test-Path (Join-Path $tools 'wix.exe'))) { dotnet tool install --global wix --version 5.0.2 }
+          $env:PATH = "$tools;$env:PATH"
           wix extension add -g WixToolset.Firewall.wixext/5.0.2
           wix extension add -g WixToolset.Util.wixext/5.0.2
           $version = ([xml](Get-Content server/Mado.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
