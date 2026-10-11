@@ -10,7 +10,12 @@ export interface ByteStream {
 	write(b: Uint8Array): void;
 }
 
-export class WsStream implements ByteStream {
+/** 閉じられる ByteStream */
+export interface Transport extends ByteStream {
+	close(): void;
+}
+
+export class WsStream implements Transport {
 	private chunks: Uint8Array[] = [];
 	private have = 0;
 	private waiter?: () => void;

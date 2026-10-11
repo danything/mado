@@ -138,17 +138,20 @@ describe("Demand / Confirm Active", () => {
 });
 
 describe("ライセンス", () => {
-	test("STATUS_VALID_CLIENT なら通る", () => {
+	test("STATUS_VALID_CLIENT なら valid", () => {
 		expect(
-			pdu.checkLicense(
-				fromHex("ff03 1400 07000000 02000000 0400 00000000".replace(/ /g, "")),
-			),
-		).toBe(true);
+			pdu.checkLicense(fromHex("ff03140007000000020000000400" + "00000000")),
+		).toBe("valid");
 	});
-	test("交渉を求められたら例外", () => {
-		expect(() => pdu.checkLicense(fromHex("0103 0800 00000000"))).toThrow(
-			"ライセンス",
-		);
+	test("LICENSE_REQUEST は request、ほかのエラーは例外", () => {
+		expect(
+			pdu.checkLicense(fromHex("0103 0800 00000000".replace(/ /g, ""))),
+		).toBe("request");
+		expect(() =>
+			pdu.checkLicense(
+				fromHex("ff03 1400 01000000 02000000 00000000".replace(/ /g, "")),
+			),
+		).toThrow("ライセンス");
 	});
 });
 
