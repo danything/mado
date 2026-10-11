@@ -98,7 +98,7 @@ describe("MCS", () => {
 		expect(text).toContain("01c0d800"); // type 0xC001, length 216
 		expect(text).toContain("03c0200002000000"); // type 0xC003, length 32, 2 チャネル
 		expect(text).toContain(
-			hex(new TextEncoder().encode("drdynvc")) + "00" + "000080c0",
+			`${hex(new TextEncoder().encode("drdynvc"))}00000080c0`,
 		);
 	});
 

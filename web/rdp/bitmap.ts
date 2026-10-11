@@ -420,6 +420,8 @@ export function decodePlanar(
 	data: Uint8Array,
 	w: number,
 	h: number,
+	/** GFX の Planar は上の行から並ぶ */
+	topDown = false,
 ): Uint8ClampedArray {
 	if (w * h > MAX_PIXELS) throw new Error("ビットマップが大きすぎる");
 	if (data.length < 1) throw new Error("Planar: 入力が足りない");
@@ -445,7 +447,7 @@ export function decodePlanar(
 	const [c0, c1, c2] = noAlpha ? planes : planes.slice(1);
 	const out = new Uint8ClampedArray(w * h * 4);
 	for (let y = 0; y < h; y++) {
-		const row = (h - 1 - y) * w;
+		const row = (topDown ? y : h - 1 - y) * w;
 		for (let x = 0; x < w; x++) {
 			const d = (y * w + x) * 4;
 			const a = c0?.[row + x] as number;

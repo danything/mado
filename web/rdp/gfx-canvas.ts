@@ -1,0 +1,338 @@
+// GFX のブラウザ側: 面を canvas に持ち、フレームの終わりに変わったところを画面(Display)へ写す。H.264 は WebCodecs の VideoDecoder。
+
+import type { Display } from "./display";
+import {
+	type AvcDecoder,
+	codecString,
+	type GfxOps,
+	type Rect,
+	type VideoFrameLike,
+} from "./gfx";
+
+type Canvas2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+
+type Surface = {
+	canvas: OffscreenCanvas | HTMLCanvasElement;
+	ctx: Canvas2D;
+	width: number;
+	height: number;
+	map?: { x: number; y: number };
+	/** 前の present() から変わったところ(和集合の矩形) */
+	dirty?: Rect;
+};
+
+function makeCanvas(
+	w: number,
+	h: number,
+): { canvas: OffscreenCanvas | HTMLCanvasElement; ctx: Canvas2D } {
+	if (typeof OffscreenCanvas !== "undefined") {
+		const canvas = new OffscreenCanvas(w, h);
+		const ctx = canvas.getContext("2d", { willReadFrequently: false });
+		if (ctx) return { canvas, ctx };
+	}
+	const canvas = document.createElement("canvas");
+	canvas.width = w;
+	canvas.height = h;
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("canvas が使えない");
+	return { canvas, ctx };
+}
+
+export class CanvasGfxOps implements GfxOps {
+	private surfaces = new Map<number, Surface>();
+	private cache = new Map<number, ImageData>();
+
+	constructor(private display: Display) {}
+
+	private surface(id: number): Surface {
+		const s = this.surfaces.get(id);
+		if (!s) throw new Error(`GFX: 無い面 ${id}`);
+		return s;
+	}
+
+	private touch(s: Surface, x: number, y: number, w: number, h: number): void {
+		const r = { left: x, top: y, right: x + w, bottom: y + h };
+		const d = s.dirty;
+		s.dirty = d
+			? {
+					left: Math.min(d.left, r.left),
+					top: Math.min(d.top, r.top),
+					right: Math.max(d.right, r.right),
+					bottom: Math.max(d.bottom, r.bottom),
+				}
+			: r;
+	}
+
+	resetOutput(width: number, height: number): void {
+		this.display.resize(width, height);
+	}
+
+	createSurface(id: number, width: number, height: number): void {
+		const { canvas, ctx } = makeCanvas(width, height);
+		this.surfaces.set(id, { canvas, ctx, width, height });
+	}
+
+	deleteSurface(id: number): void {
+		this.surfaces.delete(id);
+	}
+
+	mapSurface(id: number, x: number, y: number): void {
+		const s = this.surface(id);
+		s.map = { x, y };
+		this.touch(s, 0, 0, s.width, s.height);
+	}
+
+	putRgba(
+		id: number,
+		x: number,
+		y: number,
+		w: number,
+		h: number,
+		rgba: Uint8ClampedArray,
+	): void {
+		const s = this.surface(id);
+		s.ctx.putImageData(
+			new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h),
+			x,
+			y,
+		);
+		this.touch(s, x, y, w, h);
+	}
+
+	fill(
+		id: number,
+		rects: Rect[],
+		rgba: [number, number, number, number],
+	): void {
+		const s = this.surface(id);
+		for (const r of rects) {
+			const w = r.right - r.left;
+			const h = r.bottom - r.top;
+			if (w <= 0 || h <= 0) continue;
+			// putImageData は合成せずに置き換える(アルファを持つ面でもそのまま)
+			const img = new ImageData(w, h);
+			for (let i = 0; i < w * h; i++) img.data.set(rgba, i * 4);
+			s.ctx.putImageData(img, r.left, r.top);
+			this.touch(s, r.left, r.top, w, h);
+		}
+	}
+
+	copyRect(src: number, rect: Rect, dst: number, x: number, y: number): void {
+		const w = rect.right - rect.left;
+		const h = rect.bottom - rect.top;
+		if (w <= 0 || h <= 0) return;
+		const img = this.surface(src).ctx.getImageData(rect.left, rect.top, w, h);
+		const d = this.surface(dst);
+		d.ctx.putImageData(img, x, y);
+		this.touch(d, x, y, w, h);
+	}
+
+	toCache(slot: number, id: number, rect: Rect): void {
+		const w = rect.right - rect.left;
+		const h = rect.bottom - rect.top;
+		if (w <= 0 || h <= 0) return;
+		this.cache.set(
+			slot,
+			this.surface(id).ctx.getImageData(rect.left, rect.top, w, h),
+		);
+	}
+
+	fromCache(slot: number, id: number, x: number, y: number): void {
+		const img = this.cache.get(slot);
+		if (!img) return;
+		const s = this.surface(id);
+		s.ctx.putImageData(img, x, y);
+		this.touch(s, x, y, img.width, img.height);
+	}
+
+	evict(slot: number): void {
+		this.cache.delete(slot);
+	}
+
+	setAlpha(id: number, rect: Rect, alpha: Uint8Array): void {
+		const w = rect.right - rect.left;
+		const h = rect.bottom - rect.top;
+		const s = this.surface(id);
+		const img = s.ctx.getImageData(rect.left, rect.top, w, h);
+		for (let i = 0; i < w * h; i++) img.data[i * 4 + 3] = alpha[i] as number;
+		s.ctx.putImageData(img, rect.left, rect.top);
+		this.touch(s, rect.left, rect.top, w, h);
+	}
+
+	drawVideo(id: number, frame: unknown, dest: Rect, regions: Rect[]): void {
+		const s = this.surface(id);
+		const src = frame as CanvasImageSource;
+		const list = regions.length
+			? regions
+			: [
+					{
+						left: 0,
+						top: 0,
+						right: dest.right - dest.left,
+						bottom: dest.bottom - dest.top,
+					},
+				];
+		for (const r of list) {
+			const w = r.right - r.left;
+			const h = r.bottom - r.top;
+			if (w <= 0 || h <= 0) continue;
+			s.ctx.drawImage(
+				src,
+				r.left,
+				r.top,
+				w,
+				h,
+				dest.left + r.left,
+				dest.top + r.top,
+				w,
+				h,
+			);
+			this.touch(s, dest.left + r.left, dest.top + r.top, w, h);
+		}
+	}
+
+	present(): void {
+		// 変わった範囲(画面の座標)を集める
+		const changed: Rect[] = [];
+		for (const s of this.surfaces.values()) {
+			const d = s.dirty;
+			s.dirty = undefined;
+			if (!d || !s.map) continue;
+			const r = clip(d, { left: 0, top: 0, right: s.width, bottom: s.height });
+			if (r)
+				changed.push({
+					left: s.map.x + r.left,
+					top: s.map.y + r.top,
+					right: s.map.x + r.right,
+					bottom: s.map.y + r.bottom,
+				});
+		}
+		// 変わった範囲ごとに、そこに掛かる全部の面を作成の順(後のものが上)に描き直す。面が重なっていても、変わっていない面が消えない
+		for (const c of changed) {
+			let first = true;
+			for (const s of this.surfaces.values()) {
+				if (!s.map) continue;
+				const onScreen = {
+					left: s.map.x,
+					top: s.map.y,
+					right: s.map.x + s.width,
+					bottom: s.map.y + s.height,
+				};
+				const r = clip(c, onScreen);
+				if (!r) continue;
+				const w = r.right - r.left;
+				const h = r.bottom - r.top;
+				const sx = r.left - s.map.x;
+				const sy = r.top - s.map.y;
+				// 最初の面は置き換え(消してから描く)、後の面は重ねる
+				if (first) this.display.blit(s.canvas, sx, sy, w, h, r.left, r.top);
+				else this.display.blitOver(s.canvas, sx, sy, w, h, r.left, r.top);
+				first = false;
+			}
+		}
+	}
+}
+
+/** 2 つの矩形の重なり。無ければ undefined */
+function clip(a: Rect, b: Rect): Rect | undefined {
+	const left = Math.max(a.left, b.left);
+	const top = Math.max(a.top, b.top);
+	const right = Math.min(a.right, b.right);
+	const bottom = Math.min(a.bottom, b.bottom);
+	return right > left && bottom > top
+		? { left, top, right, bottom }
+		: undefined;
+}
+
+/** 1 フレームの復号を待つ長さ。過ぎたら捨てる */
+const AVC_TIMEOUT_MS = 1000;
+
+/** WebCodecs の VideoDecoder で H.264(Annex B)を復号する。結果は timestamp で対応づける */
+export class WebCodecsAvc implements AvcDecoder {
+	private decoder?: VideoDecoder;
+	private codec?: string;
+	private needKey = true;
+	private ts = 0;
+	private waiting = new Map<number, (f: VideoFrameLike | null) => void>();
+	/** close() のあと。復号器を作り直さない */
+	private closed = false;
+
+	decode(stream: Uint8Array, key: boolean): Promise<VideoFrameLike | null> {
+		if (this.closed) return Promise.resolve(null);
+		const codec = codecString(stream);
+		if (
+			codec &&
+			(codec !== this.codec || !this.decoder || this.decoder.state === "closed")
+		)
+			this.reset(codec);
+		const decoder = this.decoder;
+		if (decoder?.state !== "configured") return Promise.resolve(null);
+		// 鍵フレーム(IDR)から始める
+		if (this.needKey) {
+			if (!key) return Promise.resolve(null);
+			this.needKey = false;
+		}
+		const timestamp = this.ts++;
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				if (!this.waiting.delete(timestamp)) return;
+				// このフレームを捨てたので、後の差分フレームは壊れた参照になる。次の鍵フレームまで待つ
+				this.needKey = true;
+				resolve(null);
+			}, AVC_TIMEOUT_MS);
+			this.waiting.set(timestamp, (f) => {
+				clearTimeout(timer);
+				resolve(f);
+			});
+			try {
+				decoder.decode(
+					new EncodedVideoChunk({
+						type: key ? "key" : "delta",
+						timestamp,
+						data: stream,
+					}),
+				);
+			} catch {
+				this.waiting.delete(timestamp);
+				clearTimeout(timer);
+				this.needKey = true;
+				resolve(null);
+			}
+		});
+	}
+
+	private reset(codec: string): void {
+		this.shutdown();
+		this.codec = codec;
+		this.needKey = true;
+		this.decoder = new VideoDecoder({
+			output: (frame) => {
+				const r = this.waiting.get(frame.timestamp);
+				if (r) {
+					this.waiting.delete(frame.timestamp);
+					r(frame);
+				} else frame.close();
+			},
+			error: () => {
+				// 復号器が壊れたら、次の鍵フレームの SPS で作り直す
+				this.needKey = true;
+				this.codec = undefined;
+				for (const r of this.waiting.values()) r(null);
+				this.waiting.clear();
+			},
+		});
+		this.decoder.configure({ codec, optimizeForLatency: true });
+	}
+
+	close(): void {
+		this.closed = true;
+		this.shutdown();
+	}
+
+	private shutdown(): void {
+		for (const r of this.waiting.values()) r(null);
+		this.waiting.clear();
+		if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
+		this.decoder = undefined;
+	}
+}

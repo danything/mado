@@ -27,6 +27,8 @@ export type ConnectOptions = {
 	onLog?: (line: string) => void;
 	/** 中止(つなぐのに時間がかかりすぎたとき、利用者が取り消したとき) */
 	signal?: AbortSignal;
+	/** GFX(H.264)を使う。受け手(GfxClient)を attachChannels に渡すこと */
+	gfx?: boolean;
 	/** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
 	allowTls?: boolean;
 	/** 試験用。LICENSE_REQUEST にダミーの NEW_LICENSE_REQUEST で答える(xrdp は中身を見ない)。本物のライセンス交渉(PLATFORM_CHALLENGE 以降)はしないので、xrdp 以外では先へ進めない */
@@ -119,6 +121,7 @@ export async function establish(
 			selectedProtocol: cc.selectedProtocol,
 			clientName: "mado",
 			keyboardLayout: o.keyboardLayout,
+			gfx: o.gfx,
 		},
 		channels,
 	);
