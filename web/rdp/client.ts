@@ -213,7 +213,10 @@ export class RdpClient {
 	/** Demand Active をもう一度受けた(画面の大きさが変わった): Confirm Active と同期をやり直す */
 	private reactivate(d: pdu.DemandActive): void {
 		this.surface.flush(); // 大きさが変わる前の画面を先に描く
-		this.shareId = d.shareId;
+		// 復号中の前のフレームの Frame Acknowledge は前の shareId で返す。描画の順序に乗せて切り替える
+		this.surface.ordered(() => {
+			this.shareId = d.shareId;
+		});
 		const bmp = d.capabilities.get(pdu.CAP.BITMAP);
 		if (bmp && bmp.length >= 12) {
 			const dv = new DataView(bmp.buffer, bmp.byteOffset, bmp.byteLength);

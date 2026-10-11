@@ -6,7 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 namespace Mado;
 
 /// <summary>
-/// WebSocket(ブラウザの IronRDP)と RDP サーバーのあいだの中継。
+/// WebSocket(ブラウザの RDP クライアント)と RDP サーバーのあいだの中継。
 ///
 /// 1. 最初に RDCleanPath の要求を受け取る(複数のメッセージに分かれて来てもよい)
 /// 2. RDP サーバーに TCP でつなぎ、要求に入っていた X.224 の接続要求を送り、接続確認を受け取る
@@ -68,7 +68,8 @@ internal static class Relay
         }
 
         log($"relay to {target.Name} ({target.Host}:{target.Port})");
-        using var tcp = new TcpClient();
+        // 入力(キー・マウス)は小さなパケットなので、Nagle で溜めずにすぐ送る(遅延を減らす)
+        using var tcp = new TcpClient { NoDelay = true };
         SslStream ssl;
         try
         {
@@ -77,7 +78,7 @@ internal static class Relay
             if (req.PreconnectionBlob is { } pcb) await net.WriteAsync(System.Text.Encoding.UTF8.GetBytes(pcb), ct);
             await net.WriteAsync(req.X224, ct);
             var cc = await ReadTpkt(net, ct);
-            // RDP_NEG_FAILURE(0x03)なら TLS には進まず、そのまま返す(IronRDP が理由を出す)
+            // RDP_NEG_FAILURE(0x03)なら TLS には進まず、そのまま返す(ブラウザが理由を出す)
             if (cc.Length >= 12 && cc[11] == 0x03)
             {
                 await Send(ws, RdCleanPath.Error(RdCleanPath.NegotiationError, x224: cc), ct);
