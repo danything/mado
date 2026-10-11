@@ -228,8 +228,7 @@ export class WebCodecsAvc implements AvcDecoder {
 		)
 			this.reset(codec);
 		const decoder = this.decoder;
-		if (!decoder || decoder.state !== "configured")
-			return Promise.resolve(null);
+		if (decoder?.state !== "configured") return Promise.resolve(null);
 		// 鍵フレーム(IDR)から始める
 		if (this.needKey) {
 			if (!key) return Promise.resolve(null);

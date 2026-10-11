@@ -486,7 +486,7 @@ describe("ClearCodec", () => {
 			fromHex("03" + "000000" + "0000ff" + "ffffff"),
 			Uint8Array.of(2 | (1 << 2), 2),
 		);
-		expect(hex(rlex(data, 4))).toBe("0000ff".repeat(3) + "ffffff");
+		expect(hex(rlex(data, 4))).toBe(`${"0000ff".repeat(3)}ffffff`);
 		expect(() => rlex(data, 3)).toThrow("あふれ");
 	});
 
