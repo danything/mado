@@ -1,6 +1,7 @@
 <!--
   mado の MSI(WiX v5)。入れるもの:
   - C:\Program Files\mado\mado.exe(.NET の Native AOT。これ自体が Windows のサービス)
+  - C:\Program Files\mado\mado-tray.exe(タスクトレイ。サインイン時に起動する)
   - サービス mado(LocalSystem、自動起動、落ちたら 5 秒後に起こし直す。引数で C:\ProgramData\mado\mado.json を読む)
   - ファイアウォールの受信の許可(TCP 80 / 443)
   - C:\ProgramData\mado(設定・client secret・証明書・ログ。SYSTEM と Administrators だけ)
@@ -42,6 +43,13 @@
           <fw:FirewallException Id="MadoHttp" Name="mado (TCP 80)" Protocol="tcp" Port="80" Scope="any" />
           <fw:FirewallException Id="MadoHttps" Name="mado (TCP 443)" Protocol="tcp" Port="443" Scope="any" />
         </Component>
+        <!-- タスクトレイ。サインインした人ごとに、サインイン時に起動する(HKLM の Run)。サービスとはファイルを分けて、
+             トレイが動いていても更新でサービスの exe を入れ替えられるようにする -->
+        <Component Id="Tray" Bitness="always64">
+          <File Id="MadoTrayExe" Source="$(PublishDir)\mado-tray.exe" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="mado-tray"
+                         Type="string" Value="&quot;[INSTALLFOLDER]mado-tray.exe&quot;" />
+        </Component>
       </Directory>
     </StandardDirectory>
 
@@ -58,6 +66,7 @@
 
     <Feature Id="Main">
       <ComponentRef Id="Service" />
+      <ComponentRef Id="Tray" />
       <ComponentRef Id="DataFolder" />
     </Feature>
   </Package>

@@ -37,6 +37,7 @@ jobs:
       # Windows でも試験を回す(CNG など、Linux と違うところで落ちることがある)
       - run: dotnet run --project tests/Mado.Tests.csproj
       - run: dotnet publish server/Mado.csproj -c Release -r win-x64 -o publish
+      - run: dotnet publish tray/MadoTray.csproj -c Release -r win-x64 -o publish
       - run: |
           dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.Firewall.wixext/5.0.2
@@ -46,4 +47,4 @@ jobs:
           $version = ([xml](Get-Content server/Mado.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
           wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext `
             -d Version=$version -d PublishDir=publish -o dist/mado.msi
-          Get-Item publish/mado.exe, dist/mado.msi | ForEach-Object { "{0} {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+          Get-Item publish/mado.exe, publish/mado-tray.exe, dist/mado.msi | ForEach-Object { "{0} {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
