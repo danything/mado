@@ -7,6 +7,7 @@ import * as input from "./input";
 import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
+import type { TilePool } from "./rfxpool";
 import { StreamClosed } from "./stream";
 import { SurfaceRenderer } from "./surface";
 import { ChannelAssembler, SHOW_PROTOCOL, splitChannelData } from "./vchannel";
@@ -54,6 +55,8 @@ export class RdpClient {
 	constructor(
 		readonly session: Session,
 		private screen: Screen,
+		/** RemoteFX のタイルの復号の置き場。省略するとその場で復号する(ブラウザでは createPool() の Worker のプールを渡す) */
+		options: { pool?: TilePool } = {},
 	) {
 		this.width = session.width;
 		this.rfxCodecId = pdu.serverRfxCodecId(session.serverCapabilities);
@@ -62,6 +65,7 @@ export class RdpClient {
 		this.surface = new SurfaceRenderer({
 			draw: (x, y, w, h, rgba) => this.screen.draw(x, y, w, h, rgba),
 			ack: (frameId) => this.sendFrameAck(frameId),
+			pool: options.pool,
 		});
 	}
 
@@ -100,8 +104,9 @@ export class RdpClient {
 			throw e;
 		} finally {
 			// 溜めたタイルは、切れる前の最後の画面なので描いておく(失敗しても、切れた本当の理由を隠さない)
+			// (復号中のものも描き終えてから、Worker を止める)
 			try {
-				this.surface.flush();
+				this.surface.ordered(() => this.surface.dispose());
 			} catch {}
 		}
 		return "切断した";
@@ -234,26 +239,33 @@ export class RdpClient {
 		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.COOPERATE));
 		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.REQUEST));
 		data2(pdu.PDUTYPE2.FONTLIST, pdu.fontList());
-		this.screen.resize(this.width, this.height);
+		// 大きさが変わる前の画面(復号中のタイル)を、先に描き終えてから
+		const { width, height } = this;
+		this.surface.ordered(() => this.screen.resize(width, height));
 	}
 
 	private handleUpdate(code: number, data: Uint8Array): void {
 		this.stats[code] = (this.stats[code] ?? 0) + 1;
 		switch (code) {
 			case UPDATE.BITMAP:
-				this.surface.flush(); // 旧ビットマップは順序が意味を持つ
-				for (const r of parseBitmapUpdate(data)) {
-					const w = Math.min(r.right - r.left + 1, r.width);
-					const h = Math.min(r.bottom - r.top + 1, r.height);
-					const rgba = decodeBitmap(r);
-					// 矩形の幅が 4 の倍数に揃えられているときは、右の余りを切る
-					this.screen.draw(
-						r.left,
-						r.top,
-						w,
-						h,
-						w === r.width ? rgba : crop(rgba, r.width, w, h),
-					);
+				{
+					// 復号は今(失敗はここで例外にする)。描くのは、タイルが先に描き終わってから(順序が意味を持つ)
+					const parts = parseBitmapUpdate(data).map((r) => {
+						const w = Math.min(r.right - r.left + 1, r.width);
+						const h = Math.min(r.bottom - r.top + 1, r.height);
+						const rgba = decodeBitmap(r);
+						// 矩形の幅が 4 の倍数に揃えられているときは、右の余りを切る
+						return {
+							r,
+							w,
+							h,
+							rgba: w === r.width ? rgba : crop(rgba, r.width, w, h),
+						};
+					});
+					this.surface.ordered(() => {
+						for (const p of parts)
+							this.screen.draw(p.r.left, p.r.top, p.w, p.h, p.rgba);
+					});
 				}
 				break;
 			case UPDATE.SURFCMDS:

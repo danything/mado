@@ -3,7 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build:web": "bun build web/index.html --outdir dist/web --minify",
+		"build:web": "bun tools/build-web.ts",
 		"check": "biome check --write && tsc --noEmit"
 	},
 	"devDependencies": {
