@@ -3,12 +3,12 @@
 OIDC でログインして、ブラウザから RDP する小さなゲートウェイ。Windows のサービスとして動く。MSI で入れる。
 
 Guacamole のようにサーバーで画面を描くのではなく、RDP は全部ブラウザの中の
-[IronRDP](https://github.com/Devolutions/IronRDP)(WASM)が話す。mado がするのは、ログインの確認と、
+自前の TypeScript 実装(`web/rdp/`)が話す。mado がするのは、ログインの確認と、
 ブラウザ ↔ RDP サーバーの中継(RDCleanPath)だけ。
 
 ```
 ブラウザ ──https──> mado ──OIDC──> Entra ID などの IdP
-   │  IronRDP(WASM)
+   │  RDP クライアント(TS)
    └──wss /ws(RDCleanPath)──> mado ──TCP + TLS──> RDP(既定 127.0.0.1:3389)
 ```
 
@@ -22,7 +22,7 @@ Guacamole のようにサーバーで画面を描くのではなく、RDP は全
 | 部分 | 中身 |
 | --- | --- |
 | `server/` | **.NET 10(Native AOT)**。`CreateSlimBuilder` の Kestrel で、`UseWindowsService` でそのままサービスになる。OIDC・ACME・DER・RDCleanPath は手書き(ASP.NET Core の OIDC の仕組みは AOT に対応していない)。外から入れているのは Microsoft の `Microsoft.Extensions.Hosting.WindowsServices` だけ |
-| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、IronRDP の Web クライアント。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
+| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、自前の RDP クライアント(`web/rdp/`: CredSSP / NTLM、X.224、MCS、ビットマップ、入力、クリップボード、解像度の追従)。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
 | `tray/` | タスクトレイ(`mado-tray.exe`、.NET の Native AOT)。Win32 の `Shell_NotifyIcon` を直接呼ぶ(WinForms は AOT に対応していない)。サインイン時に起動する |
 | `installer/` | MSI(WiX v5)。サービスの登録、タスクトレイとサインイン時の起動、ファイアウォール(TCP 80 / 443)、`C:\ProgramData\mado` の権限 |
 
@@ -106,4 +106,4 @@ Windows でしか作れないので CI(`windows-latest`)で作る。
 
 ## ライセンス
 
-AGPL-3.0。IronRDP の Web クライアントは MIT OR Apache-2.0、Blades CSS は MIT。
+AGPL-3.0。Blades CSS は MIT。
