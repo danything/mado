@@ -4,15 +4,16 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "bun --hot src/main.ts --config mado.dev.toml",
+		"dev": "bun --hot src/main.ts --config mado.dev.json",
 		"build": "bun build src/main.ts --compile --format=esm --target=bun-windows-x64 --minify --sourcemap --bytecode --outfile dist/mado.exe",
 		"check": "biome check --write && tsc --noEmit",
 		"test": "bun test"
 	},
 	"devDependencies": {
+		"@anyblades/blades": "3.0.0",
+		"@biomejs/biome": "^2.5.15",
 		"@devolutions/iron-remote-desktop": "0.11.0",
 		"@devolutions/iron-remote-desktop-rdp": "0.7.0",
-		"@biomejs/biome": "^2.5.15",
 		"@types/bun": "^1.4.2",
 		"typescript": "~6.0.3"
 	}

@@ -3,25 +3,52 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="light dark" />
 		<title>mado</title>
 		<link rel="stylesheet" href="./style.css" />
 	</head>
 	<body>
-		<form id="login" hidden>
-			<h1>mado</h1>
-			<p id="who"></p>
-			<label>Windows のユーザー名 <input name="username" autocomplete="username" required /></label>
-			<label>パスワード <input name="password" type="password" autocomplete="current-password" required /></label>
-			<button type="submit">つなぐ</button>
-			<p id="status" role="status"></p>
-		</form>
+		<main id="home" class="container" hidden>
+			<article>
+				<header>
+					<hgroup>
+						<h1>mado</h1>
+						<p id="who"></p>
+					</hgroup>
+				</header>
+				<form id="login">
+					<label id="target-field">
+						<select name="target" required></select>
+						<span>つなぐ先</span>
+					</label>
+					<label>
+						<input name="username" autocomplete="username" placeholder=" " required />
+						<span>Windows のユーザー名</span>
+					</label>
+					<label>
+						<input name="password" type="password" autocomplete="current-password" placeholder=" " required />
+						<span>パスワード</span>
+					</label>
+					<button type="submit">つなぐ</button>
+					<small id="status" role="status"></small>
+				</form>
+				<footer>
+					<small><a href="/logout" class="secondary">ログアウト</a></small>
+				</footer>
+			</article>
+		</main>
 		<nav id="toolbar" hidden>
-			<button type="button" data-action="ctrl-alt-del">Ctrl+Alt+Del</button>
-			<button type="button" data-action="meta">Windows キー</button>
-			<button type="button" data-action="fullscreen">全画面</button>
-			<button type="button" data-action="disconnect">切断</button>
+			<ul>
+				<li><strong id="current"></strong></li>
+			</ul>
+			<ul>
+				<li><button type="button" class="secondary outline" data-action="ctrl-alt-del">Ctrl+Alt+Del</button></li>
+				<li><button type="button" class="secondary outline" data-action="meta">Windows キー</button></li>
+				<li><button type="button" class="secondary outline" data-action="fullscreen">全画面</button></li>
+				<li><button type="button" class="contrast" data-action="disconnect">切断</button></li>
+			</ul>
 		</nav>
-		<main id="screen" class="idle"></main>
+		<div id="screen" class="idle"></div>
 		<script type="module" src="./app.ts"></script>
 	</body>
 </html>

@@ -5,6 +5,7 @@
     "": {
       "name": "mado",
       "devDependencies": {
+        "@anyblades/blades": "3.0.0",
         "@biomejs/biome": "^2.5.15",
         "@devolutions/iron-remote-desktop": "0.11.0",
         "@devolutions/iron-remote-desktop-rdp": "0.7.0",
@@ -14,6 +15,8 @@
     },
   },
   "packages": {
+    "@anyblades/blades": ["@anyblades/blades@3.0.0", "", {}, "sha512-Fb2pUkQeJhA04gDAZ44V+ZMwR5n4jUk2M/+ZTK3oONgZBU6ncnKXMfCVkRuDUwVXxjXn1ye8anEDUqkkQa3efw=="],
+
     "@biomejs/biome": ["@biomejs/biome@2.5.15", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.15", "@biomejs/cli-darwin-x64": "2.5.15", "@biomejs/cli-linux-arm64": "2.5.15", "@biomejs/cli-linux-arm64-musl": "2.5.15", "@biomejs/cli-linux-x64": "2.5.15", "@biomejs/cli-linux-x64-musl": "2.5.15", "@biomejs/cli-win32-arm64": "2.5.15", "@biomejs/cli-win32-x64": "2.5.15" }, "bin": { "biome": "bin/biome" } }, "sha512-WZTW4slm/pdkh92K6t/3aEN++44JD1PQ7squ7RCMLI1flHGl43DVOIGXvCjHiZgBMO1V4uYxoFNtqrIA4qGuIQ=="],
 
     "@biomejs/cli-darwin-arm64": ["@biomejs/cli-darwin-arm64@2.5.15", "", { "os": "darwin", "cpu": "arm64" }, "sha512-BZVzFhJ/mUvTLMYbc9x6el0o2Uv5zP7bACYyhFb6fSc1giroXm7PL0a5KqMJ9F+/BnkYRjagD/ROSDVOZ6eapg=="],

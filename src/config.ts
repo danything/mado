@@ -1,6 +1,9 @@
-// 設定ファイル(TOML)。置き場所は `--config <path>`、無ければ exe と同じフォルダの mado.toml。
+// 設定ファイル(JSON)。置き場所は `--config <path>`、無ければ exe と同じフォルダの mado.json。
 
 import path from "node:path";
+
+/** つなぐ先の RDP。画面で名前を選ぶ */
+export type Target = { name: string; host: string; port: number };
 
 export type Config = {
 	/** 外から開く名前(証明書と OIDC のリダイレクト先に使う) */
@@ -18,7 +21,8 @@ export type Config = {
 		/** ID トークンの roles にこれが無ければ入れない。空なら確かめない */
 		requiredRole: string;
 	};
-	rdp: { host: string; port: number };
+	/** 1 つ以上。並びのまま画面に出す */
+	targets: Target[];
 };
 
 type Raw = {
@@ -35,7 +39,8 @@ type Raw = {
 		client_secret_file?: string;
 		required_role?: string;
 	};
-	rdp?: { host?: string; port?: number };
+	/** 省くとこのマシンの RDP(127.0.0.1:3389)だけ */
+	targets?: { name?: string; host?: string; port?: number }[];
 };
 
 export async function loadConfig(
@@ -45,9 +50,9 @@ export async function loadConfig(
 	const file = path.resolve(
 		i >= 0 && argv[i + 1]
 			? argv[i + 1]
-			: path.join(path.dirname(process.execPath), "mado.toml"),
+			: path.join(path.dirname(process.execPath), "mado.json"),
 	);
-	const raw = Bun.TOML.parse(await Bun.file(file).text()) as Raw;
+	const raw = (await Bun.file(file).json()) as Raw;
 	const dir = path.dirname(file);
 	const need = (v: string | undefined, name: string) => {
 		if (!v) throw new Error(`${file}: ${name} が要る`);
@@ -84,11 +89,25 @@ export async function loadConfig(
 			),
 			requiredRole: o.required_role ?? "",
 		},
-		rdp: { host: raw.rdp?.host ?? "127.0.0.1", port: raw.rdp?.port ?? 3389 },
+		targets: readTargets(raw, file),
 	};
 	if (config.tls === "acme" && !config.acme.email)
 		throw new Error(`${file}: acme.email が要る`);
 	return { config, file };
+}
+
+function readTargets(raw: Raw, file: string): Target[] {
+	if (!raw.targets?.length)
+		return [{ name: "localhost", host: "127.0.0.1", port: 3389 }];
+	const seen = new Set<string>();
+	return raw.targets.map((t, i) => {
+		if (!t.host) throw new Error(`${file}: targets[${i}].host が要る`);
+		const name = t.name ?? t.host;
+		if (seen.has(name))
+			throw new Error(`${file}: targets の name が重なっている (${name})`);
+		seen.add(name);
+		return { name, host: t.host, port: t.port ?? 3389 };
+	});
 }
 
 /** 外から見た URL の起点(https、tls = off なら http + ポート) */

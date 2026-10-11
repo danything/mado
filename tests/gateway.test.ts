@@ -13,6 +13,8 @@ import {
 import { Relay } from "../src/gateway.ts";
 import { VERSION } from "../src/rdcleanpath.ts";
 
+const local = { name: "local", host: "127.0.0.1", port: 3389 };
+
 const rdpUp = await new Promise<boolean>((ok) => {
 	const s = net.connect(3389, "127.0.0.1");
 	s.once("connect", () => {
@@ -45,8 +47,7 @@ test.skipIf(!rdpUp)(
 		};
 		const relay = new Relay(
 			ws as never,
-			{ host: "127.0.0.1", port: 3389 },
-			(a) => a === "ok",
+			(a) => (a === "ok" ? local : null),
 			() => {},
 		);
 		relay.onMessage(req.subarray(0, 10));
@@ -82,8 +83,7 @@ test.skipIf(!rdpUp)(
 		};
 		new Relay(
 			ws as never,
-			{ host: "127.0.0.1", port: 3389 },
-			(a) => a === "ok",
+			(a) => (a === "ok" ? local : null),
 			() => {},
 		).onMessage(req);
 		const tags = readAll(

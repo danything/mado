@@ -5,11 +5,13 @@
 // 3. 同じソケットの上で TLS を張り、サーバーの証明書の連なりを取る
 // 4. RDCleanPath の応答(接続確認 + 証明書)を返し、あとは WebSocket ↔ TLS をそのまま流す
 //
-// つなぐ先は設定で決めた 1 か所だけ。ブラウザが送ってくる destination は見ない(どこへでも行ける中継にしない)。
+// つなぐ先はトークン(proxy_auth)に入っている、設定の targets のどれか。ブラウザが送ってくる destination は見ない
+// (どこへでも行ける中継にしない)。
 
 import net from "node:net";
 import tls from "node:tls";
 import type { ServerWebSocket } from "bun";
+import type { Target } from "./config.ts";
 import {
 	encodeError,
 	encodeResponse,
@@ -20,8 +22,8 @@ import {
 } from "./rdcleanpath.ts";
 
 /** RDP の自己署名証明書は鍵の用途が Key Encipherment / Data Encipherment だけで、Digital Signature が無い。
- * bun の TLS(BoringSSL)は ECDHE のときにそれを拒むので、RSA の鍵交換に絞る。つなぐのは同じマシンの RDP なので、
- * 前方秘匿性が無いことは問題にならない */
+ * bun の TLS(BoringSSL)は ECDHE のときにそれを拒むので、RSA の鍵交換に絞る。前方秘匿性が無いのは、mado と
+ * RDP のあいだ(同じマシンか LAN の中)だけ。ブラウザと mado のあいだは普通の TLS 1.3 */
 const RDP_TLS: tls.ConnectionOptions = {
 	rejectUnauthorized: false,
 	maxVersion: "TLSv1.2",
@@ -31,20 +33,18 @@ const RDP_TLS: tls.ConnectionOptions = {
 /** WebSocket の送りが溜まりすぎたら RDP 側を止める */
 const HIGH_WATER = 4 * 1024 * 1024;
 
-export type Target = { host: string; port: number };
-
 export class Relay {
 	private pending: Uint8Array = new Uint8Array(0);
 	private started = false;
 	private tls?: tls.TLSSocket;
 	private raw?: net.Socket;
 	private closed = false;
+	private target?: Target;
 
 	constructor(
 		private ws: ServerWebSocket<unknown>,
-		private target: Target,
-		/** RDCleanPath の proxy_auth を確かめる(ページに埋めた使い捨てのトークン) */
-		private authorize: (proxyAuth: string | undefined) => boolean,
+		/** RDCleanPath の proxy_auth(/api/token が出した使い捨てのトークン)を確かめ、つなぐ先を返す。だめなら null */
+		private authorize: (proxyAuth: string | undefined) => Target | null,
 		private log: (msg: string) => void,
 	) {}
 
@@ -74,8 +74,9 @@ export class Relay {
 				400,
 				`unsupported RDCleanPath version ${request.version}`,
 			);
-		if (!this.authorize(request.proxyAuth))
-			return this.fail(401, "proxy_auth rejected");
+		const target = this.authorize(request.proxyAuth);
+		if (!target) return this.fail(401, "proxy_auth rejected");
+		this.target = target;
 		if (!request.x224)
 			return this.fail(
 				400,
@@ -87,7 +88,9 @@ export class Relay {
 	}
 
 	private async connect(x224: Uint8Array, pcb: string | undefined) {
-		const raw = net.connect(this.target.port, this.target.host);
+		const target = this.target as Target;
+		this.log(`relay to ${target.name} (${target.host}:${target.port})`);
+		const raw = net.connect(target.port, target.host);
 		this.raw = raw;
 		await new Promise<void>((ok, ng) => {
 			raw.once("connect", ok);
@@ -108,11 +111,7 @@ export class Relay {
 			sock.once("error", ng);
 		});
 		this.send(
-			encodeResponse(
-				cc,
-				certChain(sock),
-				`${this.target.host}:${this.target.port}`,
-			),
+			encodeResponse(cc, certChain(sock), `${target.host}:${target.port}`),
 		);
 		this.log(`relay up: ${sock.getProtocol()} ${sock.getCipher().name}`);
 
