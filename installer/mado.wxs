@@ -48,7 +48,7 @@
         <Component Id="DataFolder" Guid="1A50BB15-EFA8-470F-B39D-3FD6AB7057F9" Bitness="always64">
           <!-- client secret とセッションの鍵が入るので、継承を切って SYSTEM と Administrators だけに -->
           <CreateFolder>
-            <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+            <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
           </CreateFolder>
         </Component>
       </Directory>
