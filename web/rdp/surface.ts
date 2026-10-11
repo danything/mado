@@ -119,6 +119,10 @@ function intersect(a: Rect, b: Rect): Rect | null {
 const sameRect = (a: Rect, b: Rect) =>
 	a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 
+/** 矩形 a が b をすっぽり含む */
+const contains = (a: Rect, b: Rect) =>
+	a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h;
+
 /** RGBA の画像(幅 stride)から矩形(画像の中の座標)を切り出す */
 function crop(
 	rgba: Uint8ClampedArray,
@@ -340,6 +344,8 @@ type Pending = {
 	/** Worker での復号の状態(非同期のプールのとき) */
 	state: "waiting" | "done" | "failed";
 	rgba?: Uint8ClampedArray;
+	/** 実際に描く範囲を囲む矩形(画面の座標)。後のタイルがこれを全部描くなら、このタイルは要らない */
+	bounds: Rect;
 };
 
 /** プールに回した 1 回ぶんの吐き出し。順番に描き、フレームの応答を返し、あとに予約された処理を流す */
@@ -432,32 +438,51 @@ export class SurfaceRenderer {
 		const abs: Rect = { x: tile.x + left, y: tile.y + top, w: TILE, h: TILE };
 		const visible = area && intersect(abs, area);
 		if (!visible) return; // 画面の外
-		// 描く部分が見えるタイル全体なら、同じ位置の古いタイルは要らない(復号中のものも、結果を捨てる)
+		// このタイルが実際に描く範囲(画面の座標): Region の矩形とタイルとコマンドの範囲の重なり
 		const clips = tile.rects.length
 			? tile.rects
-			: [{ x: 0, y: 0, w: TILE, h: TILE }];
-		const full = clips.some((c) => {
-			const p = intersect({ x: tile.x, y: tile.y, w: TILE, h: TILE }, c);
-			if (!p) return false;
-			const a = intersect(
-				{ x: p.x + left, y: p.y + top, w: p.w, h: p.h },
-				area ?? visible,
+			: [{ x: tile.x, y: tile.y, w: TILE, h: TILE }];
+		const drawn: Rect[] = [];
+		for (const c of clips) {
+			const p = intersect(
+				{ x: c.x + left, y: c.y + top, w: c.w, h: c.h },
+				visible,
 			);
-			return !!a && sameRect(a, visible);
-		});
-		const key = `${abs.x},${abs.y}`;
-		const e: Pending = { tile, left, top, area, dead: false, state: "waiting" };
-		if (full) {
-			for (const old of this.byKey.get(key) ?? []) {
-				if (!old.dead) this.coalesced++;
-				old.dead = true;
-			}
-			this.byKey.set(key, [e]);
-		} else {
-			const list = this.byKey.get(key);
-			if (list) list.push(e);
-			else this.byKey.set(key, [e]);
+			if (p) drawn.push(p);
 		}
+		if (drawn.length === 0) return; // 描く部分が無い
+		const bounds = drawn.reduce((u, r) => {
+			const x = Math.min(u.x, r.x);
+			const y = Math.min(u.y, r.y);
+			return {
+				x,
+				y,
+				w: Math.max(u.x + u.w, r.x + r.w) - x,
+				h: Math.max(u.y + u.h, r.y + r.h) - y,
+			};
+		});
+		// 1 つの矩形で描く範囲(ひとかたまり)。同じ位置の古いタイルは、描く範囲がこれにすっぽり入るときだけ要らない
+		// (以前は「自分の見える範囲を全部描くか」だけで判定していて、見える範囲が狭い新しいタイルが古いタイルを捨て、
+		// その部分にさらに前の絵が残った。Windows は更新の範囲をタイルより細かく切って送る)
+		const cover = drawn.find((r) => sameRect(r, bounds));
+		const key = `${abs.x},${abs.y}`;
+		const e: Pending = {
+			tile,
+			left,
+			top,
+			area,
+			dead: false,
+			state: "waiting",
+			bounds,
+		};
+		const list = (this.byKey.get(key) ?? []).filter((old) => {
+			if (!cover || !contains(cover, old.bounds)) return true;
+			if (!old.dead) this.coalesced++;
+			old.dead = true;
+			return false;
+		});
+		list.push(e);
+		this.byKey.set(key, list);
 		this.entries.push(e);
 		if (this.entries.length >= MAX_PENDING) this.flush();
 	}
