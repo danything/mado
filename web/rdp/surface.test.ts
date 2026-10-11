@@ -2,7 +2,9 @@
 
 import { describe, expect, test } from "bun:test";
 import { concat, Writer } from "./bytes";
+import { decodeTile } from "./rfx";
 import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
+import type { TilePool } from "./rfxpool";
 import {
 	handleSurfaceCommands,
 	parseRfxTiles,
@@ -428,5 +430,130 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 		]);
 		expect(tiles[0]?.data[0].length).toBe(REAL_TILE.y.length);
 		expect(tiles[0]?.rects).toEqual([{ x: 0, y: 0, w: 128, h: 64 }]);
+	});
+});
+
+describe("SurfaceRenderer(非同期のプール)", () => {
+	type Job = {
+		args: Parameters<TilePool["decode"]>;
+		resolve(v: Uint8ClampedArray): void;
+		reject(e: Error): void;
+	};
+
+	/** 完了の時機と順序を、試験が決めるプール */
+	class ManualPool implements TilePool {
+		readonly async = true;
+		jobs: Job[] = [];
+		decode(
+			...args: Parameters<TilePool["decode"]>
+		): Promise<Uint8ClampedArray> {
+			return new Promise((resolve, reject) =>
+				this.jobs.push({ args, resolve, reject }),
+			);
+		}
+		finish(i: number): void {
+			const j = this.jobs[i] as Job;
+			j.resolve(decodeTile(...j.args));
+		}
+		fail(i: number): void {
+			(this.jobs[i] as Job).reject(new Error("worker"));
+		}
+		terminate(): void {}
+	}
+
+	const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+	const full = [{ x: 0, y: 0, w: 64, h: 64 }];
+	const cmd = (x: number, y: number) =>
+		setBits(
+			0x0006,
+			[x, y, x + 64, y + 64],
+			RFX_ID,
+			64,
+			64,
+			rfxStream(full, [tile(0, 0)]),
+		);
+
+	function setup() {
+		const log: string[] = [];
+		const pool = new ManualPool();
+		const r = new SurfaceRenderer({
+			draw: (x, y, w, h) => log.push(`draw ${x},${y} ${w}x${h}`),
+			ack: (id) => log.push(`ack ${id}`),
+			schedule: () => {},
+			pool,
+		});
+		const feed = (...parts: Uint8Array[]) =>
+			r.handle(concat(...parts), RFX_ID, { width: 1280, height: 720 });
+		return { r, pool, log, feed };
+	}
+
+	test("復号が逆順に終わっても、描くのと Frame Acknowledge は吐き出した順", async () => {
+		const { r, pool, log, feed } = setup();
+		feed(frameMarker(0, 1), cmd(0, 0), frameMarker(1, 1));
+		r.flush();
+		feed(frameMarker(0, 2), cmd(64, 0), frameMarker(1, 2));
+		r.flush();
+		expect(pool.jobs.length).toBe(2);
+		pool.finish(1); // 2 つ目が先に終わる
+		await tick();
+		expect(log).toEqual([]);
+		pool.finish(0);
+		await tick();
+		expect(log).toEqual([
+			"draw 0,0 64x64",
+			"ack 1",
+			"draw 64,0 64x64",
+			"ack 2",
+		]);
+		expect(r.inFlight).toBe(0);
+	});
+
+	test("復号中のタイルより新しい同じ位置のタイルが来たら、古い結果は捨てる", async () => {
+		const { r, pool, log, feed } = setup();
+		feed(frameMarker(0, 1), cmd(0, 0), frameMarker(1, 1));
+		r.flush();
+		feed(frameMarker(0, 2), cmd(0, 0), frameMarker(1, 2));
+		r.flush();
+		pool.finish(0);
+		pool.finish(1);
+		await tick();
+		expect(log).toEqual(["ack 1", "draw 0,0 64x64", "ack 2"]);
+		expect(r.coalesced).toBe(1);
+	});
+
+	test("生のビットマップは、復号中のタイルを描き終えてから描く", async () => {
+		const { pool, log, feed } = setup();
+		feed(cmd(0, 0));
+		const raw = setBits(
+			0x0001,
+			[100, 100, 101, 100],
+			0,
+			2,
+			1,
+			new Uint8Array(8),
+		);
+		feed(raw);
+		// タイルはまだ復号中なので、生のビットマップも描かれない
+		expect(log).toEqual([]);
+		pool.finish(0);
+		await tick();
+		expect(log).toEqual(["draw 0,0 64x64", "draw 100,100 2x1"]);
+	});
+
+	test("復号に失敗したタイルは捨てて、ほかを描き、応答も返す", async () => {
+		const { r, pool, log, feed } = setup();
+		feed(frameMarker(0, 1), cmd(0, 0), cmd(64, 0), frameMarker(1, 1));
+		r.flush();
+		pool.fail(0);
+		pool.finish(1);
+		await tick();
+		expect(log).toEqual(["draw 64,0 64x64", "ack 1"]);
+		expect(r.skipped).toBe(1);
+	});
+
+	test("ordered は、復号中のものが無ければすぐ流す", () => {
+		const { r, log } = setup();
+		r.ordered(() => log.push("now"));
+		expect(log).toEqual(["now"]);
 	});
 });

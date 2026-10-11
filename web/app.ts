@@ -6,6 +6,7 @@ import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
 import { bindInput, Display, watchSize } from "./rdp/display";
 import * as input from "./rdp/input";
+import { createPool } from "./rdp/rfxpool";
 
 type SessionInfo = {
 	name: string;
@@ -111,7 +112,7 @@ form.addEventListener("submit", async (e) => {
 			clearTimeout(timer);
 			connecting = undefined;
 		});
-		const client = new RdpClient(rdp, display);
+		const client = new RdpClient(rdp, display, { pool: createPool() });
 		const channels = attachChannels(client, writeClipboard);
 		current = { client, channels };
 		stops.push(bindInput(display.canvas, client, display));

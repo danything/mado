@@ -6,6 +6,7 @@
 
 import { Reader } from "./bytes";
 import { decodeTile, parseQuant, type Rect, TILE } from "./rfx";
+import { SyncPool, type TilePool } from "./rfxpool";
 
 const CMD_SET_SURFACE_BITS = 0x0001;
 const CMD_FRAME_MARKER = 0x0004;
@@ -336,6 +337,16 @@ type Pending = {
 	area: Rect | null;
 	/** 後のタイルに完全に置き換えられた */
 	dead: boolean;
+	/** Worker での復号の状態(非同期のプールのとき) */
+	state: "waiting" | "done" | "failed";
+	rgba?: Uint8ClampedArray;
+};
+
+/** プールに回した 1 回ぶんの吐き出し。順番に描き、フレームの応答を返し、あとに予約された処理を流す */
+type Batch = {
+	jobs: Pending[];
+	ended: number[];
+	after: (() => void)[];
 };
 
 /** 溜めてよいタイルの数(これを超えたら、すぐ吐き出す) */
@@ -347,49 +358,57 @@ export type SurfaceRendererOptions = {
 	ack?(frameId: number): void;
 	/** 吐き出しの予約。既定は setTimeout(0)(受信ループが、バッファにある PDU を読み終えてから走る) */
 	schedule?(fn: () => void): void;
+	/** タイルの復号の置き場。既定はその場で復号する(SyncPool)。非同期のプールなら、並列に復号して、揃った順に描く */
+	pool?: TilePool;
 };
 
 /**
  * Surface Commands を、RemoteFX の復号を後回しにして処理する。
- * 同じ位置のタイルは最新だけを復号する。順序が意味を持つ更新(生のビットマップ・旧ビットマップ・画面の大きさの変更)の前には flush() を呼ぶこと
+ * 同じ位置のタイルは最新だけを復号する。復号がプール(Worker)で非同期でも、描く順序と Frame Acknowledge の順序は保つ。
+ * 順序が意味を持つ更新(生のビットマップ・旧ビットマップ・画面の大きさの変更)は ordered() で包むこと
  */
 export class SurfaceRenderer {
 	private entries: Pending[] = [];
-	/** タイルの位置(絶対座標)→ まだ生きているタイル */
+	/** タイルの位置(絶対座標)→ まだ描いていないタイル(復号中を含む) */
 	private byKey = new Map<string, Pending[]>();
 	private ended: number[] = [];
 	private scheduled = false;
 	private draw: SurfaceDraw;
 	private ack?: (frameId: number) => void;
 	private schedule: (fn: () => void) => void;
+	private pool: TilePool;
+	/** プールに回して、まだ描き終えていない吐き出し(古い順) */
+	private batches: Batch[] = [];
 	/** 復号できずに捨てたタイル(診断用) */
 	skipped = 0;
-	/** 後のタイルに置き換えられて、復号しなかったタイル(診断用) */
+	/** 後のタイルに置き換えられて、復号しなかった(結果を捨てた)タイル(診断用) */
 	coalesced = 0;
 
 	constructor(o: SurfaceRendererOptions) {
 		this.draw = o.draw;
 		this.ack = o.ack;
 		this.schedule = o.schedule ?? ((fn) => void setTimeout(fn, 0));
+		this.pool = o.pool ?? new SyncPool();
 	}
 
 	get pending(): number {
-		return this.entries.length - this.dead();
+		let n = 0;
+		for (const e of this.entries) if (!e.dead) n++;
+		return n;
 	}
 
-	private dead(): number {
+	/** 復号中(プールに回して、まだ描いていない)のタイルの数 */
+	get inFlight(): number {
 		let n = 0;
-		for (const e of this.entries) if (e.dead) n++;
+		for (const b of this.batches) for (const j of b.jobs) if (!j.dead) n++;
 		return n;
 	}
 
 	handle(data: Uint8Array, rfxCodecId: number, screen: ScreenSize): void {
 		handleSurfaceCommands(data, rfxCodecId, screen, {
-			// 生のビットマップは順序が意味を持つので、保留を先に吐き出す
-			draw: (x, y, w, h, rgba) => {
-				this.flush();
-				this.draw(x, y, w, h, rgba);
-			},
+			// 生のビットマップは順序が意味を持つので、タイルが先に描き終わってから描く
+			draw: (x, y, w, h, rgba) =>
+				this.ordered(() => this.draw(x, y, w, h, rgba)),
 			frame: (action, id) => {
 				if (action === FRAME_END) {
 					this.ended.push(id);
@@ -413,7 +432,7 @@ export class SurfaceRenderer {
 		const abs: Rect = { x: tile.x + left, y: tile.y + top, w: TILE, h: TILE };
 		const visible = area && intersect(abs, area);
 		if (!visible) return; // 画面の外
-		// 描く部分が見えるタイル全体なら、同じ位置の古いタイルは要らない
+		// 描く部分が見えるタイル全体なら、同じ位置の古いタイルは要らない(復号中のものも、結果を捨てる)
 		const clips = tile.rects.length
 			? tile.rects
 			: [{ x: 0, y: 0, w: TILE, h: TILE }];
@@ -427,11 +446,11 @@ export class SurfaceRenderer {
 			return !!a && sameRect(a, visible);
 		});
 		const key = `${abs.x},${abs.y}`;
-		const e: Pending = { tile, left, top, area, dead: false };
+		const e: Pending = { tile, left, top, area, dead: false, state: "waiting" };
 		if (full) {
 			for (const old of this.byKey.get(key) ?? []) {
+				if (!old.dead) this.coalesced++;
 				old.dead = true;
-				this.coalesced++;
 			}
 			this.byKey.set(key, [e]);
 		} else {
@@ -452,28 +471,95 @@ export class SurfaceRenderer {
 		});
 	}
 
-	/** 溜めたタイルを復号して描き、終わったフレームの応答を返す */
+	/**
+	 * 溜めたタイルを復号に回す。同期のプールならその場で復号して描き、終わったフレームの応答を返す。
+	 * 非同期のプールなら、描くのは揃ってから(順序どおり)
+	 */
 	flush(): void {
-		const entries = this.entries;
+		const entries = this.entries.filter((e) => !e.dead);
 		this.entries = [];
-		this.byKey.clear();
-		for (const e of entries) {
-			if (e.dead) continue;
-			try {
-				drawTile(
-					decodeRfxTile(e.tile),
-					e.tile,
-					e.left,
-					e.top,
-					e.area,
-					this.draw,
-				);
-			} catch {
-				this.skipped++; // 壊れたタイルは捨てて、ほかを描く
-			}
-		}
 		const ended = this.ended;
 		this.ended = [];
-		for (const id of ended) this.ack?.(id);
+		if (!this.pool.async && this.batches.length === 0) {
+			for (const e of entries) {
+				this.forget(e);
+				try {
+					this.drawJob(e, decodeRfxTile(e.tile));
+				} catch {
+					this.skipped++; // 壊れたタイルは捨てて、ほかを描く
+				}
+			}
+			for (const id of ended) this.ack?.(id);
+			this.byKey.clear();
+			return;
+		}
+		if (entries.length === 0 && ended.length === 0) return;
+		const batch: Batch = { jobs: entries, ended, after: [] };
+		this.batches.push(batch);
+		for (const e of entries) {
+			this.pool.decode(e.tile.mode, e.tile.data, e.tile.quant).then(
+				(rgba) => {
+					e.rgba = rgba;
+					e.state = "done";
+					this.drain();
+				},
+				() => {
+					e.state = "failed";
+					this.drain();
+				},
+			);
+		}
+		this.drain();
+	}
+
+	/** 順序が意味を持つ処理。溜めたタイルと復号中のタイルをすべて描き終えてから fn を流す */
+	ordered(fn: () => void): void {
+		this.flush();
+		const last = this.batches[this.batches.length - 1];
+		if (last) last.after.push(fn);
+		else fn();
+	}
+
+	/** 先頭の吐き出しから、復号が全部終わったものを順に描く */
+	private drain(): void {
+		for (;;) {
+			const b = this.batches[0];
+			if (!b || b.jobs.some((j) => j.state === "waiting")) return;
+			this.batches.shift();
+			for (const e of b.jobs) {
+				this.forget(e);
+				if (e.dead) continue; // 後のタイルに置き換えられた
+				if (e.state === "done" && e.rgba) {
+					try {
+						this.drawJob(e, e.rgba);
+					} catch {
+						this.skipped++;
+					}
+				} else this.skipped++;
+				e.rgba = undefined;
+			}
+			for (const id of b.ended) this.ack?.(id);
+			for (const fn of b.after) fn();
+			if (this.batches.length === 0) this.byKey.clear();
+		}
+	}
+
+	private drawJob(e: Pending, rgba: Uint8ClampedArray): void {
+		drawTile(rgba, e.tile, e.left, e.top, e.area, this.draw);
+	}
+
+	/** 描き終えた(捨てた)タイルを、位置の索引から外す */
+	private forget(e: Pending): void {
+		const key = `${e.tile.x + e.left},${e.tile.y + e.top}`;
+		const list = this.byKey.get(key);
+		if (!list) return;
+		const i = list.indexOf(e);
+		if (i >= 0) list.splice(i, 1);
+		if (list.length === 0) this.byKey.delete(key);
+	}
+
+	/** Worker を止める(切断のとき) */
+	dispose(): void {
+		this.pool.terminate();
 	}
 }

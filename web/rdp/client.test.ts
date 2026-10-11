@@ -8,7 +8,9 @@ import { UPDATE } from "./fastpath";
 import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
+import { decodeTile } from "./rfx";
 import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
+import type { TilePool } from "./rfxpool";
 import { StreamClosed, type Transport } from "./stream";
 import * as x224 from "./x224";
 
@@ -387,5 +389,74 @@ describe("RemoteFX の間引きと Frame Acknowledge", () => {
 		expect(stream.written.map(ackId).filter((x) => x !== undefined)).toEqual([
 			5,
 		]);
+	});
+});
+
+describe("非同期のプールでの順序", () => {
+	test("旧ビットマップは、復号中のタイルが描き終わってから描く", async () => {
+		const done: (() => void)[] = [];
+		const pool = {
+			async: true,
+			decode: (...args: Parameters<TilePool["decode"]>) =>
+				new Promise<Uint8ClampedArray>((resolve) =>
+					done.push(() => resolve(decodeTile(...args))),
+				),
+			terminate() {},
+		} satisfies TilePool;
+		const full = [{ x: 0, y: 0, w: 64, h: 64 }];
+		const surf = (data: Uint8Array) => {
+			const u = new Writer().u8(4).u16(data.length).bytes(data).done();
+			const len = u.length + 3;
+			return concat(Uint8Array.of(0, 0x80 | (len >> 8), len & 0xff), u);
+		};
+		const cmds = concat(
+			new Writer(8).u16(4).u16(0).u32(7).done(),
+			new Writer(32 + 0)
+				.u16(0x0006)
+				.u16(0)
+				.u16(0)
+				.u16(64)
+				.u16(64)
+				.u8(32)
+				.u8(0)
+				.u8(0)
+				.u8(3)
+				.u16(64)
+				.u16(64)
+				.u32(
+					rfxStream(full, [
+						{ x: 0, y: 0, y_: REAL_TILE.y, cb: REAL_TILE.cb, cr: REAL_TILE.cr },
+					]).length,
+				)
+				.bytes(
+					rfxStream(full, [
+						{ x: 0, y: 0, y_: REAL_TILE.y, cb: REAL_TILE.cb, cr: REAL_TILE.cr },
+					]),
+				)
+				.done(),
+			new Writer(8).u16(4).u16(1).u32(7).done(),
+		);
+		const events: string[] = [];
+		const screen: Screen = {
+			resize: () => events.push("resize"),
+			draw: (x, y, w, h) => events.push(`draw ${x},${y} ${w}x${h}`),
+			setCursor() {},
+		};
+		const stream = scripted([surf(cmds)]);
+		const client = new RdpClient(fakeSession(stream), screen, { pool });
+		const ended = client.run();
+		const settle = () => new Promise((r) => setTimeout(r, 20));
+		await settle();
+		// 通信が閉じて run は終わっても、タイルはまだ復号中なので、何も描いていない
+		expect(events.filter((e) => e.startsWith("draw"))).toEqual([]);
+		expect(stream.written.length).toBe(1); // Input の同期だけ。Frame Acknowledge はまだ
+		for (const f of done) f();
+		await ended;
+		await settle();
+		expect(events.filter((e) => e.startsWith("draw"))).toEqual([
+			"draw 0,0 64x48",
+		]);
+		// 描いたあとに、Frame Acknowledge を返した
+		expect(stream.written.length).toBe(2);
 	});
 });
