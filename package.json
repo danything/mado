@@ -1,13 +1,10 @@
 {
-	"name": "mado",
-	"version": "0.3.1",
+	"name": "mado-web",
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "bun --hot src/main.ts --config mado.dev.json",
-		"build": "bun build src/main.ts --compile --format=esm --target=bun-windows-x64 --minify --sourcemap --bytecode --outfile dist/mado.exe",
-		"check": "biome check --write && tsc --noEmit",
-		"test": "bun test"
+		"build:web": "bun build web/index.html --outdir dist/web --minify",
+		"check": "biome check --write && tsc --noEmit"
 	},
 	"devDependencies": {
 		"@anyblades/blades": "3.0.0",

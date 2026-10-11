@@ -4,5 +4,8 @@
 		"enabled": true,
 		"clientKind": "git",
 		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": ["web/**", "*.json"]
 	}
 }

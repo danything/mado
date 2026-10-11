@@ -12,10 +12,36 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.401
       - run: bun i --frozen-lockfile
       - run: bunx biome ci
       - run: bunx tsc --noEmit
-      # RDP に当てる試験は 3389 が無いので飛ぶ(tests/gateway.test.ts)
-      - run: bun test
-      # Windows 用の exe が作れること(作ったものは捨てる。配るのは release.yml)
-      - run: bun run build
+      # 画面を先に作る(server が exe に埋め込む)
+      - run: bun run build:web
+      # TUnit はテストプロジェクト自体が実行ファイル
+      - run: dotnet run --project tests/Mado.Tests.csproj
+
+  # Windows 用の exe(Native AOT)と MSI が作れること。作ったものは捨てる(配るのは release.yml)
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.401
+      - run: bun i --frozen-lockfile
+      - run: bun run build:web
+      - run: dotnet publish server/Mado.csproj -c Release -r win-x64 -o publish
+      - run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.Firewall.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+      - shell: pwsh
+        run: |
+          $version = ([xml](Get-Content server/Mado.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext `
+            -d Version=$version -d PublishDir=publish -o dist/mado.msi
+          Get-Item publish/mado.exe, dist/mado.msi | ForEach-Object { "{0} {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }

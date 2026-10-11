@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>mado</AssemblyName>
+    <RootNamespace>Mado</RootNamespace>
+    <Version>0.4.0</Version>
+    <!-- 常駐 1 プロセスで動的コードも無いので Native AOT。exe 1 つで .NET を入れなくても動く -->
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StripSymbols>true</StripSymbols>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Windows のサービスとして動く(UseWindowsService)。Microsoft 自身のパッケージ -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 画面(web/ を bun build したもの)を exe に埋め込む。先に `bun run build:web` で dist/web を作る -->
+    <EmbeddedResource Include="../dist/web/**" LogicalName="web/%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Mado.Tests" />
+  </ItemGroup>
+</Project>
