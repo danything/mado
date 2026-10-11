@@ -9,7 +9,12 @@ import {
 	init,
 } from "@devolutions/iron-remote-desktop-rdp";
 
-type SessionInfo = { name: string; targets: string[]; ws: string };
+type SessionInfo = {
+	name: string;
+	version: string;
+	targets: string[];
+	ws: string;
+};
 
 const $ = <T extends HTMLElement>(sel: string) =>
 	document.querySelector(sel) as T;
@@ -36,6 +41,7 @@ async function getJson<T>(url: string): Promise<T> {
 
 const session = await getJson<SessionInfo>("/api/session");
 $<HTMLElement>("#who").textContent = `${session.name} でログイン中`;
+$<HTMLElement>("#version").textContent = `mado ${session.version}`;
 const select = field("target") as HTMLSelectElement;
 for (const name of session.targets) select.add(new Option(name, name));
 // つなぐ先が 1 つなら選ぶ欄は出さない
