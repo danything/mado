@@ -77,6 +77,10 @@ form.addEventListener("submit", async (e) => {
 	try {
 		localStorage.setItem(REMEMBER, JSON.stringify({ target, username }));
 	} catch {}
+	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
+	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
+	if (submit.getAttribute("aria-busy") === "true") return;
+	submit.setAttribute("aria-busy", "true");
 	status.textContent = "つないでいます…";
 	try {
 		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入り、サーバーが決める
@@ -110,6 +114,7 @@ form.addEventListener("submit", async (e) => {
 	} catch (err) {
 		status.textContent = `つなげなかった: ${describe(err)}`;
 	}
+	submit.removeAttribute("aria-busy");
 	toolbar.hidden = true;
 	screen.classList.add("idle");
 	home.hidden = false;

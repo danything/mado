@@ -10,11 +10,15 @@
 	<body>
 		<main id="home" class="container" hidden>
 			<article>
-				<header>
-					<hgroup>
+				<header class="brand">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<rect x="3" y="4" width="18" height="14" rx="2" />
+						<path d="M3 11h18M12 4v14M8 21h8" />
+					</svg>
+					<div>
 						<h1>mado</h1>
 						<p id="who"></p>
-					</hgroup>
+					</div>
 				</header>
 				<form id="login">
 					<label id="target-field">
@@ -33,7 +37,7 @@
 					<small id="status" role="status"></small>
 				</form>
 				<footer>
-					<small><a href="/logout" class="secondary">ログアウト</a></small>
+					<small><a href="/logout">ログアウト</a></small>
 				</footer>
 			</article>
 		</main>
