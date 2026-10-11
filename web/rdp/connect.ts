@@ -25,6 +25,8 @@ export type ConnectOptions = {
 	/** 静的チャネル。ID は同じ順で Session.channels に入る */
 	channels?: mcs.StaticChannel[];
 	onLog?: (line: string) => void;
+	/** 中止(つなぐのに時間がかかりすぎたとき、利用者が取り消したとき) */
+	signal?: AbortSignal;
 	/** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
 	allowTls?: boolean;
 	/** 試験用。LICENSE_REQUEST にダミーの NEW_LICENSE_REQUEST で答える(xrdp は中身を見ない)。本物のライセンス交渉(PLATFORM_CHALLENGE 以降)はしないので、xrdp 以外では先へ進めない */
@@ -52,6 +54,8 @@ export type Session = {
 export async function connect(o: ConnectOptions): Promise<Session> {
 	const log = o.onLog ?? (() => {});
 	const stream = await WsStream.open(o.url);
+	const abort = () => stream.close();
+	o.signal?.addEventListener("abort", abort, { once: true });
 	try {
 		// 1. RDCleanPath: mado が RDP サーバーと TLS まで張る
 		stream.write(
@@ -65,9 +69,14 @@ export async function connect(o: ConnectOptions): Promise<Session> {
 		const cert = resp.certChain[0];
 		if (!cert) throw new Error("RDP サーバーの証明書が届かない");
 		log("RDCleanPath OK");
-		return await establish(stream, o, resp.x224, cert);
+		const session = await establish(stream, o, resp.x224, cert);
+		o.signal?.removeEventListener("abort", abort);
+		return session;
 	} catch (e) {
+		o.signal?.removeEventListener("abort", abort);
 		stream.close();
+		if (o.signal?.aborted)
+			throw new Error("つなぐのに時間がかかりすぎた(または取り消した)");
 		throw e;
 	}
 }

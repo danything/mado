@@ -1,13 +1,11 @@
-// 画面。IronRDP の Web クライアント(WASM)で RDP を話し、mado の /ws(RDCleanPath)を通して PC につなぐ。
+// 画面。自前の RDP クライアント(web/rdp)で RDP を話し、mado の /ws(RDCleanPath)を通して PC につなぐ。
 // Windows のユーザー名とパスワードはブラウザの中の CredSSP が使うだけで、mado のサーバーには届かない。
 
-import "@devolutions/iron-remote-desktop";
-import type { UserInteraction } from "@devolutions/iron-remote-desktop";
-import {
-	Backend,
-	displayControl,
-	init,
-} from "@devolutions/iron-remote-desktop-rdp";
+import { attachChannels, type Channels } from "./rdp/channels";
+import { RdpClient } from "./rdp/client";
+import { connect } from "./rdp/connect";
+import { bindInput, Display, watchSize } from "./rdp/display";
+import * as input from "./rdp/input";
 
 type SessionInfo = {
 	name: string;
@@ -61,24 +59,16 @@ try {
 } catch {}
 home.hidden = false;
 
-await init("INFO");
-const el = document.createElement("iron-remote-desktop") as HTMLElement & {
-	module: unknown;
-};
-el.module = Backend;
-el.setAttribute("scale", "fit");
-el.setAttribute("flexcenter", "true");
-el.setAttribute("verbose", "false");
-const ready = new Promise<UserInteraction>((resolve) =>
-	el.addEventListener(
-		"ready",
-		(e) => resolve((e as CustomEvent).detail.irgUserInteraction),
-		{ once: true },
-	),
-);
-screen.append(el);
-const ui = await ready;
-ui.setEnableClipboard(true);
+const display = new Display(screen);
+
+/** つなぐのに待つ長さ(CredSSP・ライセンス・同期まで) */
+const CONNECT_TIMEOUT_MS = 30_000;
+
+let current: { client: RdpClient; channels: Channels } | undefined;
+/** つないでいる最中の取り消し用 */
+let connecting: AbortController | undefined;
+/** 最後に、ブラウザのクリップボードとリモートの間でやりとりした文字列(往復を防ぐ) */
+let lastClipboard: string | undefined;
 
 form.addEventListener("submit", async (e) => {
 	e.preventDefault();
@@ -93,6 +83,7 @@ form.addEventListener("submit", async (e) => {
 	if (submit.getAttribute("aria-busy") === "true") return;
 	submit.setAttribute("aria-busy", "true");
 	status.textContent = "つないでいます…";
+	const stops: (() => void)[] = [];
 	try {
 		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入り、サーバーが決める
 		const { token } = await getJson<{ token: string }>(
@@ -103,26 +94,43 @@ form.addEventListener("submit", async (e) => {
 		toolbar.hidden = false;
 		$<HTMLElement>("#current").textContent = target;
 		screen.classList.remove("idle");
-		const config = ui
-			.configBuilder()
-			.withUsername(username)
-			.withPassword(field("password").value)
-			// サーバーは見ない(つなぐ先はトークンで決まる)
-			.withDestination(target)
-			.withProxyAddress(session.ws)
-			.withAuthToken(token)
-			.withDesktopSize(desktopSize(size))
-			// 「窓に合わせる」のときだけ、窓の大きさが変わったら RDP の解像度も変える
-			.withExtension(displayControl(size === "auto"))
-			.build();
-		ui.setVisibility(true);
-		const info = await ui.connect(config);
+		const { width, height } = desktopSize(size);
+		const abort = new AbortController();
+		connecting = abort;
+		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
+		const rdp = await connect({
+			url: session.ws,
+			token,
+			destination: target,
+			username,
+			password: field("password").value,
+			width: even(width),
+			height,
+			signal: abort.signal,
+		}).finally(() => {
+			clearTimeout(timer);
+			connecting = undefined;
+		});
+		const client = new RdpClient(rdp, display);
+		const channels = attachChannels(client, writeClipboard);
+		current = { client, channels };
+		stops.push(bindInput(display.canvas, client, display));
+		stops.push(watchClipboard(display.canvas, channels));
+		// 「窓に合わせる」のときだけ、窓の大きさが変わったら RDP の解像度も変える
+		if (size === "auto")
+			stops.push(
+				watchSize(screen, (w, h) => channels.displayControl.resize(even(w), h)),
+			);
+		display.canvas.focus();
 		status.textContent = "";
-		const end = await info.run();
-		status.textContent = `切れた: ${end.reason()}`;
+		const reason = await client.run();
+		status.textContent = `切れた: ${reason}`;
 	} catch (err) {
 		status.textContent = `つなげなかった: ${describe(err)}`;
 	}
+	for (const stop of stops) stop();
+	current = undefined;
+	display.clear();
 	submit.removeAttribute("aria-busy");
 	toolbar.hidden = true;
 	screen.classList.add("idle");
@@ -130,13 +138,57 @@ form.addEventListener("submit", async (e) => {
 	field("password").value = "";
 });
 
+/** キーを押して離す(Ctrl+Alt+Del のような組み合わせ用) */
+function tap(codes: string[]): void {
+	const events: Uint8Array[] = [];
+	for (const c of codes) {
+		const ev = input.keyEvent(c, true);
+		if (ev) events.push(ev);
+	}
+	for (const c of [...codes].reverse()) {
+		const ev = input.keyEvent(c, false);
+		if (ev) events.push(ev);
+	}
+	current?.client.sendInput(events);
+}
+
 toolbar.addEventListener("click", (e) => {
 	const action = (e.target as HTMLElement).closest("button")?.dataset.action;
-	if (action === "ctrl-alt-del") ui.ctrlAltDel();
-	else if (action === "meta") ui.metaKey();
+	if (action === "ctrl-alt-del") tap(["ControlLeft", "AltLeft", "Delete"]);
+	else if (action === "meta") tap(["MetaLeft"]);
 	else if (action === "fullscreen") void screen.requestFullscreen();
-	else if (action === "disconnect") ui.shutdown();
+	else if (action === "disconnect") {
+		current?.client.close();
+		connecting?.abort();
+	}
 });
+
+// ---- クリップボード ----
+
+/** リモートでコピーされた文字列を、ブラウザのクリップボードへ(権限が無ければ黙って諦める) */
+function writeClipboard(text: string): void {
+	lastClipboard = text;
+	void navigator.clipboard?.writeText(text).catch(() => {});
+}
+
+/** 画面にフォーカスが来たとき、ブラウザのクリップボードの文字列をリモートへ知らせる(変わっていたときだけ) */
+function watchClipboard(canvas: HTMLElement, channels: Channels): () => void {
+	const sync = async () => {
+		try {
+			const text = await navigator.clipboard.readText();
+			if (text !== lastClipboard) {
+				lastClipboard = text;
+				channels.clipboard.setLocalText(text);
+			}
+		} catch {}
+	};
+	canvas.addEventListener("focus", sync);
+	void sync();
+	return () => canvas.removeEventListener("focus", sync);
+}
+
+/** 幅は偶数でないと DisplayControl に断られる */
+const even = (n: number) => n - (n % 2);
 
 /**
  * RDP の解像度。「窓に合わせる」なら画面の場所の大きさ、ほかは選んだ大きさ(小さいほど描く量が減って軽い)。
@@ -151,15 +203,6 @@ function desktopSize(size: string): { width: number; height: number } {
 	};
 }
 
-/** IronRDP の例外は backtrace() を持つ */
 function describe(err: unknown): string {
-	if (
-		err &&
-		typeof err === "object" &&
-		"backtrace" in err &&
-		typeof err.backtrace === "function"
-	) {
-		return String(err.backtrace());
-	}
 	return err instanceof Error ? err.message : String(err);
 }

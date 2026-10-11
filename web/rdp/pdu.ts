@@ -395,15 +395,7 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 			new Writer(4).u32(c.maxRequestSize ?? 0x200000).done(),
 		),
 		cap(CAP.LARGE_POINTER, new Writer(2).u16(1).done()),
-		// SURFCMDS_SET_SURFACE_BITS | FRAME_MARKER | STREAM_SURFACE_BITS
-		cap(
-			CAP.SURFACE_COMMANDS,
-			new Writer(8)
-				.u32(0x02 | 0x10 | 0x40)
-				.u32(0)
-				.done(),
-		),
-		cap(CAP.FRAME_ACKNOWLEDGE, new Writer(4).u32(2).done()),
+		// Surface Commands と Frame Acknowledge は、受けて描けるようになるまで宣言しない(宣言するとサーバーは画面をその形で送る)
 	];
 }
 

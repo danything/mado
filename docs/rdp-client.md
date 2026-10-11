@@ -1,5 +1,9 @@
 # 自前の RDP クライアント(H.264)— やることのメモ
 
+> **進み具合**: 層 1〜5(つなぐ・CredSSP・接続手順・Fast-Path の入出力・動的チャネル)と層 7(DisplayControl・クリップボード)は実装済みで、IronRDP は外した。
+> 画面は 16 ビット色の Interleaved RLE(ビットマップ)で受けている。層 6(GFX / H.264)は未着手。
+> Windows に対して(CredSSP を含む)の実機確認は、正しいパスワードでまだしていない。
+
 ブラウザの IronRDP(WASM)を、mado が使っている機能だけの小さい TS 実装に置き換え、画面を H.264(WebCodecs)で映す。
 サーバー側(mado の RDCleanPath の中継)は今のまま使う。
 

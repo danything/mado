@@ -67,6 +67,12 @@ export class Display implements Screen {
 		this.fit();
 	}
 
+	/** 切れたあとの片付け: 画を消して、ポインタを既定に戻す */
+	clear(): void {
+		this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+		this.canvas.style.cursor = "default";
+	}
+
 	draw(
 		x: number,
 		y: number,
