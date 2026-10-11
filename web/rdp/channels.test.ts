@@ -157,7 +157,7 @@ describe("DisplayControl", () => {
 		dvc.onStatic(
 			concat(
 				fromHex("3003"),
-				new Writer(20).u32(5).u32(20).u32(1).u32(1).u32(1).done(),
+				new Writer(20).u32(5).u32(20).u32(1).u32(8192).u32(8192).done(),
 			),
 		);
 		expect(dc.available).toBe(true);
@@ -240,5 +240,40 @@ describe("クリップボード", () => {
 		expect(sent.length).toBe(1);
 		cb.onStatic(msg(4, 0, "0d000000"));
 		expect(hex(sent[1] as Uint8Array)).toBe("0500020000000000");
+	});
+});
+
+describe("レビューの指摘", () => {
+	test("チャネルを開き直したら、新しい Caps まで送らない。面積の上限で縮める", () => {
+		const sent: Uint8Array[] = [];
+		const dvc = new DynamicChannels((d) => sent.push(d));
+		const dc = new DisplayControl();
+		dvc.register(DISPLAYCONTROL, dc);
+		const open = () =>
+			dvc.onStatic(concat(fromHex("1003"), text(`${DISPLAYCONTROL}\0`)));
+		open();
+		// 面積の上限 = 1000 * 1000
+		dvc.onStatic(
+			concat(
+				fromHex("3003"),
+				new Writer(20).u32(5).u32(20).u32(1).u32(1000).u32(1000).done(),
+			),
+		);
+		sent.length = 0;
+		dc.resize(2000, 1000);
+		const body = (sent[0] as Uint8Array).subarray(2);
+		const dv = new DataView(body.buffer, body.byteOffset);
+		expect(dv.getUint32(28, true) * dv.getUint32(32, true)).toBeLessThanOrEqual(
+			1000 * 1000,
+		);
+		dvc.onStatic(fromHex("4003"));
+		expect(dc.available).toBe(false);
+		open();
+		expect(dc.available).toBe(false);
+	});
+
+	test("最後の断片で長さが足りなければ例外", () => {
+		const asm = new ChannelAssembler();
+		expect(() => asm.push(fromHex("0500000003000000aa"))).toThrow("足りない");
 	});
 });

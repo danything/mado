@@ -226,6 +226,8 @@ export class DisplayControl implements DynamicHandler {
 	private pending?: { width: number; height: number };
 	/** サーバーが受け付ける最大のモニター数(Caps から) */
 	maxMonitors = 0;
+	/** サーバーが受け付ける全モニターの面積の上限(A * B 画素)。0 は不明 */
+	maxArea = 0;
 
 	onOpen(channel: DynamicChannel): void {
 		this.channel = channel;
@@ -237,6 +239,7 @@ export class DisplayControl implements DynamicHandler {
 		r.u32(); // length
 		if (type !== DISPCTL.CAPS) return;
 		this.maxMonitors = r.u32();
+		this.maxArea = r.u32() * r.u32();
 		// Caps を受けてから送ってよい。待たせていた大きさがあれば、いま送る
 		const p = this.pending;
 		this.pending = undefined;
@@ -244,7 +247,10 @@ export class DisplayControl implements DynamicHandler {
 	}
 
 	onClose(): void {
+		// 開き直されたら、新しい Caps を受けるまで送らない
 		this.channel = undefined;
+		this.maxMonitors = 0;
+		this.maxArea = 0;
 	}
 
 	/** 開いていなければ、開いたときに送る(最後の 1 つだけ) */
@@ -253,7 +259,15 @@ export class DisplayControl implements DynamicHandler {
 			this.pending = { width, height };
 			return;
 		}
-		this.channel.send(monitorLayout(width, height));
+		// 面積の上限を超えるなら、縦横比を保って縮める
+		let w = width;
+		let h = height;
+		if (this.maxArea > 0 && w * h > this.maxArea) {
+			const k = Math.sqrt(this.maxArea / (w * h));
+			w = Math.floor(w * k);
+			h = Math.floor(h * k);
+		}
+		this.channel.send(monitorLayout(w, h));
 	}
 
 	get available(): boolean {

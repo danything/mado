@@ -59,6 +59,8 @@ export class ChannelAssembler {
 		if (this.have > this.total)
 			throw new Error("仮想チャネル: 断片が長さを超えた");
 		if (!(flags & LAST)) return null;
+		if (this.have !== this.total)
+			throw new Error("仮想チャネル: 最後の断片で長さが足りない");
 		const msg =
 			this.parts.length === 1
 				? (this.parts[0] as Uint8Array)

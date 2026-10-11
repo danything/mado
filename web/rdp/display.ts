@@ -173,8 +173,18 @@ export function bindInput(
 		client.sendInput([ev]);
 		e.preventDefault();
 	};
-	const onDown = (e: MouseEvent) => button(e, true);
-	const onUp = (e: MouseEvent) => button(e, false);
+	// 押したまま canvas の外へ出して離しても、ボタンが押しっぱなしにならないよう、押している間は window で離すのを待つ
+	const held = new Set<number>();
+	const onUp = (e: MouseEvent) => {
+		if (!held.delete(e.button)) return;
+		if (held.size === 0) window.removeEventListener("mouseup", onUp);
+		button(e, false);
+	};
+	const onDown = (e: MouseEvent) => {
+		if (held.size === 0) window.addEventListener("mouseup", onUp);
+		held.add(e.button);
+		button(e, true);
+	};
 	const onWheel = (e: WheelEvent) => {
 		const events: Uint8Array[] = [];
 		// deltaMode 1 は行単位(1 行 = 40px 相当)
@@ -187,6 +197,12 @@ export function bindInput(
 	const onMenu = (e: Event) => e.preventDefault();
 	const onBlur = () => {
 		const ups: Uint8Array[] = [];
+		for (const b of held) {
+			const ev = input.mouseButton(b, false, 0, 0);
+			if (ev) ups.push(ev);
+		}
+		held.clear();
+		window.removeEventListener("mouseup", onUp);
 		for (const code of down) {
 			const ev = input.keyEvent(code, false);
 			if (ev) ups.push(ev);
@@ -199,7 +215,6 @@ export function bindInput(
 	canvas.addEventListener("keyup", onKeyUp);
 	canvas.addEventListener("mousemove", onMove);
 	canvas.addEventListener("mousedown", onDown);
-	canvas.addEventListener("mouseup", onUp);
 	canvas.addEventListener("wheel", onWheel, { passive: false });
 	canvas.addEventListener("contextmenu", onMenu);
 	canvas.addEventListener("blur", onBlur);
@@ -208,7 +223,7 @@ export function bindInput(
 		canvas.removeEventListener("keyup", onKeyUp);
 		canvas.removeEventListener("mousemove", onMove);
 		canvas.removeEventListener("mousedown", onDown);
-		canvas.removeEventListener("mouseup", onUp);
+		window.removeEventListener("mouseup", onUp);
 		canvas.removeEventListener("wheel", onWheel);
 		canvas.removeEventListener("contextmenu", onMenu);
 		canvas.removeEventListener("blur", onBlur);
