@@ -54,4 +54,81 @@ public class UpdaterTests
         await Assert.That(Updater.Compare("0.4.0", "v0.4.0")).IsEqualTo(0);
         await Assert.That(Updater.Compare("v0.4.0", "v1.0.0")).IsLessThan(0);
     }
+
+    // --- 落として確かめて入れる(HttpMessageHandler を差し替え、msiexec の代わりに記録する) ---------------
+
+    sealed class FakeGitHub(string tag, byte[] msi, Func<string> sig) : HttpMessageHandler
+    {
+        public int MsiDownloads;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+        {
+            var u = req.RequestUri!.ToString();
+            HttpContent body;
+            if (u.EndsWith("/releases/latest"))
+                body = new StringContent($$"""{"tag_name":"{{tag}}","assets":[{"name":"mado.msi","browser_download_url":"https://dl.test/msi"},{"name":"mado.msi.sig","browser_download_url":"https://dl.test/sig"}]}""");
+            else if (u.EndsWith("/msi")) { MsiDownloads++; body = new ByteArrayContent(msi); }
+            else if (u.EndsWith("/sig")) body = new StringContent(sig());
+            else return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = body });
+        }
+    }
+
+    static (Updater Updater, FakeGitHub GitHub, List<string> Launched, string Dir) Setup(bool goodSig)
+    {
+        var (pub, sign) = NewKey();
+        var msi = "MSI"u8.ToArray();
+        var sha = Convert.ToHexStringLower(SHA256.HashData(msi));
+        var gh = new FakeGitHub("v9.0.0", msi, () => sign(Updater.Message(goodSig ? "v9.0.0" : "v8.0.0", sha)));
+        var dir = Path.Combine(Directory.CreateTempSubdirectory("mado-update-").FullName, "data");
+        var launched = new List<string>();
+        var u = new Updater("x/y", "v0.5.0", dir, new HttpClient(gh), _ => { }, (msiPath, _) => launched.Add(msiPath), pub);
+        return (u, gh, launched, dir);
+    }
+
+    [Test]
+    public async Task 新しい版を落として確かめて入れる()
+    {
+        var (u, _, launched, _) = Setup(goodSig: true);
+        await Assert.That((await u.Check()).Available).IsTrue();
+        await Assert.That(await u.Apply(() => true)).IsTrue();
+        await Assert.That(launched.Count).IsEqualTo(1);
+        await Assert.That(File.ReadAllText(launched[0])).IsEqualTo("MSI");
+    }
+
+    [Test]
+    public async Task 署名が合わなければ入れずに消し_その版は取り直さない()
+    {
+        var (u, _, launched, dir) = Setup(goodSig: false);
+        await u.Check();
+        await Assert.That(await u.Apply(() => true)).IsFalse();
+        await Assert.That(launched.Count).IsEqualTo(0);
+        await Assert.That(Directory.GetFiles(Path.Combine(dir, "updates")).Length).IsEqualTo(0);
+        await Assert.That((await u.Check()).Available).IsFalse();
+    }
+
+    [Test]
+    public async Task つないでいる人がいれば入れず_次は落とし直さない()
+    {
+        var (u, gh, launched, _) = Setup(goodSig: true);
+        await u.Check();
+        var calls = 0;
+        // 1 回目: 落としたあと(2 回目の問い合わせで)つないでいる人がいる
+        await Assert.That(await u.Apply(() => ++calls < 2)).IsFalse();
+        await Assert.That(launched.Count).IsEqualTo(0);
+        // 2 回目: 誰もいない。前に落として確かめたものを使う
+        await Assert.That(await u.Apply(() => true)).IsTrue();
+        await Assert.That(gh.MsiDownloads).IsEqualTo(1);
+        await Assert.That(launched.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task 今より古いか同じ版は入れない()
+    {
+        var (pub, sign) = NewKey();
+        var gh = new FakeGitHub("v0.5.0", "MSI"u8.ToArray(), () => "");
+        var u = new Updater("x/y", "v0.5.0", Directory.CreateTempSubdirectory("mado-update-").FullName, new HttpClient(gh), _ => { }, (_, _) => throw new InvalidOperationException(), pub);
+        await Assert.That((await u.Check()).Available).IsFalse();
+        await Assert.That(await u.Apply(() => true)).IsFalse();
+    }
 }

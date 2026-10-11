@@ -29,13 +29,21 @@ internal sealed record UpdateState(
 /// 付けたもので、確かめる公開鍵は下の PublicKey。タグも署名の中なので、古い版を「最新」と偽って戻させることもできない
 /// (今より新しい版しか受けない。MSI も古い版では上書きしない)。入れるのは誰もつないでいないときだけ。
 /// </summary>
-internal sealed class Updater(string repo, string version, string dataDir, HttpClient http, Action<string> log)
+internal sealed class Updater(
+    string repo, string version, string dataDir, HttpClient http, Action<string> log,
+    Action<string, string>? launch = null, string publicKey = Updater.PublicKey)
 {
     /// <summary>release.yml の秘密鍵と対になる公開鍵(SubjectPublicKeyInfo の base64)</summary>
     internal const string PublicKey =
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExPX0Nm0/E8OPtFh/7BxycvGRy2DSjjnAJBTGRgFKpSngFDwF7QRI8d6cWHRD/WttcrUHR0Ci7Kn3uidHi0SMyQ==";
 
     public UpdateState State { get; private set; } = new(null, false, null, null);
+    /// <summary>msiexec を起動する(MSI, ログ)。試験のときだけ差し替える</summary>
+    readonly Action<string, string> launch = launch ?? ((msi, msiLog) => Process.Start(new ProcessStartInfo("msiexec.exe")
+    {
+        ArgumentList = { "/i", msi, "/qn", "/norestart", "/l*v", msiLog },
+        UseShellExecute = false,
+    }));
     Release? release;
     /// <summary>署名が合わなかった版。次の版が出るまで取り直さない</summary>
     string? failed;
@@ -103,35 +111,37 @@ internal sealed class Updater(string repo, string version, string dataDir, HttpC
             var dir = Path.Combine(dataDir, "updates");
             Directory.CreateDirectory(dir);
             var msi = Path.Combine(dir, $"mado-{r.TagName}.msi");
-            var sig = await http.GetStringAsync(Url("mado.msi.sig"));
-            using (var res = await http.GetAsync(Url("mado.msi"), HttpCompletionOption.ResponseHeadersRead))
+            var sigFile = msi + ".sig";
+            // 前に落として確かめたものがあれば使う(つないでいる人がいて入れられなかったとき、落とし直さない)。
+            // 置いてあるものも毎回確かめ直す
+            if (!(File.Exists(msi) && File.Exists(sigFile) && await Verified(r.TagName, msi, await File.ReadAllTextAsync(sigFile))))
             {
-                res.EnsureSuccessStatusCode();
-                await using var file = File.Create(msi);
-                await res.Content.CopyToAsync(file);
-            }
-            string sha;
-            await using (var file = File.OpenRead(msi)) sha = Convert.ToHexStringLower(await SHA256.HashDataAsync(file));
-            if (!Verify(Message(r.TagName, sha), sig))
-            {
-                failed = r.TagName;
-                State = State with { Available = false, Error = $"{r.TagName} の署名が合わない" };
-                File.Delete(msi);
-                log($"update: {r.TagName} の署名が合わないので入れない");
-                return false;
-            }
-            if (!isIdle())
+                var sig = await http.GetStringAsync(Url("mado.msi.sig"));
+                using (var res = await http.GetAsync(Url("mado.msi"), HttpCompletionOption.ResponseHeadersRead))
+                {
+                    res.EnsureSuccessStatusCode();
+                    await using var file = File.Create(msi);
+                    await res.Content.CopyToAsync(file);
+                }
+                if (!await Verified(r.TagName, msi, sig))
+                {
+                    failed = r.TagName;
+                    State = State with { Available = false, Error = $"{r.TagName} の署名が合わない" };
+                    File.Delete(msi);
+                    File.Delete(sigFile);
+                    log($"update: {r.TagName} の署名が合わないので入れない");
+                    return false;
+                }
+                await File.WriteAllTextAsync(sigFile, sig);
+            }            if (!isIdle())
             {
                 log($"update: {r.TagName} を落としたが、つないでいる人がいるので後で入れる");
                 return false;
             }
             var msiLog = Path.Combine(Path.GetDirectoryName(dataDir)!, "logs", $"msi-{r.TagName}.log");
             log($"update: {version} → {r.TagName} を入れる(msiexec。ログは {msiLog})");
-            Process.Start(new ProcessStartInfo("msiexec.exe")
-            {
-                ArgumentList = { "/i", msi, "/qn", "/norestart", "/l*v", msiLog },
-                UseShellExecute = false,
-            });
+            Directory.CreateDirectory(Path.GetDirectoryName(msiLog)!);
+            launch(msi, msiLog);
             return true;
         }
         catch (Exception e)
@@ -146,6 +156,13 @@ internal sealed class Updater(string repo, string version, string dataDir, HttpC
         }
     }
 
+    async Task<bool> Verified(string tag, string msi, string sig)
+    {
+        string sha;
+        await using (var file = File.OpenRead(msi)) sha = Convert.ToHexStringLower(await SHA256.HashDataAsync(file));
+        return Verify(Message(tag, sha), sig, publicKey);
+    }
+
     /// <summary>入れ終わった古い MSI を消す(今の版より古いもの)</summary>
     public void Cleanup()
     {
@@ -154,8 +171,13 @@ internal sealed class Updater(string repo, string version, string dataDir, HttpC
         foreach (var f in Directory.EnumerateFiles(dir, "mado-*.msi"))
         {
             var tag = Path.GetFileNameWithoutExtension(f)["mado-".Length..];
-            if (Compare(tag, version) <= 0)
-                try { File.Delete(f); } catch (IOException) { }
+            if (Compare(tag, version) > 0) continue;
+            try
+            {
+                File.Delete(f);
+                File.Delete(f + ".sig");
+            }
+            catch (IOException) { }
         }
     }
 

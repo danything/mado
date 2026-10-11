@@ -1,6 +1,6 @@
 // mado-tray: タスクトレイに mado(サービス)の状態を出す。サインイン時に起動する(MSI が HKLM の Run に登録する)。
 //
-// 状態は mado の状態の口(http://127.0.0.1:8788/status)を 5 秒ごとに見る。動いていればアプリのアイコン、
+// 状態は mado の状態の口(http://127.0.0.1:8788/status。`--port <番号>` で変える)を 5 秒ごとに見る。動いていればアプリのアイコン、
 // 聞けなければ注意のアイコンにして、ツールチップに版・つないでいる数・証明書の残り日数を出す。
 // 右クリックのメニュー: 画面を開く / 今すぐ更新を確かめる / サービスを再起動(UAC)/ ログを開く(UAC)/ 終了。
 //
@@ -16,7 +16,6 @@ namespace Mado.Tray;
 
 internal static unsafe partial class Program
 {
-    const string Base = "http://127.0.0.1:8788";
     const uint WmTrayIcon = 0x8000 + 1; // WM_APP + 1
     const int MenuOpen = 1, MenuUpdate = 2, MenuRestart = 3, MenuLog = 4, MenuExit = 9;
 
@@ -31,8 +30,11 @@ internal static unsafe partial class Program
     internal sealed record StatusView(string Version, string Origin, int Sessions, int? CertDaysLeft, string? Latest, bool Available);
 
     [STAThread]
-    static int Main()
+    static int Main(string[] args)
     {
+        // mado.json の status.port を変えたときは、Run の登録に --port <番号> を足す
+        var i = Array.IndexOf(args, "--port");
+        if (i >= 0 && i + 1 < args.Length && int.TryParse(args[i + 1], out var port)) Net.Base = $"http://127.0.0.1:{port}";
         // 二重に起動しない(サインインし直したときなど)
         CreateMutexW(0, 0, "Local\\mado-tray");
         if (Marshal.GetLastPInvokeError() == 183 /* ERROR_ALREADY_EXISTS */) return 0;
@@ -361,7 +363,8 @@ internal static unsafe partial class Program
 /// <summary>状態の口との話。await は unsafe の文脈では書けないので、Program とは分ける</summary>
 internal static class Net
 {
-    const string Base = "http://127.0.0.1:8788";
+    /// <summary>状態の口。既定は 8788(mado.json の status.port の既定と同じ)。--port で変える</summary>
+    public static string Base = "http://127.0.0.1:8788";
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(3) };
 
     public static async Task<Program.StatusView?> Status()
