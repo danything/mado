@@ -269,7 +269,17 @@ export class GfxClient implements DynamicHandler {
 		uncompressed: 0,
 		rfx: 0,
 		skipped: 0,
+		solidFill: 0,
+		surfaceToSurface: 0,
+		toCache: 0,
+		fromCache: 0,
+		cacheMiss: 0,
 	};
+
+	/** ClearCodec で描けなかった部分(NSCodec など)の数(診断用) */
+	get clearUnsupported(): number {
+		return this.clear.unsupported;
+	}
 	/** PDU 1 つの失敗(そのフレームの一部を飛ばして続ける) */
 	onError?: (e: unknown) => void;
 	/** 回復できない失敗(ZGFX の履歴が壊れた)。以後のデータは捨てる。つなぎ直すしかない */
@@ -394,6 +404,7 @@ export class GfxClient implements DynamicHandler {
 				const n = r.u16();
 				const rects: Rect[] = [];
 				for (let i = 0; i < n; i++) rects.push(readRect(r));
+				this.stats.solidFill++;
 				this.ops.fill(id, rects, [red, g, b, 255]);
 				break;
 			}
@@ -402,6 +413,7 @@ export class GfxClient implements DynamicHandler {
 				const dst = r.u16();
 				const rect = readRect(r);
 				const n = r.u16();
+				this.stats.surfaceToSurface++;
 				for (let i = 0; i < n; i++)
 					this.ops.copyRect(src, rect, dst, r.u16(), r.u16());
 				break;
@@ -426,6 +438,7 @@ export class GfxClient implements DynamicHandler {
 				}
 				this.cacheSlots.set(slot, bytes);
 				this.cacheBytes += bytes;
+				this.stats.toCache++;
 				this.ops.toCache(slot, id, rect);
 				break;
 			}
@@ -435,9 +448,10 @@ export class GfxClient implements DynamicHandler {
 				const n = r.u16();
 				if (!this.cacheSlots.has(slot)) {
 					// 上限で捨てたもの(またはサーバーの誤り)。その描画だけ飛ばす
-					this.stats.skipped++;
+					this.stats.cacheMiss++;
 					break;
 				}
+				this.stats.fromCache++;
 				for (let i = 0; i < n; i++)
 					this.ops.fromCache(slot, id, r.u16(), r.u16());
 				break;

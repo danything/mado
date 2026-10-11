@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>mado-tray</AssemblyName>
     <RootNamespace>Mado.Tray</RootNamespace>
-    <Version>0.7.1</Version>
+    <Version>0.7.2</Version>
     <!-- Win32 を直接呼ぶ(WinForms は Native AOT に対応していない) -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
