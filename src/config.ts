@@ -23,6 +23,10 @@ export type Config = {
 	};
 	/** 1 つ以上。並びのまま画面に出す */
 	targets: Target[];
+	/** 127.0.0.1 の状態の口(status.ts)。0 なら開けない */
+	statusPort: number;
+	/** 自分で新しい版に入れ替える(update.ts)。checkHours ごとに GitHub のリリースを見る */
+	update: { enabled: boolean; checkHours: number; repo: string };
 };
 
 type Raw = {
@@ -41,6 +45,8 @@ type Raw = {
 	};
 	/** 省くとこのマシンの RDP(127.0.0.1:3389)だけ */
 	targets?: { name?: string; host?: string; port?: number }[];
+	status?: { port?: number };
+	update?: { enabled?: boolean; check_hours?: number; repo?: string };
 };
 
 export async function loadConfig(
@@ -99,6 +105,12 @@ export async function loadConfig(
 			requiredRole: o.required_role ?? "",
 		},
 		targets: readTargets(raw, file),
+		statusPort: raw.status?.port ?? 8788,
+		update: {
+			enabled: raw.update?.enabled ?? true,
+			checkHours: raw.update?.check_hours ?? 6,
+			repo: raw.update?.repo ?? "danything/mado",
+		},
 	};
 	if (config.tls === "acme" && !config.acme.email)
 		throw new Error(`${file}: acme.email が要る`);

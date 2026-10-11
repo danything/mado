@@ -9,7 +9,7 @@
 
 import type { BunRequest, Server } from "bun";
 import index from "../web/index.html";
-import { Acme } from "./acme.ts";
+import { Acme, daysLeft } from "./acme.ts";
 import { loadConfig, origin, type Target } from "./config.ts";
 import { Relay } from "./gateway.ts";
 import {
@@ -21,6 +21,9 @@ import {
 	type User,
 } from "./oidc.ts";
 import { Signer } from "./sign.ts";
+import { serveStatus } from "./status.ts";
+import { EXIT_UPDATED, Updater } from "./update.ts";
+import { VERSION } from "./version.ts";
 
 const log = (msg: string) => console.log(`${new Date().toISOString()} ${msg}`);
 
@@ -167,6 +170,10 @@ const routes = {
 	},
 };
 
+/** つないでいる WebSocket。誰もいないときだけ自動更新で入れ替える */
+const sessions = new Set<Bun.ServerWebSocket<WsData>>();
+let certDaysLeft: number | null = null;
+
 const websocket = {
 	// RDP は何も操作していないと静かになる。WebSocket の ping で保たせ、切るのは最長の 960 秒まで待つ
 	idleTimeout: 960,
@@ -178,6 +185,7 @@ const websocket = {
 			(auth) => consume(auth, user.sub),
 			(m) => log(`${user.name}: ${m}`),
 		);
+		sessions.add(ws);
 		log(`ws open: ${user.name}`);
 	},
 	message(ws: Bun.ServerWebSocket<WsData>, msg: string | Buffer) {
@@ -188,6 +196,7 @@ const websocket = {
 		ws.data.relay?.onDrain();
 	},
 	close(ws: Bun.ServerWebSocket<WsData>) {
+		sessions.delete(ws);
 		ws.data.relay?.close();
 		log(`ws close: ${ws.data.user.name}`);
 	},
@@ -231,6 +240,7 @@ if (config.tls === "off") {
 	let https: Server<WsData> | null = null;
 	const serveHttps = async () => {
 		const { key, cert, renewed } = await acme.ensure();
+		certDaysLeft = Math.floor(daysLeft(cert));
 		if (https && !renewed) return;
 		// 証明書を差し替えるときは待ち受けを作り直す(つながっている RDP は切れない。新しい接続から新しい証明書)
 		https?.stop();
@@ -252,3 +262,59 @@ if (config.tls === "off") {
 		12 * 60 * 60 * 1000,
 	);
 }
+
+// --- 状態の口と自動更新 ------------------------------------------------------------------------
+const startedAt = new Date().toISOString();
+// exe として動いているときだけ自分を入れ替える(bun run で動かしているときは入れ替える exe が無い)
+const updater = new Updater(
+	{ repo: config.update.repo, exePath: process.execPath },
+	log,
+);
+const canUpdate = config.update.enabled && Bun.isStandaloneExecutable;
+if (canUpdate) await updater.cleanup();
+
+/** 新しい版があり、誰もつないでいなければ入れ替えて終わる(起こし直すのは外側) */
+async function tryUpdate(): Promise<boolean> {
+	if (!canUpdate) return false;
+	const state = await updater.check();
+	if (!state.available || sessions.size > 0) return false;
+	if (!(await updater.apply(() => sessions.size === 0))) return false;
+	setTimeout(() => process.exit(EXIT_UPDATED), 200);
+	return true;
+}
+
+if (config.statusPort) {
+	// 使えなくても本体(画面と中継)は止めない
+	try {
+		serveStatus(
+			config.statusPort,
+			() => ({
+				version: VERSION,
+				origin: base,
+				startedAt,
+				sessions: sessions.size,
+				certDaysLeft,
+				update: updater.state,
+			}),
+			async () => ({ updated: await tryUpdate(), state: updater.state }),
+		);
+		log(`状態の口: http://127.0.0.1:${config.statusPort}/status`);
+	} catch (e) {
+		log(`状態の口を開けない (${config.statusPort}): ${(e as Error).message}`);
+	}
+}
+if (canUpdate) {
+	const every = config.update.checkHours * 60 * 60 * 1000;
+	const run = () =>
+		tryUpdate().catch((e) => log(`update failed: ${(e as Error).message}`));
+	// 起動直後は避けて 5 分後に 1 回、あとは checkHours ごと。つないでいて入れ替えられなかったときは 10 分ごとに試す
+	setTimeout(run, 5 * 60 * 1000);
+	setInterval(run, every);
+	setInterval(
+		() => {
+			if (updater.state.available) void run();
+		},
+		10 * 60 * 1000,
+	);
+}
+log(`mado ${VERSION}`);
