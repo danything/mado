@@ -8,7 +8,10 @@ import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
 import { StreamClosed } from "./stream";
+import { ChannelAssembler, SHOW_PROTOCOL, splitChannelData } from "./vchannel";
 import * as x224 from "./x224";
+
+const CHANNEL_OPTION_SHOW_PROTOCOL = 0x00200000;
 
 /** 画面の出力先。ブラウザでは canvas(display.ts)、試験では何かを溜めるもの */
 export interface Screen {
@@ -25,12 +28,13 @@ export interface Screen {
 	setCursor(cursor: pointer.Cursor | "default" | null): void;
 }
 
-/** 静的チャネルに届いたデータ(drdynvc / cliprdr)を受け取る */
+/** 静的チャネルに届いたメッセージ(断片は組み立て済み。drdynvc / cliprdr)を受け取る */
 export type ChannelHandler = (name: string, data: Uint8Array) => void;
 
 export class RdpClient {
 	private fast = new Reassembler();
 	private cursors = new Map<number, pointer.Cursor>();
+	private assemblers = new Map<number, ChannelAssembler>();
 	private width: number;
 	private height: number;
 	private closed = false;
@@ -77,13 +81,17 @@ export class RdpClient {
 			this.send(input.fastPathInput(events.slice(i, i + 15)));
 	}
 
-	/** 静的チャネルへ送る(drdynvc / cliprdr の中身) */
+	/** 静的チャネルへ送る(drdynvc / cliprdr の中身)。断片に分ける */
 	sendChannel(name: string, data: Uint8Array): void {
 		const id = this.session.channels.get(name);
 		if (id === undefined) throw new Error(`チャネル ${name} は無い`);
-		this.session.stream.write(
-			x224.data(mcs.sendDataRequest(this.session.userId, id, data)),
-		);
+		const show =
+			(this.session.channelOptions.get(name) ?? 0) &
+			CHANNEL_OPTION_SHOW_PROTOCOL;
+		for (const chunk of splitChannelData(data, show ? SHOW_PROTOCOL : 0))
+			this.session.stream.write(
+				x224.data(mcs.sendDataRequest(this.session.userId, id, chunk)),
+			);
 	}
 
 	private send(fastPathPdu: Uint8Array): void {
@@ -112,9 +120,14 @@ export class RdpClient {
 		else this.handleChannel(ind.channelId, ind.data);
 	}
 
-	private handleChannel(channelId: number, data: Uint8Array): void {
-		for (const [name, id] of this.session.channels)
-			if (id === channelId) this.onChannel?.(name, data);
+	private handleChannel(channelId: number, chunk: Uint8Array): void {
+		for (const [name, id] of this.session.channels) {
+			if (id !== channelId) continue;
+			const asm = this.assemblers.get(id) ?? new ChannelAssembler();
+			this.assemblers.set(id, asm);
+			const msg = asm.push(chunk);
+			if (msg) this.onChannel?.(name, msg);
+		}
 	}
 
 	private handleIo(data: Uint8Array): void {

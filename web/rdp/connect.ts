@@ -37,6 +37,8 @@ export type Session = {
 	ioChannelId: number;
 	/** 静的チャネルの名前 → チャネル ID */
 	channels: Map<string, number>;
+	/** 静的チャネルの名前 → オプション(SHOW_PROTOCOL を付けて送るかの判断に) */
+	channelOptions: Map<string, number>;
 	shareId: number;
 	serverCapabilities: Map<number, Uint8Array>;
 	width: number;
@@ -236,6 +238,7 @@ export async function establish(
 		userId,
 		ioChannelId: server.ioChannelId,
 		channels: joined,
+		channelOptions: new Map(channels.map((c) => [c.name, c.options])),
 		shareId,
 		serverCapabilities: demand.capabilities,
 		width: o.width,
