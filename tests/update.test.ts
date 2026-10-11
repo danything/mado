@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
 	compareVersions,
 	PUBLIC_KEY,
+	sha256File,
 	signedMessage,
+	Updater,
 	verifySignature,
 } from "../src/update.ts";
 
@@ -55,10 +60,6 @@ test("版の比較", () => {
 });
 
 // --- 入れ替え(apply)。fetch を差し替え、一時フォルダの exe で試す -----------------------------
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { sha256File, Updater } from "../src/update.ts";
 
 async function setup(opts: { badSig?: boolean }) {
 	const dir = await mkdtemp(path.join(tmpdir(), "mado-update-"));
