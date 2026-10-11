@@ -80,8 +80,9 @@ export class Display implements Screen {
 		h: number,
 		rgba: Uint8ClampedArray,
 	): void {
+		// 写さずにそのまま渡す(タイルごとの複製を省く)。rgba は ArrayBuffer の上にある
 		this.ctx.putImageData(
-			new ImageData(new Uint8ClampedArray(rgba), w, h),
+			new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h),
 			x,
 			y,
 		);

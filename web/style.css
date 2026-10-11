@@ -214,7 +214,7 @@ body {
 #target-field[hidden] {
 	display: none;
 }
-/* つなぐまでは場所を取らない(IronRDP の要素は ready を出すために DOM に置いておく) */
+/* つなぐまでは場所を取らない(canvas は DOM に置いたまま) */
 #screen.idle {
 	flex: 0;
 	visibility: hidden;

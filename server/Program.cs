@@ -1,6 +1,6 @@
 // mado: OIDC でログインして、ブラウザから RDP する小さなゲートウェイ。Windows のサービスとして動く。
 //
-//   https://<host>/             画面(IronRDP の Web クライアント。web/ を bun でビルドして exe に埋め込んだもの)
+//   https://<host>/             画面(自前の RDP クライアント。web/ を bun でビルドして exe に埋め込んだもの)
 //   https://<host>/login        OIDC のログインへ
 //   https://<host>/callback     OIDC から戻ってくる口
 //   https://<host>/api/session  ログイン中の名前・版・つなぐ先
