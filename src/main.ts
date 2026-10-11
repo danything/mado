@@ -133,6 +133,7 @@ const routes = {
 		return Response.json(
 			{
 				name: s.name,
+				version: VERSION,
 				targets: config.targets.map((t) => t.name),
 				ws: `${base.replace(/^http/, "ws")}/ws`,
 			},
