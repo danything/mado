@@ -36,6 +36,19 @@ internal static unsafe partial class Program
 
     static string? Known(string? v) => string.IsNullOrEmpty(v) || VersionOf(v) == "v0.0.0" ? null : VersionOf(v);
 
+    /// <summary>起動したときの exe の中身の目印(書き換えた時刻と大きさ)。MSI が入れ替えたら変わる</summary>
+    static readonly (DateTime, long)? startedFrom = Stamp();
+
+    static (DateTime, long)? Stamp()
+    {
+        try
+        {
+            var f = new FileInfo(exePath!);
+            return (f.LastWriteTimeUtc, f.Length);
+        }
+        catch { return null; }
+    }
+
     /// <summary>最後に聞けた状態(聞けなければ null)。背景で取ってきて、タイマーで反映する</summary>
     static volatile StatusView? status;
     static volatile bool fetching;
@@ -57,6 +70,7 @@ internal static unsafe partial class Program
         // 起こし直すときも同じ引数(--port)で
         RegisterApplicationRestart(args.Length > 0 ? string.Join(' ', args) : null, 0);
 
+        Log($"起動: 自分 {ownVersion ?? "(不明)"}、{exePath}、引数 [{string.Join(' ', args)}]");
         hInstance = GetModuleHandleW(null);
         // exe に埋め込んだアイコン(ApplicationIcon。資源の ID は 32512)。無ければ Windows の標準のもの
         appIcon = LoadImageW(hInstance, 32512, 1 /* IMAGE_ICON */, GetSystemMetrics(49), GetSystemMetrics(50), 0);
@@ -127,9 +141,10 @@ internal static unsafe partial class Program
             // エクスプローラーが落ちて起き直したら、アイコンを出し直す
             if (msg == taskbarCreated && taskbarCreated != 0) AddIcon();
         }
-        catch
+        catch (Exception e)
         {
-            // 例外をネイティブの呼び出し元に返さない
+            // 例外をネイティブの呼び出し元に返さない(ログには残す)
+            Log($"WndProc 0x{msg:x}: {e.GetType().Name}: {e.Message}");
         }
         return DefWindowProcW(h, msg, w, l);
     }
@@ -165,28 +180,52 @@ internal static unsafe partial class Program
     }
 
     /// <summary>
-    /// サービスが新しい版になり、置き場所の mado-tray.exe も新しい版に入れ替わっていたら、自分を起こし直す。
+    /// サービスが新しい版になり、置き場所の mado-tray.exe も入れ替わっていたら、自分を起こし直す。
+    /// 置き場所の exe の版は FileVersionInfo では読めない(同じパスの exe = 自分が読み込まれているので、
+    /// 入れ替わったあとも読み込み済みの古い版が返る)。代わりに、起動したときから中身が変わったか(時刻と大きさ)を見る。
     /// サービスが入れる MSI は、サインインしている人のトレイを閉じられない(動いている exe は名前を変えて残り、
     /// 新しい exe が置かれる)ので、トレイは古いまま動き続けてしまう。同じ引数(--port)で起動して、自分は終わる
     /// </summary>
     static void RestartIfUpdated(string serviceVersion)
     {
         if (exePath is null || ownVersion is null || !Newer(serviceVersion, ownVersion)) return;
-        var onDisk = VersionOf(System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).ProductVersion);
-        if (!Newer(onDisk, ownVersion)) return;
+        var now = Stamp();
+        var replaced = startedFrom is not null && now is not null && now != startedFrom;
+        var seen = $"{serviceVersion} {replaced}";
+        if (seen != lastSeen) Log($"サービス {serviceVersion}、自分 {ownVersion}、置き場所の exe は{(replaced ? "入れ替わった" : "そのまま")}({exePath})");
+        lastSeen = seen;
+        if (!replaced) return;
+        Log("入れ替わった exe で起こし直す");
         // 新しいほうが二重起動の確認で弾かれないよう、先に放す
         CloseHandle(mutex);
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath, startArgs) { UseShellExecute = false });
         }
-        catch
+        catch (Exception e)
         {
+            Log($"起こし直せなかった: {e.Message}");
             // 起動できなければ、放したものを取り直してこのまま動き続ける(次の確認でまた試す)
             mutex = CreateMutexW(0, 0, "Local\\mado-tray");
             return;
         }
         Quit();
+    }
+
+    static string? lastSeen;
+
+    /// <summary>%LOCALAPPDATA%\mado\tray.log に足す(1 MB を超えたら .1 に回す)。書けなくても止めない</summary>
+    static void Log(string msg)
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "mado");
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, "tray.log");
+            if (File.Exists(file) && new FileInfo(file).Length > 1024 * 1024) File.Move(file, file + ".1", overwrite: true);
+            File.AppendAllText(file, $"{DateTimeOffset.Now:o} [{Environment.ProcessId}] {msg}{Environment.NewLine}");
+        }
+        catch { }
     }
 
     /// <summary>"0.5.1+abc" / "v0.5.1" を "v0.5.1" に</summary>
