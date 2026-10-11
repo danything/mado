@@ -155,6 +155,7 @@ client.sendInput([
 await sleep(8000);
 png(out);
 console.log("cursor updates:", cursors);
+console.log("updates by code:", JSON.stringify(client.stats));
 // キーボード: ドックの端末アイコン(567, 696)をクリックして開き、"echo mado" と打つ
 const key = (code: string, down: boolean) => input.keyEvent(code, down) as Uint8Array;
 client.sendInput([input.mouseMove(567, 696)]);

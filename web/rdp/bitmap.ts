@@ -61,10 +61,10 @@ export function parseBitmapUpdate(payload: Uint8Array): BitmapRect[] {
 /** 矩形を RGBA(上の行から、width x height)にする */
 export function decodeBitmap(b: BitmapRect): Uint8ClampedArray {
 	if (b.bpp === 8) throw new Error("8 ビット色の画面は使えない");
-	if (b.compressed && b.bpp === 32)
-		throw new Error("32bpp の圧縮(planar)は未対応");
 	if (b.width * b.height > MAX_PIXELS)
 		throw new Error("ビットマップが大きすぎる");
+	if (b.compressed && b.bpp === 32)
+		return decodePlanar(b.data, b.width, b.height);
 	const px = b.bpp === 15 ? 2 : b.bpp >> 3; // 1 画素のバイト数
 	const rowBytes = b.width * px;
 	const src = b.compressed
@@ -343,6 +343,127 @@ export function rleDecompress(
 				break;
 			default:
 				throw new Error(`RLE: 知らない命令 0x${header.toString(16)}`);
+		}
+	}
+	return out;
+}
+
+// ---- RDP 6.0 Planar([MS-RDPEGDI] 2.2.2.5.1。32bpp の圧縮) ----
+
+const PLANAR_CLL = 0x07;
+const PLANAR_CS = 0x08;
+const PLANAR_RLE = 0x10;
+const PLANAR_NA = 0x20;
+
+/**
+ * 1 つの面(w x h バイト)を、RLE で圧縮されたデータから読む。src の at から読み始め、終わりの位置も返す。
+ * 走査線ごとに、制御バイト(上位 4 ビット = 生バイト数、下位 4 ビット = 繰り返し)の列。
+ * 最初の行は値そのもの、2 行目からは上の行との差分(符号付き)。繰り返しは直前の値(差分の行では直前の差分)
+ */
+function planeRle(
+	src: Uint8Array,
+	at: number,
+	w: number,
+	h: number,
+): { plane: Uint8Array; end: number } {
+	const plane = new Uint8Array(w * h);
+	let s = at;
+	const next = (): number => {
+		if (s >= src.length) throw new Error("Planar: 入力が足りない");
+		return src[s++] as number;
+	};
+	for (let y = 0; y < h; y++) {
+		const row = y * w;
+		let x = 0;
+		let last = 0; // 直前の値(最初の行)/ 直前の差分(2 行目から)
+		const put = (v: number) => {
+			if (x >= w) throw new Error("Planar: 1 行があふれた");
+			if (y === 0) {
+				last = v;
+				plane[row + x] = v;
+			} else {
+				last = v & 1 ? -((v >> 1) + 1) : v >> 1;
+				plane[row + x] = ((plane[row - w + x] as number) + last) & 0xff;
+			}
+			x++;
+		};
+		while (x < w) {
+			const c = next();
+			let raw = c >> 4;
+			let run = c & 0x0f;
+			if (run === 1) {
+				run = raw + 16;
+				raw = 0;
+			} else if (run === 2) {
+				run = raw + 32;
+				raw = 0;
+			}
+			for (let i = 0; i < raw; i++) put(next());
+			if (x + run > w) throw new Error("Planar: 1 行があふれた");
+			for (let i = 0; i < run; i++) {
+				if (y === 0) plane[row + x] = last;
+				else plane[row + x] = ((plane[row - w + x] as number) + last) & 0xff;
+				x++;
+			}
+		}
+	}
+	return { plane, end: s };
+}
+
+const clamp8 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
+
+/**
+ * Planar の 32bpp を RGBA(上の行から)にする。面は [アルファ]、赤、緑、青(CLL が 0 でないときは Y、Co、Cg)の順。
+ * 行は下から上へ並ぶ(ほかの旧ビットマップと同じ)。色の間引き(CS)は未対応
+ */
+export function decodePlanar(
+	data: Uint8Array,
+	w: number,
+	h: number,
+): Uint8ClampedArray {
+	if (w * h > MAX_PIXELS) throw new Error("ビットマップが大きすぎる");
+	if (data.length < 1) throw new Error("Planar: 入力が足りない");
+	const header = data[0] as number;
+	const cll = header & PLANAR_CLL;
+	if (header & PLANAR_CS) throw new Error("Planar: 色の間引き(CS)は未対応");
+	const rle = (header & PLANAR_RLE) !== 0;
+	const noAlpha = (header & PLANAR_NA) !== 0;
+	const planes: Uint8Array[] = [];
+	let at = 1;
+	for (let i = 0; i < (noAlpha ? 3 : 4); i++) {
+		if (rle) {
+			const r = planeRle(data, at, w, h);
+			planes.push(r.plane);
+			at = r.end;
+		} else {
+			if (at + w * h > data.length) throw new Error("Planar: 入力が足りない");
+			planes.push(data.subarray(at, at + w * h));
+			at += w * h;
+		}
+	}
+	// アルファを持つときは先頭の面なので外す(旧ビットマップの画面は不透明として描く)
+	const [c0, c1, c2] = noAlpha ? planes : planes.slice(1);
+	const out = new Uint8ClampedArray(w * h * 4);
+	for (let y = 0; y < h; y++) {
+		const row = (h - 1 - y) * w;
+		for (let x = 0; x < w; x++) {
+			const d = (y * w + x) * 4;
+			const a = c0?.[row + x] as number;
+			const b = c1?.[row + x] as number;
+			const c = c2?.[row + x] as number;
+			if (cll === 0) {
+				out[d] = a;
+				out[d + 1] = b;
+				out[d + 2] = c;
+			} else {
+				// YCoCg: Co と Cg は (cll - 1) ビット左へ戻した符号付き 8 ビット
+				const co = ((b << 24) >> 24) << (cll - 1);
+				const cg = ((c << 24) >> 24) << (cll - 1);
+				out[d] = clamp8(a + co - cg);
+				out[d + 1] = clamp8(a + cg);
+				out[d + 2] = clamp8(a - co - cg);
+			}
+			out[d + 3] = 255;
 		}
 	}
 	return out;

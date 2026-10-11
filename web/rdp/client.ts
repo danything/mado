@@ -8,6 +8,7 @@ import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
 import { StreamClosed } from "./stream";
+import { handleSurfaceCommands } from "./surface";
 import { ChannelAssembler, SHOW_PROTOCOL, splitChannelData } from "./vchannel";
 import * as x224 from "./x224";
 
@@ -37,9 +38,13 @@ export class RdpClient {
 	private assemblers = new Map<number, ChannelAssembler>();
 	private width: number;
 	private height: number;
+	/** サーバーと決めた RemoteFX の codecId */
+	private rfxCodecId: number;
 	private closed = false;
 	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
 	errorInfo = 0;
+	/** 受けた更新の種類(Fast-Path の updateCode)ごとの数。診断用 */
+	readonly stats: Record<number, number> = {};
 	onChannel?: ChannelHandler;
 
 	constructor(
@@ -47,6 +52,7 @@ export class RdpClient {
 		private screen: Screen,
 	) {
 		this.width = session.width;
+		this.rfxCodecId = pdu.serverRfxCodecId(session.serverCapabilities);
 		this.height = session.height;
 	}
 
@@ -176,6 +182,7 @@ export class RdpClient {
 			this.width = dv.getUint16(8, true);
 			this.height = dv.getUint16(10, true);
 		}
+		this.rfxCodecId = pdu.serverRfxCodecId(d.capabilities);
 		const s = this.session;
 		this.sendIo(
 			pdu.confirmActive(
@@ -198,6 +205,7 @@ export class RdpClient {
 	}
 
 	private handleUpdate(code: number, data: Uint8Array): void {
+		this.stats[code] = (this.stats[code] ?? 0) + 1;
 		switch (code) {
 			case UPDATE.BITMAP:
 				for (const r of parseBitmapUpdate(data)) {
@@ -213,6 +221,14 @@ export class RdpClient {
 						w === r.width ? rgba : crop(rgba, r.width, w, h),
 					);
 				}
+				break;
+			case UPDATE.SURFCMDS:
+				handleSurfaceCommands(
+					data,
+					this.rfxCodecId,
+					{ width: this.width, height: this.height },
+					{ draw: (x, y, w, h, rgba) => this.screen.draw(x, y, w, h, rgba) },
+				);
 				break;
 			case UPDATE.PTR_NULL:
 				this.screen.setCursor(null);

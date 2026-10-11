@@ -290,8 +290,91 @@ export const CAP = {
 	MULTIFRAGMENT_UPDATE: 0x1a,
 	LARGE_POINTER: 0x1b,
 	SURFACE_COMMANDS: 0x1c,
+	BITMAP_CODECS: 0x1d,
 	FRAME_ACKNOWLEDGE: 0x1e,
 } as const;
+
+/** サーバーと決める RemoteFX の codecId(クライアントが決めて宣言する) */
+export const RFX_CODEC_ID = 3;
+
+/** RemoteFX のコーデック GUID(76772F12-BD72-4463-AFB3-B73C9C6F7886)。GUID は先頭 3 つの欄がリトル エンディアン */
+export const RFX_GUID = Uint8Array.of(
+	0x12,
+	0x2f,
+	0x77,
+	0x76,
+	0x72,
+	0xbd,
+	0x63,
+	0x44,
+	0xaf,
+	0xb3,
+	0xb7,
+	0x3c,
+	0x9c,
+	0x6f,
+	0x78,
+	0x86,
+);
+
+/**
+ * Bitmap Codecs 能力の中身(bitmapCodecCount 以降): RemoteFX のみ。
+ * 能力は TS_RFX_CLNT_CAPS_CONTAINER(49 バイト): RLGR1 と RLGR3、タイル 64x64、ICT、DWT 5/3、画像モード
+ */
+export function bitmapCodecs(): Uint8Array {
+	const icap = (entropy: number) =>
+		new Writer(8)
+			.u16(0x0100) // version 1.0
+			.u16(0x0040) // tileSize
+			.u8(0x02) // flags: CODEC_MODE(画像モード)
+			.u8(0x01) // colConvBits: ICT
+			.u8(0x01) // transformBits: DWT 5/3
+			.u8(entropy)
+			.done();
+	const props = new Writer(49)
+		.u32(49) // length
+		.u32(0x01) // captureFlags: CARDP_CAPS_CAPTURE_NON_CAC
+		.u32(37) // capsLength
+		.u16(0xcbc0) // TS_RFX_CAPS: CBY_CAPS
+		.u32(8)
+		.u16(1) // numCapsets
+		.u16(0xcbc1) // TS_RFX_CAPSET: CBY_CAPSET
+		.u32(29)
+		.u8(0x01) // codecId(固定)
+		.u16(0xcfc0) // capsetType: CLY_CAPSET
+		.u16(2) // numIcaps
+		.u16(8) // icapLen
+		.bytes(icap(0x01)) // RLGR1
+		.bytes(icap(0x04)) // RLGR3
+		.done();
+	return new Writer(props.length + 24)
+		.u8(1) // bitmapCodecCount
+		.bytes(RFX_GUID)
+		.u8(RFX_CODEC_ID)
+		.u16(props.length)
+		.bytes(props)
+		.done();
+}
+
+/**
+ * サーバーの Bitmap Codecs 能力(Demand Active の中身)から、RemoteFX の codecId を探す。
+ * サーバーが ID を決めて載せていればそれ、無ければ(xrdp のように)こちらが宣言した RFX_CODEC_ID
+ */
+export function serverRfxCodecId(caps: Map<number, Uint8Array>): number {
+	const b = caps.get(CAP.BITMAP_CODECS);
+	if (!b || b.length < 1) return RFX_CODEC_ID;
+	try {
+		const r = new Reader(b);
+		const n = r.u8();
+		for (let i = 0; i < n; i++) {
+			const guid = r.bytes(16);
+			const id = r.u8();
+			r.skip(r.u16());
+			if (guid.every((v, j) => v === RFX_GUID[j]) && id !== 0) return id;
+		}
+	} catch {}
+	return RFX_CODEC_ID;
+}
 
 export type ClientCaps = {
 	width: number;
@@ -332,7 +415,7 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 		cap(
 			CAP.BITMAP,
 			new Writer(24)
-				.u16(16) // preferredBitsPerPixel
+				.u16(32) // preferredBitsPerPixel
 				.u16(1)
 				.u16(1)
 				.u16(1)
@@ -395,7 +478,15 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 			new Writer(4).u32(c.maxRequestSize ?? 0x200000).done(),
 		),
 		cap(CAP.LARGE_POINTER, new Writer(2).u16(1).done()),
-		// Surface Commands と Frame Acknowledge は、受けて描けるようになるまで宣言しない(宣言するとサーバーは画面をその形で送る)
+		// Surface Commands(Set / Stream Surface Bits + Frame Marker)と、RemoteFX のコーデック
+		cap(
+			CAP.SURFACE_COMMANDS,
+			new Writer(8)
+				.u32(0x02 | 0x10 | 0x40)
+				.u32(0)
+				.done(),
+		),
+		cap(CAP.BITMAP_CODECS, bitmapCodecs()),
 	];
 }
 
