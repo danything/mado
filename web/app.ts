@@ -5,6 +5,8 @@ import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
 import { bindInput, Display, watchSize } from "./rdp/display";
+import { avcSupported, GfxClient } from "./rdp/gfx";
+import { CanvasGfxOps, WebCodecsAvc } from "./rdp/gfx-canvas";
 import * as input from "./rdp/input";
 import { createPool } from "./rdp/rfxpool";
 
@@ -50,6 +52,7 @@ try {
 		target?: string;
 		size?: string;
 		username?: string;
+		gfx?: boolean;
 	};
 	if (last.target && session.targets.includes(last.target))
 		select.value = last.target;
@@ -57,6 +60,7 @@ try {
 	if (last.size && [...sizes.options].some((o) => o.value === last.size))
 		sizes.value = last.size;
 	if (last.username) field("username").value = last.username;
+	(field("gfx") as HTMLInputElement).checked = last.gfx === true;
 } catch {}
 home.hidden = false;
 
@@ -76,8 +80,12 @@ form.addEventListener("submit", async (e) => {
 	const target = select.value;
 	const size = field("size").value;
 	const username = field("username").value;
+	const wantGfx = (field("gfx") as HTMLInputElement).checked;
 	try {
-		localStorage.setItem(REMEMBER, JSON.stringify({ target, size, username }));
+		localStorage.setItem(
+			REMEMBER,
+			JSON.stringify({ target, size, username, gfx: wantGfx }),
+		);
 	} catch {}
 	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
 	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
@@ -96,6 +104,8 @@ form.addEventListener("submit", async (e) => {
 		$<HTMLElement>("#current").textContent = target;
 		screen.classList.remove("idle");
 		const { width, height } = desktopSize(size);
+		// H.264 は、ブラウザが復号できるときだけ頼む
+		const gfx = wantGfx && (await avcSupported());
 		const abort = new AbortController();
 		connecting = abort;
 		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
@@ -109,13 +119,19 @@ form.addEventListener("submit", async (e) => {
 			width: even(width),
 			height,
 			signal: abort.signal,
+			gfx,
 		}).finally(() => {
 			clearTimeout(timer);
 			connecting = undefined;
 		});
 		const client = new RdpClient(rdp, display, { pool: createPool() });
-		const channels = attachChannels(client, writeClipboard);
+		const gfxClient = gfx
+			? new GfxClient(new CanvasGfxOps(display), new WebCodecsAvc())
+			: undefined;
+		if (gfxClient) gfxClient.onError = (e) => console.warn("GFX:", e);
+		const channels = attachChannels(client, writeClipboard, { gfx: gfxClient });
 		current = { client, channels };
+		if (gfxClient) stops.push(() => gfxClient.onClose());
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
 		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える

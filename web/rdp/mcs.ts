@@ -18,6 +18,8 @@ export type ClientCore = {
 	selectedProtocol: number;
 	clientName: string;
 	keyboardLayout?: number;
+	/** GFX(Graphics Pipeline)を使えると伝える(SUPPORT_DYNVC_GFX_PROTOCOL) */
+	gfx?: boolean;
 };
 
 /** 静的チャネル。名前は 7 文字まで(8 バイト、NUL 終わり) */
@@ -63,8 +65,8 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u16(24) // highColorDepth: 24(WANT_32BPP_SESSION で 32 を頼む)
 			.u16(0x0001 | 0x0002 | 0x0004 | 0x0008) // supportedColorDepths: 24 / 16 / 15 / 32
 			// earlyCapabilityFlags: ERRINFO_PDU | WANT_32BPP_SESSION | STATUSINFO_PDU | VALID_CONNECTION_TYPE
-			// (GFX は受けられるようになってから SUPPORT_DYNVC_GFX_PROTOCOL を足す)
-			.u16(0x0001 | 0x0002 | 0x0004 | 0x0020)
+			// (+ SUPPORT_DYNVC_GFX_PROTOCOL: GFX を使うときだけ)
+			.u16(0x0001 | 0x0002 | 0x0004 | 0x0020 | (c.gfx ? 0x0100 : 0))
 			.zeros(64) // clientDigProductId
 			.u8(6) // connectionType: LAN(サーバーによっては、LAN でないとコーデックを使わない)
 			.u8(0) // pad
