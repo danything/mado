@@ -7,7 +7,7 @@ import * as mcs from "./mcs";
 import { identity } from "./ntlm";
 import * as pdu from "./pdu";
 import * as cleanpath from "./rdcleanpath";
-import { WsStream } from "./stream";
+import { type Transport, WsStream } from "./stream";
 import * as x224 from "./x224";
 
 export type ConnectOptions = {
@@ -25,10 +25,14 @@ export type ConnectOptions = {
 	/** 静的チャネル。ID は同じ順で Session.channels に入る */
 	channels?: mcs.StaticChannel[];
 	onLog?: (line: string) => void;
+	/** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
+	allowTls?: boolean;
+	/** 試験用。LICENSE_REQUEST にダミーで答える(xrdp 向け) */
+	dummyLicense?: boolean;
 };
 
 export type Session = {
-	stream: WsStream;
+	stream: Transport;
 	userId: number;
 	ioChannelId: number;
 	/** 静的チャネルの名前 → チャネル ID */
@@ -45,7 +49,6 @@ export type Session = {
 
 export async function connect(o: ConnectOptions): Promise<Session> {
 	const log = o.onLog ?? (() => {});
-	const channels = o.channels ?? [mcs.DRDYNVC, mcs.CLIPRDR];
 	const stream = await WsStream.open(o.url);
 	try {
 		// 1. RDCleanPath: mado が RDP サーバーと TLS まで張る
@@ -57,156 +60,189 @@ export async function connect(o: ConnectOptions): Promise<Session> {
 			),
 		);
 		const resp = await cleanpath.readResponse(stream);
-		const cc = x224.parseConnectionConfirm(resp.x224);
-		if (!cc.ok) throw new Error(x224.failureMessage(cc.failureCode));
-		if (cc.selectedProtocol !== x224.PROTOCOL.HYBRID)
-			throw new Error(
-				`NLA(CredSSP)以外が選ばれた (${cc.selectedProtocol})。このサーバーは NLA を使う設定にする`,
-			);
 		const cert = resp.certChain[0];
 		if (!cert) throw new Error("RDP サーバーの証明書が届かない");
-		log("X.224 OK");
-
-		// 2. CredSSP
-		await credssp(stream, cert, o.username, o.password);
-		log("CredSSP OK");
-
-		// 3. MCS Connect
-		const userData = mcs.gccCreateRequest(
-			{
-				width: o.width,
-				height: o.height,
-				selectedProtocol: cc.selectedProtocol,
-				clientName: "mado",
-				keyboardLayout: o.keyboardLayout,
-			},
-			channels,
-		);
-		stream.write(x224.data(mcs.connectInitial(userData)));
-		const server = mcs.parseConnectResponse((await readSlow(stream)).data);
-		log(`MCS Connect OK (io ${server.ioChannelId})`);
-
-		// 4. Erect Domain / Attach User / Channel Join
-		stream.write(x224.data(mcs.erectDomainRequest()));
-		stream.write(x224.data(mcs.attachUserRequest()));
-		const userId = mcs.parseAttachUserConfirm((await readSlow(stream)).data);
-		const joined = new Map<string, number>();
-		const join = async (id: number) => {
-			stream.write(x224.data(mcs.channelJoinRequest(userId, id)));
-			const got = mcs.parseChannelJoinConfirm((await readSlow(stream)).data);
-			if (got !== id) throw new Error(`MCS: チャネル ${id} のはずが ${got}`);
-		};
-		await join(userId);
-		await join(server.ioChannelId);
-		for (const [i, c] of channels.entries()) {
-			const id = server.channelIds[i];
-			if (id === undefined) continue; // サーバーが割り当てなかった(使えない)
-			await join(id);
-			joined.set(c.name, id);
-		}
-		log(`Channel Join OK (user ${userId})`);
-
-		const send = (data: Uint8Array) =>
-			stream.write(
-				x224.data(mcs.sendDataRequest(userId, server.ioChannelId, data)),
-			);
-
-		// 5. Client Info
-		const id = identity(o.username, o.password);
-		send(
-			concat(
-				pdu.securityHeader(pdu.SEC_INFO_PKT),
-				pdu.clientInfo({
-					domain: id.domain,
-					user: id.user,
-					password: id.password,
-				}),
-			),
-		);
-
-		// 6. ライセンス → Demand Active
-		const pending: x224.Pdu[] = [];
-		const pendingChannel: Session["pendingChannel"] = [];
-		let demand: pdu.DemandActive | undefined;
-		let licensed = false;
-		while (!demand) {
-			const data = await readIo(
-				stream,
-				server.ioChannelId,
-				pending,
-				pendingChannel,
-			);
-			if (isShareControl(data)) {
-				const sc = pdu.parseShareControl(data);
-				if (sc.type === pdu.PDUTYPE.DEMAND_ACTIVE)
-					demand = pdu.parseDemandActive(sc.body);
-				else if (sc.type === pdu.PDUTYPE.DATA)
-					checkErrorInfo(pdu.parseShareData(sc.body));
-				continue;
-			}
-			const r = new Reader(data);
-			const flags = r.u16();
-			r.u16();
-			if (flags & pdu.SEC_LICENSE_PKT) {
-				licensed = pdu.checkLicense(r.rest());
-				log("ライセンス OK");
-			}
-		}
-		if (!licensed) log("ライセンスの PDU は来なかった");
-
-		// 7. Confirm Active → 同期
-		const shareId = demand.shareId;
-		send(
-			pdu.confirmActive(
-				userId,
-				shareId,
-				pdu.clientCapabilities({
-					width: o.width,
-					height: o.height,
-					keyboardLayout: o.keyboardLayout ?? 0x0411,
-				}),
-			),
-		);
-		const data2 = (type2: number, payload: Uint8Array) =>
-			send(pdu.shareData(userId, shareId, type2, payload));
-		data2(pdu.PDUTYPE2.SYNCHRONIZE, pdu.synchronize(pdu.SERVER_ID));
-		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.COOPERATE));
-		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.REQUEST));
-		data2(pdu.PDUTYPE2.FONTLIST, pdu.fontList());
-
-		// サーバーの Synchronize / Control(Cooperate, Granted)/ Font Map を受けたら完了
-		for (let done = false; !done; ) {
-			const data = await readIo(
-				stream,
-				server.ioChannelId,
-				pending,
-				pendingChannel,
-			);
-			if (!isShareControl(data)) continue;
-			const sc = pdu.parseShareControl(data);
-			if (sc.type !== pdu.PDUTYPE.DATA) continue;
-			const sd = pdu.parseShareData(sc.body);
-			checkErrorInfo(sd);
-			if (sd.type2 === pdu.PDUTYPE2.FONTMAP) done = true;
-		}
-		log("接続完了");
-
-		return {
-			stream,
-			userId,
-			ioChannelId: server.ioChannelId,
-			channels: joined,
-			shareId,
-			serverCapabilities: demand.capabilities,
-			width: o.width,
-			height: o.height,
-			pending,
-			pendingChannel,
-		};
+		log("RDCleanPath OK");
+		return await establish(stream, o, resp.x224, cert);
 	} catch (e) {
 		stream.close();
 		throw e;
 	}
+}
+
+/**
+ * TLS が張れて、X.224 Connection Confirm とサーバーの証明書がある状態から、つながるまで進める。
+ * connect() が WebSocket でここまで来る。試験は TCP + TLS で直接ここに来る
+ */
+export async function establish(
+	stream: Transport,
+	o: ConnectOptions,
+	confirm: Uint8Array,
+	cert: Uint8Array,
+): Promise<Session> {
+	const log = o.onLog ?? (() => {});
+	const channels = o.channels ?? [mcs.DRDYNVC, mcs.CLIPRDR];
+	const cc = x224.parseConnectionConfirm(confirm);
+	if (!cc.ok) throw new Error(x224.failureMessage(cc.failureCode));
+	if (cc.selectedProtocol === x224.PROTOCOL.HYBRID) {
+		// 2. CredSSP
+		await credssp(stream, cert, o.username, o.password);
+		log("CredSSP OK");
+	} else if (!(o.allowTls && cc.selectedProtocol === x224.PROTOCOL.SSL)) {
+		throw new Error(
+			`NLA(CredSSP)以外が選ばれた (${cc.selectedProtocol})。このサーバーは NLA を使う設定にする`,
+		);
+	}
+
+	// 3. MCS Connect
+	const userData = mcs.gccCreateRequest(
+		{
+			width: o.width,
+			height: o.height,
+			selectedProtocol: cc.selectedProtocol,
+			clientName: "mado",
+			keyboardLayout: o.keyboardLayout,
+		},
+		channels,
+	);
+	stream.write(x224.data(mcs.connectInitial(userData)));
+	const server = mcs.parseConnectResponse((await readSlow(stream)).data);
+	log(
+		`MCS Connect OK (io ${server.ioChannelId}, channels ${server.channelIds.join(",")})`,
+	);
+
+	// 4. Erect Domain / Attach User / Channel Join
+	stream.write(x224.data(mcs.erectDomainRequest()));
+	stream.write(x224.data(mcs.attachUserRequest()));
+	const userId = mcs.parseAttachUserConfirm((await readSlow(stream)).data);
+	const joined = new Map<string, number>();
+	const join = async (id: number) => {
+		stream.write(x224.data(mcs.channelJoinRequest(userId, id)));
+		const got = mcs.parseChannelJoinConfirm((await readSlow(stream)).data);
+		if (got !== id) throw new Error(`MCS: チャネル ${id} のはずが ${got}`);
+	};
+	await join(userId);
+	await join(server.ioChannelId);
+	for (const [i, c] of channels.entries()) {
+		const id = server.channelIds[i];
+		if (id === undefined) continue; // サーバーが割り当てなかった(使えない)
+		await join(id);
+		joined.set(c.name, id);
+	}
+	log(`Channel Join OK (user ${userId})`);
+
+	const send = (data: Uint8Array) =>
+		stream.write(
+			x224.data(mcs.sendDataRequest(userId, server.ioChannelId, data)),
+		);
+
+	// 5. Client Info
+	const id = identity(o.username, o.password);
+	send(
+		concat(
+			pdu.securityHeader(pdu.SEC_INFO_PKT),
+			pdu.clientInfo({
+				domain: id.domain,
+				user: id.user,
+				password: id.password,
+			}),
+		),
+	);
+
+	// 6. ライセンス → Demand Active
+	const pending: x224.Pdu[] = [];
+	const pendingChannel: Session["pendingChannel"] = [];
+	let demand: pdu.DemandActive | undefined;
+	let licensed = false;
+	while (!demand) {
+		const data = await readIo(
+			stream,
+			server.ioChannelId,
+			pending,
+			pendingChannel,
+		);
+		if (isShareControl(data)) {
+			const sc = pdu.parseShareControl(data);
+			if (sc.type === pdu.PDUTYPE.DEMAND_ACTIVE)
+				demand = pdu.parseDemandActive(sc.body);
+			else if (sc.type === pdu.PDUTYPE.DATA)
+				checkErrorInfo(pdu.parseShareData(sc.body));
+			continue;
+		}
+		const r = new Reader(data);
+		const flags = r.u16();
+		r.u16();
+		if (flags & pdu.SEC_LICENSE_PKT) {
+			const state = pdu.checkLicense(r.rest());
+			if (state === "valid") {
+				licensed = true;
+				log("ライセンス OK");
+			} else if (o.dummyLicense) {
+				log("ライセンスを求められた(ダミーで答える)");
+				send(
+					concat(
+						pdu.securityHeader(pdu.SEC_LICENSE_PKT),
+						pdu.dummyNewLicenseRequest(),
+					),
+				);
+			} else {
+				throw new Error(
+					"ライセンスの交渉を求められた。このサーバーはライセンスが要る設定",
+				);
+			}
+		}
+	}
+	if (!licensed) log("ライセンスの PDU は来なかった");
+
+	// 7. Confirm Active → 同期
+	const shareId = demand.shareId;
+	send(
+		pdu.confirmActive(
+			userId,
+			shareId,
+			pdu.clientCapabilities({
+				width: o.width,
+				height: o.height,
+				keyboardLayout: o.keyboardLayout ?? 0x0411,
+			}),
+		),
+	);
+	const data2 = (type2: number, payload: Uint8Array) =>
+		send(pdu.shareData(userId, shareId, type2, payload));
+	data2(pdu.PDUTYPE2.SYNCHRONIZE, pdu.synchronize(pdu.SERVER_ID));
+	data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.COOPERATE));
+	data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.REQUEST));
+	data2(pdu.PDUTYPE2.FONTLIST, pdu.fontList());
+
+	// サーバーの Synchronize / Control(Cooperate, Granted)/ Font Map を受けたら完了
+	for (let done = false; !done; ) {
+		const data = await readIo(
+			stream,
+			server.ioChannelId,
+			pending,
+			pendingChannel,
+		);
+		if (!isShareControl(data)) continue;
+		const sc = pdu.parseShareControl(data);
+		if (sc.type !== pdu.PDUTYPE.DATA) continue;
+		const sd = pdu.parseShareData(sc.body);
+		checkErrorInfo(sd);
+		if (sd.type2 === pdu.PDUTYPE2.FONTMAP) done = true;
+	}
+	log("接続完了");
+
+	return {
+		stream,
+		userId,
+		ioChannelId: server.ioChannelId,
+		channels: joined,
+		shareId,
+		serverCapabilities: demand.capabilities,
+		width: o.width,
+		height: o.height,
+		pending,
+		pendingChannel,
+	};
 }
 
 /** Share Control の totalLength が PDU の長さと合い、種類が正しければ Share Control(そうでなければ Security Header) */
@@ -224,7 +260,7 @@ function checkErrorInfo(sd: pdu.ShareData): void {
 		throw new Error(`サーバーが切った (ErrorInfo 0x${code.toString(16)})`);
 }
 
-async function readSlow(s: WsStream): Promise<{ data: Uint8Array }> {
+async function readSlow(s: Transport): Promise<{ data: Uint8Array }> {
 	const p = await x224.readPdu(s);
 	if (p.kind !== "slowpath")
 		throw new Error("Fast-Path の PDU が接続の途中に来た");
@@ -233,7 +269,7 @@ async function readSlow(s: WsStream): Promise<{ data: Uint8Array }> {
 
 /** I/O チャネルの Send Data Indication を 1 つ読む。Fast-Path は溜めておく。ほかのチャネルのものも溜めておく */
 async function readIo(
-	s: WsStream,
+	s: Transport,
 	ioChannelId: number,
 	pending: x224.Pdu[],
 	pendingChannel: Session["pendingChannel"],

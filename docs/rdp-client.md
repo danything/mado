@@ -117,3 +117,17 @@ setup.ps1 で入れるかは、効くことを確かめてから決める。
 2. 層 5〜6 で、AVC420 に切り替える
 3. 層 7(解像度・クリップボード)をそろえたら、IronRDP の依存を消す
 4. AVC444、フレーム応答の調整
+
+## 実機試験の手順(xrdp)
+
+Windows の資格情報が無くても、別実装の RDP サーバー(xrdp)で、MCS から画面の受信まで確かめられる(CredSSP は xrdp に無いので対象外)。
+
+```powershell
+wslc run -d --name xrdp -p 13389:3389 danielguerra/ubuntu-xrdp:latest   # ユーザー ubuntu / パスワード ubuntu
+bun build tools/rdp-smoke.ts --target node --outfile out/rdp-smoke.mjs
+$env:OUT = "out/screen.png"; node out/rdp-smoke.mjs                         # 画面の PNG ができる
+```
+
+- GCC のヘッダーの `00` が 1 バイト抜けていたのを、xrdp が 23 バイト決め打ちで読むことで見つけた(実際のクライアントのバイト列と突き合わせる試験を書いたつもりが、実装に合わせて試験を直していた)
+- xrdp は LICENSE_REQUEST を返す。試験では `dummyLicense` で答える(Windows は「ライセンス不要」を返すので本番では要らない)
+- 16 ビット色 + Interleaved RLE で、Xfce の画面が正しく描けた

@@ -93,7 +93,7 @@ describe("MCS", () => {
 		const n = ((gcc[7] as number) & 0x7f) * 256 + (gcc[8] as number);
 		expect(gcc.length).toBe(9 + n);
 		const text = hex(gcc);
-		expect(text).toContain("08001000" + "01c000" + "44756361"); // 会議名 "1" と "Duca"
+		expect(text).toContain("0008001000" + "01c000" + "44756361"); // 会議名 "1" と "Duca"
 		// Client Core は 216 バイト、Net は 4 + 4 + 12 * 2
 		expect(text).toContain("01c0d800"); // type 0xC001, length 216
 		expect(text).toContain("03c0200002000000"); // type 0xC003, length 32, 2 チャネル

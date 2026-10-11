@@ -41,7 +41,7 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(0x00080004) // RDP 5.0 以降
 			.u16(c.width)
 			.u16(c.height)
-			.u16(0xca01) // colorDepth: 8bpp(下の highColorDepth が本当の値)
+			.u16(0xca03) // colorDepth: 16bpp (RGB565)
 			.u16(0xaa03) // SASSequence
 			.u32(c.keyboardLayout ?? 0x0411) // 日本語。0x0409 は米国
 			.u32(0x0000_4a61) // clientBuild
@@ -50,13 +50,13 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(0) // keyboardSubType
 			.u32(12) // keyboardFunctionKey
 			.zeros(64) // imeFileName
-			.u16(0xca01) // postBeta2ColorDepth
+			.u16(0xca03) // postBeta2ColorDepth
 			.u16(1) // clientProductId
 			.u32(0) // serialNumber
-			.u16(24) // highColorDepth
-			.u16(0x000f) // supportedColorDepths: 24 / 16 / 15 / 32
-			// earlyCapabilityFlags: ERRINFO_PDU | WANT_32BPP_SESSION | STATUSINFO_PDU | SUPPORT_DYNVC_GFX_PROTOCOL
-			.u16(0x0001 | 0x0002 | 0x0004 | 0x0100)
+			.u16(16) // highColorDepth: 16 ビット(Interleaved RLE で受ける)
+			.u16(0x0002 | 0x0004) // supportedColorDepths: 16 / 15
+			// earlyCapabilityFlags: ERRINFO_PDU | STATUSINFO_PDU | SUPPORT_DYNVC_GFX_PROTOCOL
+			.u16(0x0001 | 0x0004 | 0x0100)
 			.zeros(64) // clientDigProductId
 			.u8(0) // connectionType
 			.u8(0) // pad
@@ -112,9 +112,10 @@ export function gccCreateRequest(
 		.bytes(clientSecurity())
 		.bytes(clientNet(channels))
 		.done();
-	// ConferenceCreateRequest: 選択 0x08、会議名 "1"(numeric)、user data が 1 つ、h221NonStandard の鍵 "Duca"
+	// ConferenceCreateRequest: 拡張ビット 0x00、選択 0x08、会議名 "1"(numeric)、user data が 1 つ、h221NonStandard の鍵 "Duca"。
+	// ここまでで 23 バイト(先頭の 7 + 長さ 2 + この 12 + 長さ 2)。サーバーによってはこの 23 バイトを決め打ちで読み飛ばす
 	const inner = new Writer(blocks.length + 32)
-		.bytes(Uint8Array.of(0x08, 0x00, 0x10, 0x00, 0x01, 0xc0, 0x00))
+		.bytes(Uint8Array.of(0x00, 0x08, 0x00, 0x10, 0x00, 0x01, 0xc0, 0x00))
 		.bytes(new TextEncoder().encode("Duca"))
 		.bytes(perLength(blocks.length))
 		.bytes(blocks)

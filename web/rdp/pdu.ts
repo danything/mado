@@ -95,23 +95,51 @@ function timeZone(): Uint8Array {
 
 // ---- ライセンス ----
 
+const LICENSE_REQUEST = 0x01;
+const LICENSE_NEW_REQUEST = 0x13;
 const LICENSE_ERROR_ALERT = 0xff;
 const STATUS_VALID_CLIENT = 7;
 
-/** ライセンスの PDU を読む(Security Header のあと)。「ライセンス不要」なら true、それ以外は例外 */
-export function checkLicense(b: Uint8Array): true {
+/**
+ * ライセンスの PDU を読む(Security Header のあと)。「ライセンス不要」なら "valid"、ライセンスの交渉(LICENSE_REQUEST)を求められたら "request"、
+ * それ以外のエラーは例外。Windows は前者を返す。後者を返すのは xrdp など
+ */
+export function checkLicense(b: Uint8Array): "valid" | "request" {
 	const r = new Reader(b);
 	const type = r.u8();
 	r.u8(); // flags(版)
 	r.u16(); // wMsgSize
+	if (type === LICENSE_REQUEST) return "request";
 	if (type !== LICENSE_ERROR_ALERT)
-		throw new Error(
-			`ライセンスの交渉を求められた (0x${type.toString(16)})。このサーバーはライセンスが要る設定`,
-		);
+		throw new Error(`ライセンスの PDU が想定外 (0x${type.toString(16)})`);
 	const code = r.u32();
 	if (code !== STATUS_VALID_CLIENT)
 		throw new Error(`ライセンスのエラー (0x${code.toString(16)})`);
-	return true;
+	return "valid";
+}
+
+/**
+ * 試験用: LICENSE_REQUEST への NEW_LICENSE_REQUEST。pre-master secret は暗号化せず乱数のまま入れる。
+ * xrdp は中身を見ないので通るが、本物のライセンス サーバーには通らない
+ */
+export function dummyNewLicenseRequest(): Uint8Array {
+	const blob = (type: number, data: Uint8Array) =>
+		new Writer(data.length + 4).u16(type).u16(data.length).bytes(data).done();
+	const name = new TextEncoder().encode("mado\0");
+	const body = new Writer(160)
+		.u32(1) // KEY_EXCHANGE_ALG_RSA
+		.u32(0x04000100) // PlatformId
+		.bytes(crypto.getRandomValues(new Uint8Array(32))) // ClientRandom
+		.bytes(blob(0x0002, crypto.getRandomValues(new Uint8Array(72))))
+		.bytes(blob(0x000f, name))
+		.bytes(blob(0x0010, name))
+		.done();
+	return new Writer(body.length + 4)
+		.u8(LICENSE_NEW_REQUEST)
+		.u8(0x83) // 版 3 + EXTENDED_ERROR_MSG_SUPPORTED
+		.u16(body.length + 4)
+		.bytes(body)
+		.done();
 }
 
 // ---- Share Control / Share Data ----
@@ -304,7 +332,7 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 		cap(
 			CAP.BITMAP,
 			new Writer(24)
-				.u16(32) // preferredBitsPerPixel
+				.u16(16) // preferredBitsPerPixel
 				.u16(1)
 				.u16(1)
 				.u16(1)
