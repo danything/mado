@@ -47,6 +47,8 @@ internal sealed class Updater(
     Release? release;
     /// <summary>署名が合わなかった版。次の版が出るまで取り直さない</summary>
     string? failed;
+    /// <summary>msiexec を起動した版と時刻。入れ損ねたときに 10 分ごとに起動し直さないよう、1 時間は空ける</summary>
+    (string Tag, DateTimeOffset At)? launched;
     readonly SemaphoreSlim gate = new(1, 1);
 
     public static string Message(string tag, string sha256Hex) => $"mado {tag} {sha256Hex}";
@@ -103,6 +105,7 @@ internal sealed class Updater(
     public async Task<bool> Apply(Func<bool> isIdle)
     {
         if (release is not { } r || !State.Available || !isIdle()) return false;
+        if (launched is { } l && l.Tag == r.TagName && DateTimeOffset.UtcNow - l.At < TimeSpan.FromHours(1)) return false;
         if (!await gate.WaitAsync(0)) return false;
         try
         {
@@ -133,7 +136,8 @@ internal sealed class Updater(
                     return false;
                 }
                 await File.WriteAllTextAsync(sigFile, sig);
-            }            if (!isIdle())
+            }
+            if (!isIdle())
             {
                 log($"update: {r.TagName} を落としたが、つないでいる人がいるので後で入れる");
                 return false;
@@ -142,6 +146,7 @@ internal sealed class Updater(
             log($"update: {version} → {r.TagName} を入れる(msiexec。ログは {msiLog})");
             Directory.CreateDirectory(Path.GetDirectoryName(msiLog)!);
             launch(msi, msiLog);
+            launched = (r.TagName, DateTimeOffset.UtcNow);
             return true;
         }
         catch (Exception e)

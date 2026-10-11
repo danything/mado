@@ -39,7 +39,8 @@ internal static unsafe partial class Program
         CreateMutexW(0, 0, "Local\\mado-tray");
         if (Marshal.GetLastPInvokeError() == 183 /* ERROR_ALREADY_EXISTS */) return 0;
         // MSI の更新で Restart Manager に閉じられたら、終わったあとに起こし直してもらう
-        RegisterApplicationRestart(null, 0);
+        // 起こし直すときも同じ引数(--port)で
+        RegisterApplicationRestart(args.Length > 0 ? string.Join(' ', args) : null, 0);
 
         hInstance = GetModuleHandleW(null);
         // exe に埋め込んだアイコン(ApplicationIcon。資源の ID は 32512)。無ければ Windows の標準のもの
