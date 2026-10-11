@@ -1,0 +1,79 @@
+:root {
+	color-scheme: light dark;
+	--bg: #fafafa;
+	--fg: #18181b;
+	--muted: #71717a;
+	--border: #e4e4e7;
+	font-family: system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #09090b;
+		--fg: #fafafa;
+		--muted: #a1a1aa;
+		--border: #27272a;
+	}
+}
+html,
+body {
+	margin: 0;
+	height: 100%;
+	background: var(--bg);
+	color: var(--fg);
+}
+body {
+	display: flex;
+	flex-direction: column;
+}
+#login {
+	margin: auto;
+	display: grid;
+	gap: 12px;
+	width: min(320px, calc(100% - 32px));
+}
+#login[hidden],
+#toolbar[hidden] {
+	display: none;
+}
+#login h1 {
+	margin: 0;
+	font-size: 20px;
+}
+#login label {
+	display: grid;
+	gap: 4px;
+	font-size: 14px;
+}
+input,
+button {
+	font: inherit;
+	padding: 8px 10px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+}
+button {
+	cursor: pointer;
+}
+#who,
+#status {
+	margin: 0;
+	color: var(--muted);
+	font-size: 13px;
+}
+#toolbar {
+	display: flex;
+	gap: 6px;
+	padding: 6px;
+	border-bottom: 1px solid var(--border);
+}
+#toolbar button {
+	padding: 4px 8px;
+	font-size: 13px;
+}
+#screen {
+	flex: 1;
+	min-height: 0;
+	background: #000;
+}

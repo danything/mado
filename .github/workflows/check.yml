@@ -1,0 +1,21 @@
+name: Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - run: bun i --frozen-lockfile
+      - run: bunx biome ci
+      - run: bunx tsc --noEmit
+      # RDP に当てる試験は 3389 が無いので飛ぶ(tests/gateway.test.ts)
+      - run: bun test
+      # Windows 用の exe が作れること(作ったものは捨てる。配るのは release.yml)
+      - run: bun run build

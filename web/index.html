@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>mado</title>
+		<link rel="stylesheet" href="./style.css" />
+	</head>
+	<body>
+		<form id="login" hidden>
+			<h1>mado</h1>
+			<p id="who"></p>
+			<label>Windows のユーザー名 <input name="username" autocomplete="username" required /></label>
+			<label>パスワード <input name="password" type="password" autocomplete="current-password" required /></label>
+			<button type="submit">つなぐ</button>
+			<p id="status" role="status"></p>
+		</form>
+		<nav id="toolbar" hidden>
+			<button type="button" data-action="ctrl-alt-del">Ctrl+Alt+Del</button>
+			<button type="button" data-action="meta">Windows キー</button>
+			<button type="button" data-action="fullscreen">全画面</button>
+			<button type="button" data-action="disconnect">切断</button>
+		</nav>
+		<main id="screen"></main>
+		<script type="module" src="./app.ts"></script>
+	</body>
+</html>

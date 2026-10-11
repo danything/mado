@@ -1,0 +1,31 @@
+name: Release
+
+# v* のタグで Windows 用の exe を作り、SHA-256 と一緒にリリースに載せる。入れる側(setup スクリプトなど)は
+# mado.exe.sha256 と照らしてから使う。
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # 作ったものの出どころの証明(gh attestation verify で確かめられる)
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - run: bun i --frozen-lockfile
+      - run: bun test
+      - run: bun run build
+      - run: cd dist && sha256sum mado.exe > mado.exe.sha256
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/mado.exe
+      - run: gh release create "$GITHUB_REF_NAME" dist/mado.exe dist/mado.exe.sha256 --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
