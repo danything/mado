@@ -1,0 +1,306 @@
+// MCS([T.125])と GCC([T.124])。Connect Initial / Response は BER、そのあとの PDU は PER。
+// 仕様は [MS-RDPBCGR] 2.2.1.3〜2.2.1.4(クライアント / サーバーのデータブロック)と 2.2.1.5〜2.2.1.16。
+
+import { Reader, Writer } from "./bytes";
+import * as der from "./der";
+
+/** MCS のユーザー ID とチャネル ID は、PER では 1001 を引いた値で運ぶ */
+const BASE = 1001;
+
+export const GLOBAL_CHANNEL = 1003;
+
+// ---- クライアントのデータブロック ----
+
+export type ClientCore = {
+	width: number;
+	height: number;
+	/** X.224 Connection Confirm で選ばれた方式 */
+	selectedProtocol: number;
+	clientName: string;
+	keyboardLayout?: number;
+};
+
+/** 静的チャネル。名前は 7 文字まで(8 バイト、NUL 終わり) */
+export type StaticChannel = { name: string; options: number };
+
+export const DRDYNVC: StaticChannel = { name: "drdynvc", options: 0xc0800000 };
+export const CLIPRDR: StaticChannel = { name: "cliprdr", options: 0xc0a00000 };
+
+function block(type: number, body: Uint8Array): Uint8Array {
+	return new Writer(body.length + 4)
+		.u16(type)
+		.u16(body.length + 4)
+		.bytes(body)
+		.done();
+}
+
+function clientCore(c: ClientCore): Uint8Array {
+	return block(
+		0xc001,
+		new Writer(216)
+			.u32(0x00080004) // RDP 5.0 以降
+			.u16(c.width)
+			.u16(c.height)
+			.u16(0xca01) // colorDepth: 8bpp(下の highColorDepth が本当の値)
+			.u16(0xaa03) // SASSequence
+			.u32(c.keyboardLayout ?? 0x0411) // 日本語。0x0409 は米国
+			.u32(0x0000_4a61) // clientBuild
+			.utf16Fixed(c.clientName, 32)
+			.u32(4) // keyboardType: IBM enhanced (101/102 キー)
+			.u32(0) // keyboardSubType
+			.u32(12) // keyboardFunctionKey
+			.zeros(64) // imeFileName
+			.u16(0xca01) // postBeta2ColorDepth
+			.u16(1) // clientProductId
+			.u32(0) // serialNumber
+			.u16(24) // highColorDepth
+			.u16(0x000f) // supportedColorDepths: 24 / 16 / 15 / 32
+			// earlyCapabilityFlags: ERRINFO_PDU | WANT_32BPP_SESSION | STATUSINFO_PDU | SUPPORT_DYNVC_GFX_PROTOCOL
+			.u16(0x0001 | 0x0002 | 0x0004 | 0x0100)
+			.zeros(64) // clientDigProductId
+			.u8(0) // connectionType
+			.u8(0) // pad
+			.u32(c.selectedProtocol)
+			.done(),
+	);
+}
+
+/** TLS / CredSSP の上では RDP 自身の暗号は使わない(どちらも 0) */
+function clientSecurity(): Uint8Array {
+	return block(0xc002, new Writer(8).u32(0).u32(0).done());
+}
+
+function clientNet(channels: StaticChannel[]): Uint8Array {
+	const w = new Writer(4 + channels.length * 12).u32(channels.length);
+	for (const c of channels) {
+		const name = new Uint8Array(8);
+		name.set(new TextEncoder().encode(c.name).subarray(0, 7));
+		w.bytes(name).u32(c.options);
+	}
+	return block(0xc003, w.done());
+}
+
+function clientCluster(): Uint8Array {
+	// REDIRECTION_SUPPORTED | REDIRECTION_VERSION4(4 << 2)
+	return block(
+		0xc004,
+		new Writer(8)
+			.u32(0x1 | (4 << 2))
+			.u32(0)
+			.done(),
+	);
+}
+
+/** PER の長さ(0x80 未満は 1 バイト、それ以上は 0x8000 | n の 2 バイト) */
+export function perLength(n: number): Uint8Array {
+	return n < 0x80 ? Uint8Array.of(n) : Uint8Array.of(0x80 | (n >> 8), n & 0xff);
+}
+
+function readPerLength(r: Reader): number {
+	const b = r.u8();
+	return b & 0x80 ? ((b & 0x7f) << 8) | r.u8() : b;
+}
+
+/** GCC Conference Create Request で包んだクライアントのデータ */
+export function gccCreateRequest(
+	core: ClientCore,
+	channels: StaticChannel[],
+): Uint8Array {
+	const blocks = new Writer(256)
+		.bytes(clientCore(core))
+		.bytes(clientCluster())
+		.bytes(clientSecurity())
+		.bytes(clientNet(channels))
+		.done();
+	// ConferenceCreateRequest: 選択 0x08、会議名 "1"(numeric)、user data が 1 つ、h221NonStandard の鍵 "Duca"
+	const inner = new Writer(blocks.length + 32)
+		.bytes(Uint8Array.of(0x08, 0x00, 0x10, 0x00, 0x01, 0xc0, 0x00))
+		.bytes(new TextEncoder().encode("Duca"))
+		.bytes(perLength(blocks.length))
+		.bytes(blocks)
+		.done();
+	return new Writer(inner.length + 16)
+		.bytes(Uint8Array.of(0x00, 0x05, 0x00, 0x14, 0x7c, 0x00, 0x01))
+		.bytes(perLength(inner.length))
+		.bytes(inner)
+		.done();
+}
+
+/** 符号を付けない最短の INTEGER(実際のクライアントは 65535 を 02 02 ff ff で送る) */
+const uint = (v: number) =>
+	der.tlv(
+		der.INTEGER,
+		v > 0xff ? Uint8Array.of(v >> 8, v & 0xff) : Uint8Array.of(v),
+	);
+
+const domainParams = (
+	channels: number,
+	users: number,
+	tokens: number,
+	prio: number,
+	throughput: number,
+	height: number,
+	pduSize: number,
+	version: number,
+) =>
+	der.tlv(
+		der.SEQUENCE,
+		...[
+			channels,
+			users,
+			tokens,
+			prio,
+			throughput,
+			height,
+			pduSize,
+			version,
+		].map(uint),
+	);
+
+/** MCS Connect Initial(BER、[APPLICATION 101])。X.224 Data で包む前の中身 */
+export function connectInitial(userData: Uint8Array): Uint8Array {
+	return der.tlv(
+		0x7f65,
+		der.octets(Uint8Array.of(1)), // callingDomainSelector
+		der.octets(Uint8Array.of(1)), // calledDomainSelector
+		der.tlv(der.BOOLEAN, Uint8Array.of(0xff)), // upwardFlag
+		domainParams(34, 2, 0, 1, 0, 1, 0xffff, 2), // target
+		domainParams(1, 1, 1, 1, 0, 1, 0x420, 2), // minimum
+		domainParams(0xffff, 0xfc17, 0xffff, 1, 0, 1, 0xffff, 2), // maximum
+		der.octets(userData),
+	);
+}
+
+// ---- サーバーの応答 ----
+
+export type ServerData = {
+	/** I/O チャネル(画面・入力)の ID */
+	ioChannelId: number;
+	/** 要求した静的チャネルに割り当てられた ID(要求した順) */
+	channelIds: number[];
+	/** SC_CORE の clientRequestedProtocols / earlyCapabilityFlags(無ければ 0) */
+	earlyCapabilityFlags: number;
+	messageChannelId?: number;
+};
+
+/** MCS Connect Response から、サーバーのデータブロックを読む */
+export function parseConnectResponse(raw: Uint8Array): ServerData {
+	const top = der.mustRead(raw);
+	if (top.tag !== 0x7f66) throw new Error("MCS: Connect Response ではない");
+	const items = der.readAll(top.value);
+	const result = items[0] ? der.readInteger(items[0]) : -1;
+	if (result !== 0) throw new Error(`MCS: 接続を断られた (result ${result})`);
+	const user = items[3];
+	if (!user) throw new Error("MCS: Connect Response に userData が無い");
+	const gcc = user.value;
+	// ConferenceCreateResponse の中の "McDn" の後ろに、PER の長さ付きでブロックが並ぶ
+	let at = -1;
+	for (let i = 0; i + 4 <= gcc.length; i++) {
+		if (
+			gcc[i] === 0x4d &&
+			gcc[i + 1] === 0x63 &&
+			gcc[i + 2] === 0x44 &&
+			gcc[i + 3] === 0x6e
+		) {
+			at = i + 4;
+			break;
+		}
+	}
+	if (at < 0) throw new Error("GCC: McDn が見つからない");
+	const r = new Reader(gcc, at);
+	const len = readPerLength(r);
+	const blocks = r.sub(Math.min(len, r.left));
+
+	const out: ServerData = {
+		ioChannelId: 0,
+		channelIds: [],
+		earlyCapabilityFlags: 0,
+	};
+	while (blocks.left >= 4) {
+		const type = blocks.u16();
+		const size = blocks.u16();
+		const b = blocks.sub(size - 4);
+		if (type === 0x0c01) {
+			b.u32(); // version
+			if (b.left >= 4) b.u32(); // clientRequestedProtocols
+			if (b.left >= 4) out.earlyCapabilityFlags = b.u32();
+		} else if (type === 0x0c03) {
+			out.ioChannelId = b.u16();
+			const n = b.u16();
+			for (let i = 0; i < n; i++) out.channelIds.push(b.u16());
+		} else if (type === 0x0c04) {
+			out.messageChannelId = b.u16();
+		}
+	}
+	if (!out.ioChannelId)
+		throw new Error("GCC: サーバーが I/O チャネルを返さない");
+	return out;
+}
+
+// ---- Connect のあとの PDU(PER) ----
+
+export const erectDomainRequest = () =>
+	Uint8Array.of(0x04, 0x01, 0x00, 0x01, 0x00);
+export const attachUserRequest = () => Uint8Array.of(0x28);
+
+export function parseAttachUserConfirm(b: Uint8Array): number {
+	const r = new Reader(b);
+	if (r.u8() >> 2 !== 11) throw new Error("MCS: Attach User Confirm ではない");
+	const result = r.u8();
+	if (result !== 0) throw new Error(`MCS: Attach User を断られた (${result})`);
+	return r.u16be() + BASE;
+}
+
+export function channelJoinRequest(
+	userId: number,
+	channelId: number,
+): Uint8Array {
+	return new Writer(5)
+		.u8(0x38)
+		.u16be(userId - BASE)
+		.u16be(channelId)
+		.done();
+}
+
+export function parseChannelJoinConfirm(b: Uint8Array): number {
+	const r = new Reader(b);
+	if (r.u8() >> 2 !== 15) throw new Error("MCS: Channel Join Confirm ではない");
+	const result = r.u8();
+	if (result !== 0) throw new Error(`MCS: チャネルに入れなかった (${result})`);
+	r.u16be(); // initiator
+	r.u16be(); // requested
+	return r.u16be();
+}
+
+/** Send Data Request(クライアント → サーバー) */
+export function sendDataRequest(
+	userId: number,
+	channelId: number,
+	data: Uint8Array,
+): Uint8Array {
+	return new Writer(data.length + 8)
+		.u8(0x64)
+		.u16be(userId - BASE)
+		.u16be(channelId)
+		.u8(0x70) // 優先度 high、先頭かつ最後の断片
+		.bytes(perLength(data.length))
+		.bytes(data)
+		.done();
+}
+
+export type SendData = { channelId: number; data: Uint8Array };
+
+/** Send Data Indication(サーバー → クライアント)。切断の通知なら例外 */
+export function parseSendDataIndication(b: Uint8Array): SendData {
+	const r = new Reader(b);
+	const choice = r.u8() >> 2;
+	if (choice === 8)
+		throw new Error("MCS: サーバーが切断した(Disconnect Provider Ultimatum)");
+	if (choice !== 26)
+		throw new Error(`MCS: Send Data Indication ではない (${choice})`);
+	r.u16be(); // initiator
+	const channelId = r.u16be();
+	r.u8(); // priority / segmentation
+	const len = readPerLength(r);
+	return { channelId, data: r.bytes(len) };
+}

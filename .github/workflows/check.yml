@@ -24,6 +24,7 @@ jobs:
       - run: bun i --frozen-lockfile
       - run: bunx biome ci
       - run: bunx tsc --noEmit
+      - run: bun test web
       # 画面を先に作る(server が exe に埋め込む)
       - run: bun run build:web
       # TUnit はテストプロジェクト自体が実行ファイル
