@@ -1,8 +1,8 @@
 # 自前の RDP クライアント(H.264)— やることのメモ
 
 > **進み具合**: 層 1〜5(つなぐ・CredSSP・接続手順・Fast-Path の入出力・動的チャネル)と層 7(DisplayControl・クリップボード)は実装済みで、IronRDP は外した。
-> 画面は 16 ビット色の Interleaved RLE(ビットマップ)で受けている。層 6(GFX / H.264)は未着手。
-> Windows に対して(CredSSP を含む)の実機確認は、正しいパスワードでまだしていない。
+> 画面は RemoteFX(Surface Commands、32 ビット)で受け、使わないサーバー向けに旧ビットマップ(RLE 16 ビット・planar 32 ビット)も読める。層 6(GFX / H.264)は未着手。
+> Windows への接続は確認できた(2026-10-11)。スクロールの速さは、Frame Acknowledge・タイルの間引き・復号の高速化で対応した。
 
 ブラウザの IronRDP(WASM)を、mado が使っている機能だけの小さい TS 実装に置き換え、画面を H.264(WebCodecs)で映す。
 サーバー側(mado の RDCleanPath の中継)は今のまま使う。
@@ -49,39 +49,39 @@
 
 ### 1. つなぐ(RDCleanPath)
 
-- [ ] X.224 Connection Request(PROTOCOL_HYBRID を要求)を RDCleanPath の要求に入れて送る
-- [ ] 応答から X.224 Connection Confirm と RDP サーバーの証明書の鎖を取り出す(server/RdCleanPath.cs と同じ DER)
-- [ ] 以降は WebSocket のバイナリをそのまま RDP の流れとして読み書きする(TPKT / Fast-Path の切り出し)
+- [x] X.224 Connection Request(PROTOCOL_HYBRID を要求)を RDCleanPath の要求に入れて送る
+- [x] 応答から X.224 Connection Confirm と RDP サーバーの証明書の鎖を取り出す(server/RdCleanPath.cs と同じ DER)
+- [x] 以降は WebSocket のバイナリをそのまま RDP の流れとして読み書きする(TPKT / Fast-Path の切り出し)
 
 ### 2. ログイン(CredSSP、[MS-CSSP] / [MS-NLMP])
 
-- [ ] TSRequest の DER(読み書き)
-- [ ] NTLMv2(NEGOTIATE / CHALLENGE / AUTHENTICATE、MIC、署名と封印)
-- [ ] pubKeyAuth(サーバー証明書の公開鍵を使う。CredSSP v5 以降はハッシュの形)
-- [ ] TSCredentials(ユーザー名・パスワード)を封印して送る
-- [ ] 暗号: WebCrypto に MD4 / MD5 / RC4 が無いので自前で書く(HMAC-MD5 も)
+- [x] TSRequest の DER(読み書き)
+- [x] NTLMv2(NEGOTIATE / CHALLENGE / AUTHENTICATE、MIC、署名と封印)
+- [x] pubKeyAuth(サーバー証明書の公開鍵を使う。CredSSP v5 以降はハッシュの形)
+- [x] TSCredentials(ユーザー名・パスワード)を封印して送る
+- [x] 暗号: WebCrypto に MD4 / MD5 / RC4 が無いので自前で書く(HMAC-MD5 も)
 - Kerberos はやらない(ローカル アカウント / NTLM だけ)
 
 ### 3. 接続の手順([MS-RDPBCGR] 1.3.1.1)
 
-- [ ] MCS Connect Initial + GCC Conference Create(Client Core / Security / Network / Cluster Data。チャネルは drdynvc と cliprdr)
-- [ ] Erect Domain / Attach User / Channel Join(使うチャネルの数だけ)
-- [ ] Client Info PDU(自動ログオンのフラグ)
-- [ ] ライセンス(多くは「ライセンス不要」の応答を受けるだけ)
-- [ ] Demand Active を受けて Confirm Active を返す(能力セット: General / Bitmap / Order / Input / Pointer / VirtualChannel / MultifragmentUpdate / LargePointer / SurfaceCommands など)
-- [ ] Synchronize / Control (Cooperate, Request Control) / Font List
-- [ ] Deactivate-Reactivate(解像度変更のとき)に対応
+- [x] MCS Connect Initial + GCC Conference Create(Client Core / Security / Network / Cluster Data。チャネルは drdynvc と cliprdr)
+- [x] Erect Domain / Attach User / Channel Join(使うチャネルの数だけ)
+- [x] Client Info PDU(自動ログオンのフラグ)
+- [x] ライセンス(多くは「ライセンス不要」の応答を受けるだけ)
+- [x] Demand Active を受けて Confirm Active を返す(能力セット: General / Bitmap / Order / Input / Pointer / VirtualChannel / MultifragmentUpdate / LargePointer / SurfaceCommands など)
+- [x] Synchronize / Control (Cooperate, Request Control) / Font List
+- [x] Deactivate-Reactivate(解像度変更のとき)に対応
 
 ### 4. 入力と出力(Fast-Path)
 
-- [ ] 入力: スキャンコード(KeyboardEvent.code → スキャンコードの表)、Unicode、マウス(移動・ボタン・ホイール)
-- [ ] 出力: Fast-Path Update の切り出し、断片の組み立て
-- [ ] マウス ポインタ(新しいポインタ / キャッシュ / 位置 / 非表示)→ CSS の cursor に描く
+- [x] 入力: スキャンコード(KeyboardEvent.code → スキャンコードの表)、Unicode、マウス(移動・ボタン・ホイール)
+- [x] 出力: Fast-Path Update の切り出し、断片の組み立て
+- [x] マウス ポインタ(新しいポインタ / キャッシュ / 位置 / 非表示)→ CSS の cursor に描く
 
 ### 5. 動的チャネル([MS-RDPEDYC])
 
-- [ ] drdynvc の Capabilities / Create / Data First / Data / Close
-- [ ] 上に載せるもの: `Microsoft::Windows::RDS::Graphics`(GFX)、`Microsoft::Windows::RDS::DisplayControl`(解像度)
+- [x] drdynvc の Capabilities / Create / Data First / Data / Close
+- [x] 上に載せるもの: `Microsoft::Windows::RDS::Graphics`(GFX)、`Microsoft::Windows::RDS::DisplayControl`(解像度)
 
 ### 6. 画面(GFX、[MS-RDPEGFX])— ここが本題
 
@@ -97,8 +97,8 @@
 
 ### 7. 解像度とクリップボード
 
-- [ ] DisplayControl: Monitor Layout PDU(今の「自動」と同じ動き)
-- [ ] cliprdr([MS-RDPECLIP]): 文字列(CF_UNICODETEXT)だけ。ブラウザの Clipboard API との行き来
+- [x] DisplayControl: Monitor Layout PDU(今の「自動」と同じ動き)
+- [x] cliprdr([MS-RDPECLIP]): 文字列(CF_UNICODETEXT)だけ。ブラウザの Clipboard API との行き来
 
 ## サーバー(Windows)側の設定
 

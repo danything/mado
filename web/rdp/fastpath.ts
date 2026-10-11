@@ -46,7 +46,10 @@ export class Reassembler {
 			const size = r.u16();
 			const data = r.bytes(size);
 			switch (frag) {
-				case 0: // 単独
+				case 0: // 単独(組み立て中に来たら、組み立て中のものは捨てる)
+					this.parts = [];
+					this.size = 0;
+					this.open = false;
 					out.push({ code, data });
 					break;
 				case 2: // 最初

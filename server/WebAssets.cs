@@ -32,7 +32,6 @@ internal static class WebAssets
         ".js" => "text/javascript; charset=utf-8",
         ".css" => "text/css; charset=utf-8",
         ".svg" => "image/svg+xml",
-        ".wasm" => "application/wasm",
         ".woff2" => "font/woff2",
         _ => "application/octet-stream",
     };
