@@ -78,6 +78,8 @@ form.addEventListener("submit", async (e) => {
 		localStorage.setItem(REMEMBER, JSON.stringify({ target, username }));
 	} catch {}
 	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
+	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
+	if (submit.getAttribute("aria-busy") === "true") return;
 	submit.setAttribute("aria-busy", "true");
 	status.textContent = "つないでいます…";
 	try {
