@@ -1,5 +1,63 @@
-/* 見た目は Blades CSS(Pico CSS の後継。https://blades.ninja/)に任せ、ここは並べ方だけ */
+/* 土台は Blades CSS(Pico CSS の後継。https://blades.ninja/)。ここで色・角丸・影を今風(灰色の濃淡と細い枠線)に寄せ、
+ * 並べ方を決める。色は Pico の変数を上書きする(同じ詳細度のセレクタで、後に書いたほうが勝つ) */
 @import "@anyblades/blades";
+
+:root:not([data-theme="dark"]) {
+	--mado-bg: #fafafa;
+	--mado-bg-accent: rgb(99 102 241 / 0.08);
+	--mado-fg: #18181b;
+	--mado-muted: #71717a;
+	--mado-border: #e4e4e7;
+	--mado-card: #ffffff;
+	--mado-input: #ffffff;
+	--mado-primary: #18181b;
+	--mado-primary-fg: #fafafa;
+	--mado-primary-hover: #27272a;
+	--mado-ring: rgb(24 24 27 / 0.12);
+	--mado-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.06);
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme]) {
+		--mado-bg: #09090b;
+		--mado-bg-accent: rgb(129 140 248 / 0.12);
+		--mado-fg: #fafafa;
+		--mado-muted: #a1a1aa;
+		--mado-border: #27272a;
+		--mado-card: #111113;
+		--mado-input: #18181b;
+		--mado-primary: #fafafa;
+		--mado-primary-fg: #18181b;
+		--mado-primary-hover: #e4e4e7;
+		--mado-ring: rgb(250 250 250 / 0.14);
+		--mado-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.35);
+	}
+}
+
+:root:not([data-theme="dark"]),
+:root:not([data-theme]) {
+	--pico-font-family-sans-serif:
+		"Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+		"Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
+	--pico-font-size: 15px;
+	--pico-border-radius: 10px;
+	--pico-background-color: var(--mado-bg);
+	--pico-color: var(--mado-fg);
+	--pico-muted-color: var(--mado-muted);
+	--pico-muted-border-color: var(--mado-border);
+	--pico-card-background-color: var(--mado-card);
+	--pico-card-sectioning-background-color: var(--mado-card);
+	--pico-card-box-shadow: var(--mado-shadow);
+	--pico-form-element-background-color: var(--mado-input);
+	--pico-form-element-border-color: var(--mado-border);
+	--pico-form-element-focus-color: var(--mado-ring);
+	--pico-primary: var(--mado-fg);
+	--pico-primary-background: var(--mado-primary);
+	--pico-primary-border: var(--mado-primary);
+	--pico-primary-hover-background: var(--mado-primary-hover);
+	--pico-primary-hover-border: var(--mado-primary-hover);
+	--pico-primary-inverse: var(--mado-primary-fg);
+	--pico-primary-focus: var(--mado-ring);
+}
 
 html,
 body {
@@ -9,27 +67,152 @@ body {
 	display: flex;
 	flex-direction: column;
 	margin: 0;
+	/* 上のほうにうっすら色を差す */
+	background:
+		radial-gradient(
+			60rem 30rem at 50% -10rem,
+			var(--mado-bg-accent),
+			transparent 70%
+		),
+		var(--mado-bg);
+	-webkit-font-smoothing: antialiased;
 }
+
+/* --- ログインの前の画面 ---------------------------------------------------------------------- */
 #home {
-	margin-block: auto;
-	max-width: 28rem;
+	flex: 1;
+	display: grid;
+	place-items: center;
+	max-width: none;
+	padding: 1.5rem 1rem;
 }
-#home[hidden],
-#toolbar[hidden],
-#target-field[hidden] {
-	display: none;
+#home > article {
+	width: min(24rem, 100%);
+	margin: 0;
+	padding: 2rem;
+	border: 1px solid var(--mado-border);
+	border-radius: 16px;
+}
+#home > article > header,
+#home > article > footer {
+	margin: 0;
+	padding: 0;
+	background: none;
+	border: 0;
+}
+#home > article > header {
+	margin-bottom: 1.75rem;
+}
+#home > article > footer {
+	margin-top: 1.25rem;
+	padding-top: 1rem;
+	border-top: 1px solid var(--mado-border);
+	text-align: center;
+}
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+.brand svg {
+	flex: none;
+	width: 40px;
+	height: 40px;
+	padding: 8px;
+	border-radius: 12px;
+	background: var(--mado-primary);
+	color: var(--mado-primary-fg);
+}
+.brand h1 {
+	margin: 0;
+	font-size: 1.25rem;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+}
+.brand p {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--mado-muted);
+}
+#login {
+	display: grid;
+	gap: 0.875rem;
+	margin: 0;
+}
+#login label {
+	margin: 0;
+}
+#login :is(input, select) {
+	margin: 0;
+	height: 2.875rem;
+	transition:
+		border-color 0.15s,
+		box-shadow 0.15s;
+}
+#login button[type="submit"] {
+	margin: 0.25rem 0 0;
+	height: 2.75rem;
+	font-weight: 600;
+	transition: background-color 0.15s;
+}
+#login button[aria-busy="true"] {
+	pointer-events: none;
+	opacity: 0.7;
+}
+#status {
+	color: var(--mado-muted);
+	text-align: center;
 }
 #status:empty {
 	display: none;
 }
+#home a {
+	color: var(--mado-muted);
+	text-decoration: none;
+}
+#home a:hover {
+	color: var(--mado-fg);
+}
+
+/* --- つないでいる間 -------------------------------------------------------------------------- */
 #toolbar {
-	padding-inline: 0.75rem;
-	border-bottom: 1px solid var(--pico-muted-border-color);
+	align-items: center;
+	padding: 0.375rem 0.75rem;
+	border-bottom: 1px solid var(--mado-border);
+	background: color-mix(in srgb, var(--mado-card) 80%, transparent);
+	backdrop-filter: blur(12px);
+}
+#toolbar ul {
+	gap: 0.375rem;
+}
+#toolbar li {
+	padding: 0;
+}
+#toolbar strong {
+	font-size: 0.875rem;
+	font-weight: 600;
+}
+#toolbar strong::before {
+	content: "";
+	display: inline-block;
+	width: 0.5rem;
+	height: 0.5rem;
+	margin-right: 0.5rem;
+	border-radius: 50%;
+	background: #22c55e;
+	vertical-align: 0.05em;
 }
 #toolbar button {
 	margin: 0;
-	padding: 0.25rem 0.75rem;
-	font-size: 0.875rem;
+	padding: 0.3rem 0.75rem;
+	font-size: 0.8125rem;
+	border-radius: 8px;
+}
+
+#home[hidden],
+#toolbar[hidden],
+#target-field[hidden] {
+	display: none;
 }
 /* つなぐまでは場所を取らない(IronRDP の要素は ready を出すために DOM に置いておく) */
 #screen.idle {
