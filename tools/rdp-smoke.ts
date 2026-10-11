@@ -3,6 +3,7 @@
 //   bun build tools/rdp-smoke.ts --target node --outfile out/rdp-smoke.mjs && node out/rdp-smoke.mjs
 // (bun の TLS は RDP の自己署名証明書を断るので、node で動かす。環境変数: PORT / RDPUSER / RDPPASS / OUT)
 
+import * as net from "node:net";
 import * as tls from "node:tls";
 import { establish } from "../web/rdp/connect";
 import * as mcs from "../web/rdp/mcs";

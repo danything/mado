@@ -181,3 +181,68 @@ describe("Fast-Path の更新", () => {
 		expect(out.map((u) => [u.code, hex(u.data)])).toEqual([[1, "010203"]]);
 	});
 });
+
+describe("不正な入力", () => {
+	test("32bpp の圧縮は未対応と言う", () => {
+		expect(() =>
+			decodeBitmap({
+				left: 0,
+				top: 0,
+				right: 0,
+				bottom: 0,
+				width: 1,
+				height: 1,
+				bpp: 32,
+				compressed: true,
+				data: new Uint8Array(4),
+			}),
+		).toThrow("planar");
+	});
+
+	test("巨大な矩形は確保しない", () => {
+		expect(() =>
+			decodeBitmap({
+				left: 0,
+				top: 0,
+				right: 0xfffe,
+				bottom: 0xfffe,
+				width: 0xffff,
+				height: 0xffff,
+				bpp: 16,
+				compressed: false,
+				data: new Uint8Array(4),
+			}),
+		).toThrow("大きすぎる");
+	});
+
+	test("圧縮ヘッダー分より短い長さ", () => {
+		const w = new Writer()
+			.u16(1)
+			.u16(1)
+			.u16(0)
+			.u16(0)
+			.u16(1)
+			.u16(1)
+			.u16(2)
+			.u16(2)
+			.u16(16)
+			.u16(1)
+			.u16(4)
+			.done();
+		expect(() => parseBitmapUpdate(w)).toThrow("長さ");
+	});
+
+	test("RLE の命令の追加バイトが入力に無い", () => {
+		expect(() => rleDecompress(fromHex("e0"), 4, 1, 2)).toThrow("足りない");
+		expect(() => rleDecompress(fromHex("f3"), 4, 1, 2)).toThrow("足りない");
+		expect(() => rleDecompress(fromHex("41"), 8, 1, 2)).toThrow("足りない");
+	});
+
+	test("先頭のない断片は例外", () => {
+		const r = new Reassembler();
+		expect(() => r.push(Uint8Array.of(0x11, 1, 0, 9))).toThrow("最初の断片");
+		expect(() => new Reassembler().push(Uint8Array.of(0x31, 1, 0, 9))).toThrow(
+			"最初の断片",
+		);
+	});
+});

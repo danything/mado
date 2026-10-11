@@ -17,12 +17,18 @@ export const UPDATE = {
 	LARGE_POINTER: 0xc,
 } as const;
 
+/** 組み立てる更新の大きさの上限 */
+const MAX_UPDATE = 1 << 24;
+
 export type Update = { code: number; data: Uint8Array };
 
 /** 断片を組み立てながら、更新を 1 つずつ返す */
 export class Reassembler {
 	private parts: Uint8Array[] = [];
 	private code = 0;
+	private size = 0;
+	/** 最初の断片を受けて、最後をまだ受けていない */
+	private open = false;
 
 	/** x224.readPdu の fastpath の data(ヘッダーの後ろ)を渡す */
 	push(pdu: Uint8Array): Update[] {
@@ -44,19 +50,32 @@ export class Reassembler {
 					out.push({ code, data });
 					break;
 				case 2: // 最初
-					this.parts = [data];
+					this.parts = [];
+					this.size = 0;
 					this.code = code;
+					this.open = true;
+					this.append(data);
 					break;
 				case 3: // 途中
-					this.parts.push(data);
+					this.append(data);
 					break;
 				case 1: // 最後
-					this.parts.push(data);
+					this.append(data);
 					out.push({ code: this.code, data: concat(...this.parts) });
 					this.parts = [];
+					this.size = 0;
+					this.open = false;
 					break;
 			}
 		}
 		return out;
+	}
+
+	/** 断片を足す。最初の断片が無いもの、溜まりすぎるものは例外 */
+	private append(data: Uint8Array): void {
+		if (!this.open) throw new Error("Fast-Path: 最初の断片が無い");
+		this.size += data.length;
+		if (this.size > MAX_UPDATE) throw new Error("Fast-Path: 更新が大きすぎる");
+		this.parts.push(data);
 	}
 }

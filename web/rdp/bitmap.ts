@@ -17,6 +17,9 @@ export type BitmapRect = {
 	data: Uint8Array;
 };
 
+/** 1 つの矩形の画素数の上限(普通は 64x64 など小さい) */
+const MAX_PIXELS = 1 << 24;
+
 const BITMAP_COMPRESSION = 0x0001;
 const NO_BITMAP_COMPRESSION_HDR = 0x0400;
 
@@ -37,8 +40,9 @@ export function parseBitmapUpdate(payload: Uint8Array): BitmapRect[] {
 		const flags = r.u16();
 		const len = r.u16();
 		const compressed = (flags & BITMAP_COMPRESSION) !== 0;
-		if (compressed && !(flags & NO_BITMAP_COMPRESSION_HDR)) r.skip(8);
 		const hdr = compressed && !(flags & NO_BITMAP_COMPRESSION_HDR) ? 8 : 0;
+		if (len < hdr) throw new Error("ビットマップの長さが不正");
+		r.skip(hdr);
 		out.push({
 			left,
 			top,
@@ -57,6 +61,10 @@ export function parseBitmapUpdate(payload: Uint8Array): BitmapRect[] {
 /** 矩形を RGBA(上の行から、width x height)にする */
 export function decodeBitmap(b: BitmapRect): Uint8ClampedArray {
 	if (b.bpp === 8) throw new Error("8 ビット色の画面は使えない");
+	if (b.compressed && b.bpp === 32)
+		throw new Error("32bpp の圧縮(planar)は未対応");
+	if (b.width * b.height > MAX_PIXELS)
+		throw new Error("ビットマップが大きすぎる");
 	const px = b.bpp === 15 ? 2 : b.bpp >> 3; // 1 画素のバイト数
 	const rowBytes = b.width * px;
 	const src = b.compressed
@@ -153,6 +161,7 @@ export function rleDecompress(
 	height: number,
 	bpp: number,
 ): Uint8Array {
+	if (width * height > MAX_PIXELS) throw new Error("RLE: 大きすぎる");
 	const rowDelta = width * bpp;
 	const out = new Uint8Array(rowDelta * height);
 	let s = 0;
@@ -183,6 +192,11 @@ export function rleDecompress(
 		s += bpp;
 		return p;
 	};
+	/** 命令の追加バイト(長さ・マスク)を、入力の範囲を見て読む */
+	const byteAt = (i: number): number => {
+		if (i >= src.length) throw new Error("RLE: 入力が足りない");
+		return src[i] as number;
+	};
 	const need = (n: number) => {
 		if (d + n * bpp > out.length) throw new Error("RLE: 出力があふれた");
 	};
@@ -197,7 +211,7 @@ export function rleDecompress(
 				const mask = code === REGULAR_FGBG_IMAGE ? 0x1f : 0x0f;
 				run = header & mask;
 				if (run === 0) {
-					run = (src[s + 1] as number) + 1;
+					run = byteAt(s + 1) + 1;
 					s += 2;
 				} else {
 					run *= 8;
@@ -213,7 +227,7 @@ export function rleDecompress(
 			case MEGA_MEGA_SET_FG_RUN:
 			case MEGA_MEGA_SET_FGBG_IMAGE:
 			case MEGA_MEGA_DITHERED_RUN:
-				run = (src[s + 1] as number) | ((src[s + 2] as number) << 8);
+				run = byteAt(s + 1) | (byteAt(s + 2) << 8);
 				s += 3;
 				break;
 			case SPECIAL_FGBG_1:
@@ -226,7 +240,7 @@ export function rleDecompress(
 				const lite = code >= LITE_SET_FG_FG_RUN && code <= LITE_DITHERED_RUN;
 				run = header & (lite ? 0x0f : 0x1f);
 				if (run === 0) {
-					run = (src[s + 1] as number) + (lite ? 16 : 32);
+					run = byteAt(s + 1) + (lite ? 16 : 32);
 					s += 2;
 				} else s += 1;
 			}
@@ -303,7 +317,7 @@ export function rleDecompress(
 				need(run);
 				let left = run;
 				while (left > 0) {
-					const mask = src[s++] as number;
+					const mask = byteAt(s++);
 					const bits = Math.min(8, left);
 					for (let b = 0; b < bits; b++)
 						(mask >> b) & 1 ? writeFg() : writeBg();

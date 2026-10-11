@@ -55,8 +55,8 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(0) // serialNumber
 			.u16(16) // highColorDepth: 16 ビット(Interleaved RLE で受ける)
 			.u16(0x0002 | 0x0004) // supportedColorDepths: 16 / 15
-			// earlyCapabilityFlags: ERRINFO_PDU | STATUSINFO_PDU | SUPPORT_DYNVC_GFX_PROTOCOL
-			.u16(0x0001 | 0x0004 | 0x0100)
+			// earlyCapabilityFlags: ERRINFO_PDU | STATUSINFO_PDU(GFX は受けられるようになってから SUPPORT_DYNVC_GFX_PROTOCOL を足す)
+			.u16(0x0001 | 0x0004)
 			.zeros(64) // clientDigProductId
 			.u8(0) // connectionType
 			.u8(0) // pad

@@ -27,7 +27,7 @@ export type ConnectOptions = {
 	onLog?: (line: string) => void;
 	/** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
 	allowTls?: boolean;
-	/** 試験用。LICENSE_REQUEST にダミーで答える(xrdp 向け) */
+	/** 試験用。LICENSE_REQUEST にダミーの NEW_LICENSE_REQUEST で答える(xrdp は中身を見ない)。本物のライセンス交渉(PLATFORM_CHALLENGE 以降)はしないので、xrdp 以外では先へ進めない */
 	dummyLicense?: boolean;
 };
 
