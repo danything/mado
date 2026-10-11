@@ -5,12 +5,14 @@
 //     pubKeyAuth [3] OCTET STRING OPTIONAL, errorCode [4] INTEGER OPTIONAL, clientNonce [5] OCTET STRING OPTIONAL }
 //   NegoData ::= SEQUENCE OF SEQUENCE { negoToken [0] OCTET STRING }
 
-import { concat, equal } from "./bytes";
+import { concat, equal, utf16le } from "./bytes";
 import { random, sha256 } from "./crypto";
 import * as der from "./der";
 import { identity, Ntlm } from "./ntlm";
 import type { ByteStream } from "./stream";
 
+/** 受け取ってよい TSRequest / RDCleanPath 応答の大きさの上限(証明書の鎖で数十 KB) */
+const MAX_PDU = 1 << 20;
 const VERSION = 6;
 const enc = new TextEncoder();
 const CLIENT_SERVER = enc.encode("CredSSP Client-To-Server Binding Hash\0");
@@ -78,6 +80,7 @@ async function readTsRequest(s: ByteStream): Promise<TsRequest> {
 		for (let i = 0; i < n; i++) len = len * 256 + (h[2 + i] as number);
 		headLen += n;
 	}
+	if (len > MAX_PDU) throw new Error("CredSSP: TSRequest が大きすぎる");
 	const t = parseTsRequest(await s.read(headLen + len));
 	if (t.errorCode !== undefined) throw new Error(ntStatus(t.errorCode));
 	return t;
@@ -103,15 +106,7 @@ function tsCredentials(
 	user: string,
 	password: string,
 ): Uint8Array {
-	const u16 = (s: string) => {
-		const b = new Uint8Array(s.length * 2);
-		for (let i = 0; i < s.length; i++) {
-			const c = s.charCodeAt(i);
-			b[i * 2] = c & 0xff;
-			b[i * 2 + 1] = c >> 8;
-		}
-		return b;
-	};
+	const u16 = utf16le;
 	const creds = der.tlv(
 		der.SEQUENCE,
 		der.field(0, der.octets(u16(domain))),

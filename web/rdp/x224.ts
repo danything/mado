@@ -95,6 +95,8 @@ export async function readPdu(s: ByteStream): Promise<Pdu> {
 	if (first === 3) {
 		const h = await s.peek(4);
 		const len = ((h[2] as number) << 8) | (h[3] as number);
+		// 短すぎる長さのまま読むとヘッダーの途中で止まって、以降の流れがずれる
+		if (len < 7) throw new Error(`TPKT: 長さが不正 (${len})`);
 		const all = await s.read(len);
 		// X.224 Data TPDU は 02 f0 80。それ以外(Connection Confirm など)は丸ごと返す
 		if (all[4] === 2 && all[5] === 0xf0 && all[6] === 0x80)
@@ -109,6 +111,7 @@ export async function readPdu(s: ByteStream): Promise<Pdu> {
 		len = (((h3[1] as number) & 0x7f) << 8) | (h3[2] as number);
 		head = 3;
 	}
+	if (len < head) throw new Error(`Fast-Path: 長さが不正 (${len})`);
 	const all = await s.read(len);
 	return { kind: "fastpath", data: all.subarray(head) };
 }

@@ -43,6 +43,7 @@ export async function readResponse(s: WsStream): Promise<Response> {
 		for (let i = 0; i < n; i++) len = len * 256 + (h[2 + i] as number);
 		headLen += n;
 	}
+	if (len > 1 << 20) throw new Error("RDCleanPath: 応答が大きすぎる");
 	const raw = await s.read(headLen + len);
 	const f = der.fields(der.mustRead(raw).value);
 	const x224 = f.get(6)?.value;

@@ -119,6 +119,7 @@ export function parseChallenge(raw: Uint8Array): Challenge {
 	const tiLen = r.u16();
 	r.u16();
 	const tiOff = r.u32();
+	if (tiOff + tiLen > raw.length) throw new Error("NTLM: TargetInfo が範囲外");
 	return {
 		raw,
 		flags,
