@@ -9,28 +9,47 @@ import {
 	init,
 } from "@devolutions/iron-remote-desktop-rdp";
 
-type SessionInfo = { name: string; token: string; ws: string };
+type SessionInfo = { name: string; targets: string[]; ws: string };
 
 const $ = <T extends HTMLElement>(sel: string) =>
 	document.querySelector(sel) as T;
+const home = $<HTMLElement>("#home");
 const form = $<HTMLFormElement>("#login");
-const status = $<HTMLParagraphElement>("#status");
+const status = $<HTMLElement>("#status");
 const toolbar = $<HTMLElement>("#toolbar");
 const screen = $<HTMLElement>("#screen");
+const field = (name: string) =>
+	form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-async function session(): Promise<SessionInfo> {
-	const res = await fetch("/api/session", { cache: "no-store" });
+/** 前回選んだつなぐ先とユーザー名(パスワードは覚えない) */
+const REMEMBER = "mado:last";
+
+async function getJson<T>(url: string): Promise<T> {
+	const res = await fetch(url, { cache: "no-store" });
 	if (res.status === 401) {
 		location.href = `/login?to=${encodeURIComponent(location.pathname)}`;
 		throw new Error("login required");
 	}
-	if (!res.ok) throw new Error(`/api/session (${res.status})`);
+	if (!res.ok) throw new Error(`${url} (${res.status})`);
 	return res.json();
 }
 
-const first = await session();
-$<HTMLParagraphElement>("#who").textContent = `${first.name} でログイン中`;
-form.hidden = false;
+const session = await getJson<SessionInfo>("/api/session");
+$<HTMLElement>("#who").textContent = `${session.name} でログイン中`;
+const select = field("target") as HTMLSelectElement;
+for (const name of session.targets) select.add(new Option(name, name));
+// つなぐ先が 1 つなら選ぶ欄は出さない
+$<HTMLElement>("#target-field").hidden = session.targets.length < 2;
+try {
+	const last = JSON.parse(localStorage.getItem(REMEMBER) ?? "{}") as {
+		target?: string;
+		username?: string;
+	};
+	if (last.target && session.targets.includes(last.target))
+		select.value = last.target;
+	if (last.username) field("username").value = last.username;
+} catch {}
+home.hidden = false;
 
 await init("INFO");
 const el = document.createElement("iron-remote-desktop") as HTMLElement & {
@@ -53,27 +72,36 @@ ui.setEnableClipboard(true);
 
 form.addEventListener("submit", async (e) => {
 	e.preventDefault();
-	const data = new FormData(form);
+	const target = select.value;
+	const username = field("username").value;
+	try {
+		localStorage.setItem(REMEMBER, JSON.stringify({ target, username }));
+	} catch {}
 	status.textContent = "つないでいます…";
 	try {
-		// トークンは使い捨てで寿命が短いので、つなぐ直前に取り直す
-		const s = await session();
+		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入り、サーバーが決める
+		const { token } = await getJson<{ token: string }>(
+			`/api/token?target=${encodeURIComponent(target)}`,
+		);
+		// 画面の場所を出してから大きさを測る(clientHeight を読むとレイアウトがその場で決まる)
+		home.hidden = true;
+		toolbar.hidden = false;
+		$<HTMLElement>("#current").textContent = target;
+		screen.classList.remove("idle");
 		const config = ui
 			.configBuilder()
-			.withUsername(String(data.get("username")))
-			.withPassword(String(data.get("password")))
-			// つなぐ先はサーバーの設定で決まっている(ここの値は見られない)
-			.withDestination("mado")
-			.withProxyAddress(s.ws)
-			.withAuthToken(s.token)
+			.withUsername(username)
+			.withPassword(field("password").value)
+			// サーバーは見ない(つなぐ先はトークンで決まる)
+			.withDestination(target)
+			.withProxyAddress(session.ws)
+			.withAuthToken(token)
 			.withDesktopSize({
 				width: screen.clientWidth || innerWidth,
-				height: (screen.clientHeight || innerHeight) - 40,
+				height: screen.clientHeight || innerHeight,
 			})
 			.withExtension(displayControl(true))
 			.build();
-		form.hidden = true;
-		toolbar.hidden = false;
 		ui.setVisibility(true);
 		const info = await ui.connect(config);
 		status.textContent = "";
@@ -83,8 +111,9 @@ form.addEventListener("submit", async (e) => {
 		status.textContent = `つなげなかった: ${describe(err)}`;
 	}
 	toolbar.hidden = true;
-	form.hidden = false;
-	(form.elements.namedItem("password") as HTMLInputElement).value = "";
+	screen.classList.add("idle");
+	home.hidden = false;
+	field("password").value = "";
 });
 
 toolbar.addEventListener("click", (e) => {

@@ -10,7 +10,7 @@
 import type { BunRequest, Server } from "bun";
 import index from "../web/index.html";
 import { Acme } from "./acme.ts";
-import { loadConfig, origin } from "./config.ts";
+import { loadConfig, origin, type Target } from "./config.ts";
 import { Relay } from "./gateway.ts";
 import {
 	Forbidden,
@@ -26,7 +26,7 @@ const log = (msg: string) => console.log(`${new Date().toISOString()} ${msg}`);
 
 const { config, file } = await loadConfig(Bun.argv);
 log(
-	`mado: ${file} を読んだ(${config.host}、RDP は ${config.rdp.host}:${config.rdp.port})`,
+	`mado: ${file} を読んだ(${config.host}、つなぐ先 ${config.targets.map((t) => `${t.name}=${t.host}:${t.port}`).join(" ")})`,
 );
 
 const signer = await Signer.open(config.dataDir);
@@ -38,11 +38,12 @@ const SESSION = "mado";
 const PENDING = "mado_login";
 /** ログインしていられる時間。切れたら OIDC に行き直す(Entra 側にセッションがあれば一瞬で戻る) */
 const SESSION_SECONDS = 8 * 60 * 60;
-/** /api/session が出す中継のトークンの寿命。ページが受け取ってすぐ使う */
+/** /api/token が出す中継のトークンの寿命。ページが受け取ってすぐ使う */
 const RELAY_TOKEN_SECONDS = 60;
 
 type Session = User;
-type RelayToken = { sub: string; jti: string };
+/** 誰が・どこへ。つなぐ先はここで決まり、ブラウザが RDCleanPath に入れてくる行き先は見ない */
+type RelayToken = { sub: string; target: string; jti: string };
 type WsData = { user: Session; relay?: Relay };
 
 const cookie = (maxAge: number) => ({
@@ -60,15 +61,18 @@ const text = (status: number, body: string) =>
 		headers: { "content-type": "text/plain; charset=utf-8" },
 	});
 
+const targetOf = (name: string | null | undefined) =>
+	config.targets.find((t) => t.name === name) ?? null;
+
 /** 使ったトークン(jti → 期限)。使い回しを弾く */
 const used = new Map<string, number>();
-function consume(token: string | undefined, sub: string): boolean {
+function consume(token: string | undefined, sub: string): Target | null {
 	const t = signer.verify<RelayToken & { exp: number }>(token);
-	if (!t || t.sub !== sub || used.has(t.jti)) return false;
+	if (!t || t.sub !== sub || used.has(t.jti)) return null;
 	used.set(t.jti, t.exp);
 	const now = Date.now() / 1000;
 	for (const [k, exp] of used) if (exp < now) used.delete(k);
-	return true;
+	return targetOf(t.target);
 }
 
 const routes = {
@@ -123,12 +127,32 @@ const routes = {
 	"/api/session": (req: BunRequest) => {
 		const s = sessionOf(req);
 		if (!s) return Response.json({ login: "/login?to=/" }, { status: 401 });
+		return Response.json(
+			{
+				name: s.name,
+				targets: config.targets.map((t) => t.name),
+				ws: `${base.replace(/^http/, "ws")}/ws`,
+			},
+			{ headers: { "cache-control": "no-store" } },
+		);
+	},
+
+	/** つなぐ直前に取る、使い捨ての中継のトークン(?target=<name>) */
+	"/api/token": (req: BunRequest) => {
+		const s = sessionOf(req);
+		if (!s) return Response.json({ login: "/login?to=/" }, { status: 401 });
+		const target = targetOf(new URL(req.url).searchParams.get("target"));
+		if (!target) return text(404, "そのつなぐ先は無い");
 		const token = signer.sign(
-			{ sub: s.sub, jti: randomToken(16) } satisfies RelayToken,
+			{
+				sub: s.sub,
+				target: target.name,
+				jti: randomToken(16),
+			} satisfies RelayToken,
 			RELAY_TOKEN_SECONDS,
 		);
 		return Response.json(
-			{ name: s.name, token, ws: `${base.replace(/^http/, "ws")}/ws` },
+			{ token },
 			{ headers: { "cache-control": "no-store" } },
 		);
 	},
@@ -151,7 +175,6 @@ const websocket = {
 		const { user } = ws.data;
 		ws.data.relay = new Relay(
 			ws,
-			config.rdp,
 			(auth) => consume(auth, user.sub),
 			(m) => log(`${user.name}: ${m}`),
 		);
