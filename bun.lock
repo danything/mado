@@ -4,12 +4,10 @@
   "workspaces": {
     "": {
       "name": "mado",
-      "dependencies": {
-        "@devolutions/iron-remote-desktop": "0.11.0",
-        "@devolutions/iron-remote-desktop-rdp": "0.7.0",
-      },
       "devDependencies": {
         "@biomejs/biome": "^2.5.15",
+        "@devolutions/iron-remote-desktop": "0.11.0",
+        "@devolutions/iron-remote-desktop-rdp": "0.7.0",
         "@types/bun": "^1.4.2",
         "typescript": "~6.0.3",
       },

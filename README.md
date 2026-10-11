@@ -17,7 +17,7 @@ Guacamole のようにサーバーで画面を描くのではなく、RDP は全
 - Windows のユーザー名とパスワードはブラウザの中の CredSSP が使うだけで、mado には届かない
 - 証明書は Let's Encrypt から自分で取って、30 日を切ったら取り直す(HTTP-01)
 - 実行時の依存は無い。OIDC・ACME・DER は `fetch` と WebCrypto と `node:crypto` で書いてある。
-  npm から入れるのは画面の IronRDP の 2 つだけ(どちらも依存なし)
+  npm から入れるのは画面の IronRDP の 2 つだけ(どちらも依存なし。exe に取り込むので devDependencies)
 
 ## 使い方
 

@@ -15,7 +15,10 @@ import { VERSION } from "../src/rdcleanpath.ts";
 
 const rdpUp = await new Promise<boolean>((ok) => {
 	const s = net.connect(3389, "127.0.0.1");
-	s.once("connect", () => (s.destroy(), ok(true)));
+	s.once("connect", () => {
+		s.destroy();
+		ok(true);
+	});
 	s.once("error", () => ok(false));
 });
 
