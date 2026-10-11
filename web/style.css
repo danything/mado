@@ -72,6 +72,11 @@ button {
 	padding: 4px 8px;
 	font-size: 13px;
 }
+/* つなぐまでは場所を取らない(IronRDP の要素は ready を出すために DOM に置いておく) */
+#screen.idle {
+	flex: 0;
+	visibility: hidden;
+}
 #screen {
 	flex: 1;
 	min-height: 0;
