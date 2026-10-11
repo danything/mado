@@ -10,6 +10,9 @@ export interface ByteStream {
 	write(b: Uint8Array): void;
 }
 
+/** 通信が閉じた・切れた */
+export class StreamClosed extends Error {}
+
 /** 閉じられる ByteStream */
 export interface Transport extends ByteStream {
 	close(): void;
@@ -31,13 +34,13 @@ export class WsStream implements Transport {
 			this.wake();
 		});
 		ws.addEventListener("close", (e) => {
-			this.closed ??= new Error(
+			this.closed ??= new StreamClosed(
 				`connection closed${e.reason ? `: ${e.reason}` : ""} (${e.code})`,
 			);
 			this.wake();
 		});
 		ws.addEventListener("error", () => {
-			this.closed ??= new Error("WebSocket error");
+			this.closed ??= new StreamClosed("WebSocket error");
 			this.wake();
 		});
 	}
@@ -120,7 +123,7 @@ export class WsStream implements Transport {
 	}
 
 	close(): void {
-		this.closed ??= new Error("closed");
+		this.closed ??= new StreamClosed("closed");
 		this.ws.close();
 		this.wake();
 	}
