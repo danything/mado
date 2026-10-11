@@ -180,3 +180,32 @@ describe("CredSSP の TSRequest", () => {
 function share(): number {
 	return 0x103ea;
 }
+
+describe("Frame Acknowledge", () => {
+	test("Share Data として、frameId を本体に載せる", () => {
+		expect(
+			hex(
+				pdu.shareData(
+					1007,
+					0x103ea,
+					pdu.PDUTYPE2.FRAME_ACKNOWLEDGE,
+					pdu.frameAcknowledge(7),
+				),
+			),
+		).toBe("16001700ef03ea0301000001" + "0800" + "380000000" + "7000000");
+	});
+
+	test("能力セットは 8 バイトで、応答していないフレームの最大数を持つ", () => {
+		const caps = pdu.clientCapabilities({
+			width: 1,
+			height: 1,
+			keyboardLayout: 0,
+		});
+		const c = caps.find(
+			(x) =>
+				new DataView(x.buffer, x.byteOffset).getUint16(0, true) ===
+				pdu.CAP.FRAME_ACKNOWLEDGE,
+		);
+		expect(c && hex(c)).toBe("1e000800" + "03000000");
+	});
+});

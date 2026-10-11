@@ -1,12 +1,14 @@
 // ポインタの復号と、セッションのループ(偽の通信路で)の試験。
 
 import { describe, expect, test } from "bun:test";
-import { concat, fromHex, Writer } from "./bytes";
+import { concat, fromHex, Reader, Writer } from "./bytes";
 import { RdpClient, type Screen } from "./client";
 import type { Session } from "./connect";
+import { UPDATE } from "./fastpath";
 import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
+import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
 import { StreamClosed, type Transport } from "./stream";
 import * as x224 from "./x224";
 
@@ -244,5 +246,146 @@ describe("壊れたポインタ", () => {
 		).run();
 		expect(reason).toContain("connection closed");
 		expect(screen.events).toEqual(["resize 64x48", "cursor default"]);
+	});
+});
+
+describe("RemoteFX の間引きと Frame Acknowledge", () => {
+	/** Fast-Path の PDU(ヘッダー 1 + 長さ 1〜2 + 更新)。127 バイトを超える長さは 2 バイト */
+	const fastPdu = (update: Uint8Array) =>
+		update.length + 2 < 0x80
+			? concat(Uint8Array.of(0, update.length + 2), update)
+			: concat(
+					Uint8Array.of(
+						0,
+						0x80 | ((update.length + 3) >> 8),
+						(update.length + 3) & 0xff,
+					),
+					update,
+				);
+	const RFX_ID = 3;
+	const rfxTile = (x: number, y: number) => ({
+		x,
+		y,
+		y_: REAL_TILE.y,
+		cb: REAL_TILE.cb,
+		cr: REAL_TILE.cr,
+	});
+	const zero = rlgrEncode(new Int32Array(4096), 4);
+	const dcTile = (x: number, y: number, v: number) => {
+		const yv = new Int32Array(4096);
+		yv[4032] = v;
+		return { x, y, y_: rlgrEncode(yv, 4), cb: zero, cr: zero };
+	};
+	const full = [{ x: 0, y: 0, w: 64, h: 64 }];
+	const bits = (
+		cmd: number,
+		dest: number[],
+		codec: number,
+		w: number,
+		h: number,
+		data: Uint8Array,
+	) =>
+		new Writer(32 + data.length)
+			.u16(cmd)
+			.u16(dest[0] as number)
+			.u16(dest[1] as number)
+			.u16(dest[2] as number)
+			.u16(dest[3] as number)
+			.u8(32)
+			.u8(0)
+			.u8(0)
+			.u8(codec)
+			.u16(w)
+			.u16(h)
+			.u32(data.length)
+			.bytes(data)
+			.done();
+	const marker = (action: number, id: number) =>
+		new Writer(8).u16(4).u16(action).u32(id).done();
+	const surfCmds = (...cmds: Uint8Array[]) => {
+		const data = concat(...cmds);
+		const update = new Writer()
+			.u8(UPDATE.SURFCMDS)
+			.u16(data.length)
+			.bytes(data)
+			.done();
+		return fastPdu(update);
+	};
+	const rfxAt = (tiles: ReturnType<typeof rfxTile>[]) =>
+		bits(0x0006, [0, 0, 64, 64], RFX_ID, 64, 64, rfxStream(full, tiles));
+
+	/** Send Data Request(クライアント → サーバー)から Frame Acknowledge の frameId を取り出す */
+	function ackId(written: Uint8Array): number | undefined {
+		if (written[0] !== 3) return undefined; // Fast-Path Input など
+		const data = written.subarray(7); // TPKT(4)+ X.224 Data(3)
+		const r = new Reader(data);
+		r.u8(); // 0x64
+		r.skip(4); // initiator, channelId
+		r.u8(); // priority / segmentation
+		const len = r.u8();
+		if (len & 0x80) r.u8(); // 長さは 2 バイト
+		const body = r.rest();
+		const sc = pdu.parseShareControl(body);
+		const sd = pdu.parseShareData(sc.body);
+		return sd.type2 === pdu.PDUTYPE2.FRAME_ACKNOWLEDGE
+			? new Reader(sd.payload).u32()
+			: undefined;
+	}
+
+	test("同じ位置のタイルは最新だけを描き、全フレームに応答を返す(描いたあとで)", async () => {
+		const a = surfCmds(marker(0, 1), rfxAt([rfxTile(0, 0)]), marker(1, 1));
+		const b = surfCmds(marker(0, 2), rfxAt([dcTile(0, 0, 300)]), marker(1, 2));
+		const c = surfCmds(marker(0, 3), rfxAt([dcTile(0, 0, -300)]), marker(1, 3));
+		const screen = new Recorder();
+		const stream = scripted([a, b, c]);
+		const client = new RdpClient(fakeSession(stream), screen);
+		await client.run();
+		expect(screen.events).toEqual(["resize 64x48", "draw 0,0 64x48"]);
+		expect(client.surfaceStats).toEqual({ coalesced: 2, skipped: 0 });
+		const acks = stream.written.map(ackId).filter((x) => x !== undefined);
+		expect(acks).toEqual([1, 2, 3]);
+	});
+
+	test("旧ビットマップが間に入ったら、その前に保留のタイルを描く", async () => {
+		const bitmap = new Writer()
+			.u16(1)
+			.u16(1)
+			.u16(30)
+			.u16(30)
+			.u16(30)
+			.u16(30)
+			.u16(1)
+			.u16(1)
+			.u16(16)
+			.u16(0)
+			.u16(2)
+			.bytes(fromHex("00f8"))
+			.done();
+		const legacy = new Writer().u8(1).u16(bitmap.length).bytes(bitmap).done();
+		const legacyPdu = fastPdu(legacy);
+		const screen = new Recorder();
+		const stream = scripted([
+			surfCmds(rfxAt([rfxTile(0, 0)])),
+			legacyPdu,
+			surfCmds(rfxAt([dcTile(0, 0, 300)])),
+		]);
+		await new RdpClient(fakeSession(stream), screen).run();
+		expect(screen.events).toEqual([
+			"resize 64x48",
+			"draw 0,0 64x48",
+			"draw 30,30 1x1",
+			"draw 0,0 64x48",
+		]);
+	});
+
+	test("切れたときに、溜めたタイルを描いてから終わる", async () => {
+		const screen = new Recorder();
+		const stream = scripted([surfCmds(rfxAt([rfxTile(0, 0)]), marker(1, 5))]);
+		const reason = await new RdpClient(fakeSession(stream), screen).run();
+		expect(reason).toContain("connection closed");
+		expect(screen.events).toContain("draw 0,0 64x48");
+		expect(stream.written.map(ackId).filter((x) => x !== undefined)).toEqual([
+			5,
+		]);
 	});
 });

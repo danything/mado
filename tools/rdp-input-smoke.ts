@@ -1,6 +1,6 @@
 // 入力の実機試験。xrdp につないで、画面が出たら「Use default config」のボタンをクリックし、ダイアログが消えるのを PNG で確かめる。
 //   bun build tools/rdp-input-smoke.ts --target node --outfile out/rdp-input-smoke.mjs && node out/rdp-input-smoke.mjs
-// 環境変数: PORT / RDPUSER / RDPPASS / OUT(クリック前は OUT の .before.png)
+// 環境変数: HOST / PORT / RDPUSER / RDPPASS / OUT(クリック前は OUT の .before.png)
 
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -112,8 +112,9 @@ function png(file: string) {
 	);
 }
 
+const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 13389);
-const raw = net.connect(port, "127.0.0.1");
+const raw = net.connect(port, host);
 await new Promise((r) => raw.once("connect", r));
 const s0 = new Sock(raw);
 s0.write(x224.connectionRequest(x224.PROTOCOL.SSL));

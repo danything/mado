@@ -8,7 +8,7 @@ import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
 import { StreamClosed } from "./stream";
-import { handleSurfaceCommands } from "./surface";
+import { SurfaceRenderer } from "./surface";
 import { ChannelAssembler, SHOW_PROTOCOL, splitChannelData } from "./vchannel";
 import * as x224 from "./x224";
 
@@ -41,6 +41,10 @@ export class RdpClient {
 	/** サーバーと決めた RemoteFX の codecId */
 	private rfxCodecId: number;
 	private closed = false;
+	/** Share Data に付ける shareId(再アクティベーションで変わる) */
+	private shareId: number;
+	/** RemoteFX のタイルを溜めて、同じ位置は最新だけを復号する */
+	private surface: SurfaceRenderer;
 	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
 	errorInfo = 0;
 	/** 受けた更新の種類(Fast-Path の updateCode)ごとの数。診断用 */
@@ -54,6 +58,28 @@ export class RdpClient {
 		this.width = session.width;
 		this.rfxCodecId = pdu.serverRfxCodecId(session.serverCapabilities);
 		this.height = session.height;
+		this.shareId = session.shareId;
+		this.surface = new SurfaceRenderer({
+			draw: (x, y, w, h, rgba) => this.screen.draw(x, y, w, h, rgba),
+			ack: (frameId) => this.sendFrameAck(frameId),
+		});
+	}
+
+	/** 描き終えたフレームをサーバーに知らせる(応答しないと、サーバーは送るのを止める) */
+	private sendFrameAck(frameId: number): void {
+		this.sendIo(
+			pdu.shareData(
+				this.session.userId,
+				this.shareId,
+				pdu.PDUTYPE2.FRAME_ACKNOWLEDGE,
+				pdu.frameAcknowledge(frameId),
+			),
+		);
+	}
+
+	/** 受けた RemoteFX の更新の統計(診断用): 後のタイルに置き換えられて復号しなかった数、捨てた数 */
+	get surfaceStats(): { coalesced: number; skipped: number } {
+		return { coalesced: this.surface.coalesced, skipped: this.surface.skipped };
 	}
 
 	/** 終わるまで読み続ける。正常な終わり(サーバーが切った・こちらが閉じた)は理由の文字列、通信の失敗は例外 */
@@ -72,6 +98,11 @@ export class RdpClient {
 			if (e instanceof mcs.Disconnected || e instanceof StreamClosed)
 				return e.message;
 			throw e;
+		} finally {
+			// 溜めたタイルは、切れる前の最後の画面なので描いておく(失敗しても、切れた本当の理由を隠さない)
+			try {
+				this.surface.flush();
+			} catch {}
 		}
 		return "切断した";
 	}
@@ -176,6 +207,8 @@ export class RdpClient {
 
 	/** Demand Active をもう一度受けた(画面の大きさが変わった): Confirm Active と同期をやり直す */
 	private reactivate(d: pdu.DemandActive): void {
+		this.surface.flush(); // 大きさが変わる前の画面を先に描く
+		this.shareId = d.shareId;
 		const bmp = d.capabilities.get(pdu.CAP.BITMAP);
 		if (bmp && bmp.length >= 12) {
 			const dv = new DataView(bmp.buffer, bmp.byteOffset, bmp.byteLength);
@@ -208,6 +241,7 @@ export class RdpClient {
 		this.stats[code] = (this.stats[code] ?? 0) + 1;
 		switch (code) {
 			case UPDATE.BITMAP:
+				this.surface.flush(); // 旧ビットマップは順序が意味を持つ
 				for (const r of parseBitmapUpdate(data)) {
 					const w = Math.min(r.right - r.left + 1, r.width);
 					const h = Math.min(r.bottom - r.top + 1, r.height);
@@ -223,12 +257,10 @@ export class RdpClient {
 				}
 				break;
 			case UPDATE.SURFCMDS:
-				handleSurfaceCommands(
-					data,
-					this.rfxCodecId,
-					{ width: this.width, height: this.height },
-					{ draw: (x, y, w, h, rgba) => this.screen.draw(x, y, w, h, rgba) },
-				);
+				this.surface.handle(data, this.rfxCodecId, {
+					width: this.width,
+					height: this.height,
+				});
 				break;
 			case UPDATE.PTR_NULL:
 				this.screen.setCursor(null);
