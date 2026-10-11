@@ -19,6 +19,8 @@ namespace Mado;
 /// </summary>
 internal static class Relay
 {
+    const int MaxRequest = 64 * 1024;
+
     /// <summary>authorize は proxy_auth(使い捨てのトークン)を確かめて、つなぐ先を返す。だめなら null</summary>
     public static async Task Run(WebSocket ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct)
     {
@@ -35,6 +37,12 @@ internal static class Relay
                 return;
             }
             pending.Write(buf, 0, r.Count);
+            // RDCleanPath の要求は 1 KB ほど。いつまでも揃わないものを溜め込まない
+            if (pending.Length > MaxRequest)
+            {
+                await Fail(ws, 413, "RDCleanPath request too large", log, ct);
+                return;
+            }
             try { parsed = RdCleanPath.Parse(pending.ToArray()); }
             catch (FormatException e)
             {

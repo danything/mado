@@ -68,15 +68,23 @@ internal sealed class Forbidden(string message) : Exception(message);
 internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient http)
 {
     OidcDiscovery? discovered;
-    /// <summary>kid ごとの公開鍵。相手が鍵を入れ替えたときのために、見つからなければ取り直す</summary>
+    /// <summary>kid ごとの公開鍵。相手が鍵を入れ替えたときのために、見つからなければ取り直す(同時のログインがあるので gate で守る)</summary>
     readonly Dictionary<string, RSA> keys = [];
+    readonly SemaphoreSlim gate = new(1, 1);
+    /// <summary>知らない kid で JWKS を取り直すのは、この間隔に 1 回まで(でたらめな kid で IdP を叩かせない)</summary>
+    static readonly TimeSpan RefetchInterval = TimeSpan.FromMinutes(5);
+    DateTimeOffset lastFetch = DateTimeOffset.MinValue;
     /// <summary>時計のずれの許容(秒)</summary>
     const int Skew = 60;
 
     public static string RandomToken(int bytes = 32) => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(bytes));
 
-    /// <summary>戻る先は自分のところの絶対パスだけ(`//evil.example` で外へ飛ばす踏み台にしない)</summary>
-    public static string SafeReturn(string? to) => to is not null && to.StartsWith('/') && !to.StartsWith("//") ? to : "/";
+    /// <summary>
+    /// 戻る先は自分のところの絶対パスだけ(`//evil.example` で外へ飛ばす踏み台にしない)。
+    /// ブラウザは `\` を `/` として扱うので、`/\evil.example` も弾く(`\` はどこにあっても受けない)
+    /// </summary>
+    public static string SafeReturn(string? to) =>
+        to is not null && to.StartsWith('/') && !to.StartsWith("//") && !to.Contains('\\') ? to : "/";
 
     /// <summary>口の一覧。一度読んだら覚える(取れなかったときは覚えず、次にまた取りに行く)</summary>
     async Task<OidcDiscovery> Discover()
@@ -142,37 +150,54 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
 
     async Task<RSA> PublicKey(string kid)
     {
-        if (keys.TryGetValue(kid, out var cached)) return cached;
-        var doc = await Discover();
-        using var res = await http.GetAsync(doc.JwksUri);
-        if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"署名の鍵を取得できない ({(int)res.StatusCode})");
-        var jwks = JsonSerializer.Deserialize(await res.Content.ReadAsStringAsync(), ApiJson.Default.Jwks);
-        foreach (var k in jwks?.Keys ?? [])
+        await gate.WaitAsync();
+        try
         {
-            if (k.Kid is null || k.Kty != "RSA" || k.N is null || k.E is null) continue;
-            var rsa = RSA.Create();
-            rsa.ImportParameters(new RSAParameters { Modulus = Base64Url.DecodeFromChars(k.N), Exponent = Base64Url.DecodeFromChars(k.E) });
-            keys[k.Kid] = rsa;
+            if (keys.TryGetValue(kid, out var cached)) return cached;
+            if (DateTimeOffset.UtcNow - lastFetch < RefetchInterval)
+                throw new InvalidOperationException($"ID トークンの鍵 ({kid}) が見つからない");
+            lastFetch = DateTimeOffset.UtcNow;
+            var doc = await Discover();
+            using var res = await http.GetAsync(doc.JwksUri);
+            if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"署名の鍵を取得できない ({(int)res.StatusCode})");
+            var jwks = JsonSerializer.Deserialize(await res.Content.ReadAsStringAsync(), ApiJson.Default.Jwks);
+            foreach (var k in jwks?.Keys ?? [])
+            {
+                if (k.Kid is null || k.Kty != "RSA" || k.N is null || k.E is null) continue;
+                var rsa = RSA.Create();
+                rsa.ImportParameters(new RSAParameters { Modulus = Base64Url.DecodeFromChars(k.N), Exponent = Base64Url.DecodeFromChars(k.E) });
+                keys[k.Kid] = rsa;
+            }
+            return keys.TryGetValue(kid, out var found) ? found : throw new InvalidOperationException($"ID トークンの鍵 ({kid}) が見つからない");
         }
-        return keys.TryGetValue(kid, out var found) ? found : throw new InvalidOperationException($"ID トークンの鍵 ({kid}) が見つからない");
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>ID トークンの署名まで確かめる(認可コードフローでは省いてよいことになっているが、数行なので省かない)</summary>
-    async Task<JwtClaims> Verify(string token, string nonce)
+    internal async Task<JwtClaims> Verify(string token, string nonce)
     {
         var parts = token.Split('.');
         if (parts.Length != 3) throw new InvalidOperationException("ID トークンの形が違う");
-        var header = JsonSerializer.Deserialize(Base64Url.DecodeFromChars(parts[0]), ApiJson.Default.JwtHeader);
+        JwtHeader? header;
+        try { header = JsonSerializer.Deserialize(Base64Url.DecodeFromChars(parts[0]), ApiJson.Default.JwtHeader); }
+        catch (Exception e) when (e is FormatException or JsonException) { throw new InvalidOperationException("ID トークンの形が違う"); }
         // none を受けると署名を見ない道ができる。受けるのは RS256 だけ
         if (header?.Alg != "RS256") throw new InvalidOperationException($"対応していない署名方式 ({header?.Alg})");
         if (header.Kid is null) throw new InvalidOperationException("ID トークンに鍵の名前が無い");
         var key = await PublicKey(header.Kid);
-        if (!key.VerifyData(Encoding.ASCII.GetBytes($"{parts[0]}.{parts[1]}"), Base64Url.DecodeFromChars(parts[2]),
-                HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
-            throw new InvalidOperationException("ID トークンの署名が合わない");
-
-        var claims = JsonSerializer.Deserialize(Base64Url.DecodeFromChars(parts[1]), ApiJson.Default.JwtClaims)
-            ?? throw new InvalidOperationException("ID トークンが空");
+        JwtClaims? claims;
+        try
+        {
+            if (!key.VerifyData(Encoding.ASCII.GetBytes($"{parts[0]}.{parts[1]}"), Base64Url.DecodeFromChars(parts[2]),
+                    HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
+                throw new InvalidOperationException("ID トークンの署名が合わない");
+            claims = JsonSerializer.Deserialize(Base64Url.DecodeFromChars(parts[1]), ApiJson.Default.JwtClaims);
+        }
+        catch (Exception e) when (e is FormatException or JsonException) { throw new InvalidOperationException("ID トークンの形が違う"); }
+        if (claims is null) throw new InvalidOperationException("ID トークンが空");
         if (claims.Iss != (await Discover()).Issuer) throw new InvalidOperationException("ID トークンの発行元が違う");
         var aud = claims.Aud.ValueKind switch
         {

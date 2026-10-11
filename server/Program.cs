@@ -160,7 +160,8 @@ app.MapGet("/callback", async (HttpContext ctx) =>
         log.Write($"login: {user.Name} ({user.Sub})");
         return Results.Redirect(pending.To);
     }
-    catch (Exception e) when (e is Forbidden or InvalidOperationException or HttpRequestException or TaskCanceledException)
+    // どんな失敗でも理由をログに残して返す(ログ無しの 500 にしない)
+    catch (Exception e)
     {
         log.Write($"login failed: {e.Message}");
         return Text(e is Forbidden ? 403 : 502, $"ログインできなかった: {e.Message}");

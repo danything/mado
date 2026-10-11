@@ -44,6 +44,9 @@ public class SignerTests
         await Assert.That(Oidc.SafeReturn("/a?b=c")).IsEqualTo("/a?b=c");
         await Assert.That(Oidc.SafeReturn("//evil.example")).IsEqualTo("/");
         await Assert.That(Oidc.SafeReturn("https://evil.example")).IsEqualTo("/");
+        // ブラウザは \ を / として扱う
+        await Assert.That(Oidc.SafeReturn("/\\evil.example")).IsEqualTo("/");
+        await Assert.That(Oidc.SafeReturn("/a\\b")).IsEqualTo("/");
         await Assert.That(Oidc.SafeReturn(null)).IsEqualTo("/");
     }
 }

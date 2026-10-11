@@ -15,11 +15,19 @@ internal sealed class Signer(byte[] key)
     public static Signer Open(string dataDir)
     {
         var file = Path.Combine(dataDir, "session.key");
-        if (File.Exists(file)) return new Signer(File.ReadAllBytes(file));
         Directory.CreateDirectory(dataDir);
-        var key = RandomNumberGenerator.GetBytes(32);
-        File.WriteAllBytes(file, key);
-        return new Signer(key);
+        try
+        {
+            // 無いときだけ作る(CreateNew)。同時に作ろうとしたら、先に作ったほうを読む
+            using var f = new FileStream(file, FileMode.CreateNew, FileAccess.Write);
+            var key = RandomNumberGenerator.GetBytes(32);
+            f.Write(key);
+            return new Signer(key);
+        }
+        catch (IOException) when (File.Exists(file))
+        {
+            return new Signer(File.ReadAllBytes(file));
+        }
     }
 
     static long Now => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
