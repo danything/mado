@@ -289,6 +289,9 @@ export function sendDataRequest(
 		.done();
 }
 
+/** サーバーが切った(エラーではなく、終わり) */
+export class Disconnected extends Error {}
+
 export type SendData = { channelId: number; data: Uint8Array };
 
 /** Send Data Indication(サーバー → クライアント)。切断の通知なら例外 */
@@ -296,7 +299,7 @@ export function parseSendDataIndication(b: Uint8Array): SendData {
 	const r = new Reader(b);
 	const choice = r.u8() >> 2;
 	if (choice === 8)
-		throw new Error("MCS: サーバーが切断した(Disconnect Provider Ultimatum)");
+		throw new Disconnected("サーバーが切断した(Disconnect Provider Ultimatum)");
 	if (choice !== 26)
 		throw new Error(`MCS: Send Data Indication ではない (${choice})`);
 	r.u16be(); // initiator
