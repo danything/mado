@@ -105,6 +105,7 @@ form.addEventListener("submit", async (e) => {
 			destination: target,
 			username,
 			password: field("password").value,
+			keyboardLayout: await detectKeyboardLayout(),
 			width: even(width),
 			height,
 			signal: abort.signal,
@@ -212,6 +213,23 @@ function autoScale(size: string): number {
 	const m = size.match(/^auto(?:@([\d.]+))?$/);
 	const k = m?.[1] ? Number(m[1]) : 1;
 	return k > 0 && k <= 1 ? k : 1;
+}
+
+/**
+ * キーボード配列。OS の配列に JIS 特有のキー(¥・ろ)があれば日本語(0x0411)、なければ米国(0x0409)。
+ * 調べられないブラウザ(Chromium 以外)は日本語にする
+ */
+async function detectKeyboardLayout(): Promise<number> {
+	const kb = (
+		navigator as Navigator & {
+			keyboard?: { getLayoutMap(): Promise<Map<string, string>> };
+		}
+	).keyboard;
+	try {
+		const map = await kb?.getLayoutMap();
+		if (map) return map.has("IntlYen") || map.has("IntlRo") ? 0x0411 : 0x0409;
+	} catch {}
+	return 0x0411;
 }
 
 function describe(err: unknown): string {

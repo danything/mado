@@ -26,6 +26,13 @@ export type StaticChannel = { name: string; options: number };
 export const DRDYNVC: StaticChannel = { name: "drdynvc", options: 0xc0800000 };
 export const CLIPRDR: StaticChannel = { name: "cliprdr", options: 0xc0a00000 };
 
+/** キーボードの種類: 日本語配列は 7(日本語キーボード)、ほかは 4(IBM enhanced 101/102 キー) */
+export const keyboardType = (layout: number) =>
+	(layout & 0xffff) === 0x0411 ? 7 : 4;
+/** 日本語キーボードの副種類は 2(106/109 キー) */
+export const keyboardSubType = (layout: number) =>
+	(layout & 0xffff) === 0x0411 ? 2 : 0;
+
 function block(type: number, body: Uint8Array): Uint8Array {
 	return new Writer(body.length + 4)
 		.u16(type)
@@ -46,8 +53,8 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(c.keyboardLayout ?? 0x0411) // 日本語。0x0409 は米国
 			.u32(0x0000_4a61) // clientBuild
 			.utf16Fixed(c.clientName, 32)
-			.u32(4) // keyboardType: IBM enhanced (101/102 キー)
-			.u32(0) // keyboardSubType
+			.u32(keyboardType(c.keyboardLayout ?? 0x0411)) // keyboardType
+			.u32(keyboardSubType(c.keyboardLayout ?? 0x0411)) // keyboardSubType
 			.u32(12) // keyboardFunctionKey
 			.zeros(64) // imeFileName
 			.u16(0xca01) // postBeta2ColorDepth

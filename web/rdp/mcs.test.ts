@@ -165,3 +165,14 @@ describe("MCS", () => {
 		expect(() => mcs.parseSendDataIndication(fromHex("2180"))).toThrow("切断");
 	});
 });
+
+describe("キーボード", () => {
+	test("日本語配列は種類 7・副種類 2、米国は 4・0", () => {
+		expect([mcs.keyboardType(0x0411), mcs.keyboardSubType(0x0411)]).toEqual([
+			7, 2,
+		]);
+		expect([mcs.keyboardType(0x0409), mcs.keyboardSubType(0x0409)]).toEqual([
+			4, 0,
+		]);
+	});
+});
