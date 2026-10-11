@@ -41,7 +41,7 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(0x00080004) // RDP 5.0 以降
 			.u16(c.width)
 			.u16(c.height)
-			.u16(0xca03) // colorDepth: 16bpp (RGB565)
+			.u16(0xca01) // colorDepth: 8bpp(古い欄。下の highColorDepth が本当の値)
 			.u16(0xaa03) // SASSequence
 			.u32(c.keyboardLayout ?? 0x0411) // 日本語。0x0409 は米国
 			.u32(0x0000_4a61) // clientBuild
@@ -50,15 +50,16 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(0) // keyboardSubType
 			.u32(12) // keyboardFunctionKey
 			.zeros(64) // imeFileName
-			.u16(0xca03) // postBeta2ColorDepth
+			.u16(0xca01) // postBeta2ColorDepth
 			.u16(1) // clientProductId
 			.u32(0) // serialNumber
-			.u16(16) // highColorDepth: 16 ビット(Interleaved RLE で受ける)
-			.u16(0x0002 | 0x0004) // supportedColorDepths: 16 / 15
-			// earlyCapabilityFlags: ERRINFO_PDU | STATUSINFO_PDU(GFX は受けられるようになってから SUPPORT_DYNVC_GFX_PROTOCOL を足す)
-			.u16(0x0001 | 0x0004)
+			.u16(24) // highColorDepth: 24(WANT_32BPP_SESSION で 32 を頼む)
+			.u16(0x0001 | 0x0002 | 0x0004 | 0x0008) // supportedColorDepths: 24 / 16 / 15 / 32
+			// earlyCapabilityFlags: ERRINFO_PDU | WANT_32BPP_SESSION | STATUSINFO_PDU | VALID_CONNECTION_TYPE
+			// (GFX は受けられるようになってから SUPPORT_DYNVC_GFX_PROTOCOL を足す)
+			.u16(0x0001 | 0x0002 | 0x0004 | 0x0020)
 			.zeros(64) // clientDigProductId
-			.u8(0) // connectionType
+			.u8(6) // connectionType: LAN(サーバーによっては、LAN でないとコーデックを使わない)
 			.u8(0) // pad
 			.u32(c.selectedProtocol)
 			.done(),
