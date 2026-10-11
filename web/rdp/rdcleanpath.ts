@@ -3,6 +3,7 @@
 
 import * as der from "./der";
 import type { WsStream } from "./stream";
+import { failureMessage, parseConnectionConfirm } from "./x224";
 
 const VERSION = 3390;
 
@@ -31,6 +32,16 @@ export class RdCleanPathError extends Error {
 	}
 }
 
+/** X.224 の接続確認に失敗の理由(RDP_NEG_FAILURE)があれば、それを言う */
+function negotiationFailure(raw: Uint8Array | undefined): string {
+	const base = "RDP サーバーが接続を断った";
+	try {
+		const cc = raw && parseConnectionConfirm(raw);
+		if (cc && !cc.ok) return failureMessage(cc.failureCode);
+	} catch {}
+	return `${base}(ネゴシエーション)`;
+}
+
 /** 応答を 1 つ読む(DER の長さで切る) */
 export async function readResponse(s: WsStream): Promise<Response> {
 	const head = await s.peek(2);
@@ -54,7 +65,7 @@ export async function readResponse(s: WsStream): Promise<Response> {
 		const http = e.get(1) ? der.readInteger(e.get(1) as der.Tlv) : undefined;
 		const what =
 			code === 2
-				? "RDP サーバーが接続を断った(ネゴシエーション)"
+				? negotiationFailure(x224)
 				: http === 401
 					? "中継の許可が切れた(ページを読み込み直す)"
 					: http === 502

@@ -65,6 +65,10 @@ const display = new Display(screen);
 const CONNECT_TIMEOUT_MS = 30_000;
 
 let current: { client: RdpClient; channels: Channels } | undefined;
+/** つないでいる最中の取り消し用 */
+let connecting: AbortController | undefined;
+/** 最後に、ブラウザのクリップボードとリモートの間でやりとりした文字列(往復を防ぐ) */
+let lastClipboard: string | undefined;
 
 form.addEventListener("submit", async (e) => {
 	e.preventDefault();
@@ -92,6 +96,7 @@ form.addEventListener("submit", async (e) => {
 		screen.classList.remove("idle");
 		const { width, height } = desktopSize(size);
 		const abort = new AbortController();
+		connecting = abort;
 		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
 		const rdp = await connect({
 			url: session.ws,
@@ -102,7 +107,10 @@ form.addEventListener("submit", async (e) => {
 			width: even(width),
 			height,
 			signal: abort.signal,
-		}).finally(() => clearTimeout(timer));
+		}).finally(() => {
+			clearTimeout(timer);
+			connecting = undefined;
+		});
 		const client = new RdpClient(rdp, display);
 		const channels = attachChannels(client, writeClipboard);
 		current = { client, channels };
@@ -149,24 +157,27 @@ toolbar.addEventListener("click", (e) => {
 	if (action === "ctrl-alt-del") tap(["ControlLeft", "AltLeft", "Delete"]);
 	else if (action === "meta") tap(["MetaLeft"]);
 	else if (action === "fullscreen") void screen.requestFullscreen();
-	else if (action === "disconnect") current?.client.close();
+	else if (action === "disconnect") {
+		current?.client.close();
+		connecting?.abort();
+	}
 });
 
 // ---- クリップボード ----
 
 /** リモートでコピーされた文字列を、ブラウザのクリップボードへ(権限が無ければ黙って諦める) */
 function writeClipboard(text: string): void {
+	lastClipboard = text;
 	void navigator.clipboard?.writeText(text).catch(() => {});
 }
 
 /** 画面にフォーカスが来たとき、ブラウザのクリップボードの文字列をリモートへ知らせる(変わっていたときだけ) */
 function watchClipboard(canvas: HTMLElement, channels: Channels): () => void {
-	let last: string | undefined;
 	const sync = async () => {
 		try {
 			const text = await navigator.clipboard.readText();
-			if (text !== last) {
-				last = text;
+			if (text !== lastClipboard) {
+				lastClipboard = text;
 				channels.clipboard.setLocalText(text);
 			}
 		} catch {}

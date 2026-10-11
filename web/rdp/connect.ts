@@ -73,7 +73,10 @@ export async function connect(o: ConnectOptions): Promise<Session> {
 		o.signal?.removeEventListener("abort", abort);
 		return session;
 	} catch (e) {
+		o.signal?.removeEventListener("abort", abort);
 		stream.close();
+		if (o.signal?.aborted)
+			throw new Error("つなぐのに時間がかかりすぎた(または取り消した)");
 		throw e;
 	}
 }
