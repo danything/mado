@@ -117,9 +117,15 @@ form.addEventListener("submit", async (e) => {
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
 		// 「窓に合わせる」のときだけ、窓の大きさが変わったら RDP の解像度も変える
-		if (size === "auto")
+		const scale = autoScale(size);
+		if (scale)
 			stops.push(
-				watchSize(screen, (w, h) => channels.displayControl.resize(even(w), h)),
+				watchSize(screen, (w, h) =>
+					channels.displayControl.resize(
+						even(Math.round(w * scale)),
+						Math.round(h * scale),
+					),
+				),
 			);
 		display.canvas.focus();
 		status.textContent = "";
@@ -197,10 +203,20 @@ const even = (n: number) => n - (n % 2);
 function desktopSize(size: string): { width: number; height: number } {
 	const m = size.match(/^(\d+)x(\d+)$/);
 	if (m) return { width: Number(m[1]), height: Number(m[2]) };
+	// 「窓に合わせる」: 窓の大きさ × 画素数の割合(減らしたぶんは、表示で拡大する)
+	const k = autoScale(size) || 1;
 	return {
-		width: screen.clientWidth || innerWidth,
-		height: screen.clientHeight || innerHeight,
+		width: Math.round((screen.clientWidth || innerWidth) * k),
+		height: Math.round((screen.clientHeight || innerHeight) * k),
 	};
+}
+
+/** 「窓に合わせる」の画素数の割合(auto は 1、auto@0.5 は 0.5)。固定の大きさなら 0 */
+function autoScale(size: string): number {
+	const m = size.match(/^auto(?:@([\d.]+))?$/);
+	if (!m) return 0;
+	const k = m[1] ? Number(m[1]) : 1;
+	return k > 0 && k <= 1 ? k : 1;
 }
 
 function describe(err: unknown): string {
