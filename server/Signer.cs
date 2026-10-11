@@ -26,7 +26,12 @@ internal sealed class Signer(byte[] key)
         }
         catch (IOException) when (File.Exists(file))
         {
-            return new Signer(File.ReadAllBytes(file));
+            var existing = File.ReadAllBytes(file);
+            if (existing.Length == 32) return new Signer(existing);
+            // 書きかけで終わったなど、壊れていれば作り直す(出したものは使えなくなるが、ログインし直せばよい)
+            var key = RandomNumberGenerator.GetBytes(32);
+            File.WriteAllBytes(file, key);
+            return new Signer(key);
         }
     }
 

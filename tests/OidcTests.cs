@@ -15,6 +15,7 @@ public class OidcTests
     sealed class FakeIdp : HttpMessageHandler
     {
         public int JwksFetches;
+        public bool JwksDown;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
         {
@@ -24,6 +25,7 @@ public class OidcTests
                 body = $$"""{"issuer":"{{Issuer}}","authorization_endpoint":"{{Issuer}}/auth","token_endpoint":"{{Issuer}}/token","jwks_uri":"{{Issuer}}/jwks"}""";
             else if (path == "/jwks")
             {
+                if (JwksDown) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
                 JwksFetches++;
                 var p = Key.ExportParameters(false);
                 body = $$"""{"keys":[{"kty":"RSA","kid":"k1","n":"{{B64(p.Modulus!)}}","e":"{{B64(p.Exponent!)}}"}]}""";
@@ -136,5 +138,15 @@ public class OidcTests
         for (var i = 0; i < 5; i++)
             await Assert.ThrowsAsync<InvalidOperationException>(() => oidc.Verify(Token(kid: $"x{i}"), "n1"));
         await Assert.That(idp.JwksFetches).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task JWKS_が一時的に取れなくても次のログインで取り直せる()
+    {
+        var (oidc, idp) = New();
+        idp.JwksDown = true;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => oidc.Verify(Token(), "n1"));
+        idp.JwksDown = false;
+        await Assert.That((await oidc.Verify(Token(), "n1")).Sub).IsEqualTo("u1");
     }
 }

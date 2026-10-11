@@ -31,6 +31,15 @@ public class SignerTests
     }
 
     [Test]
+    public async Task 壊れた鍵のファイルは作り直す()
+    {
+        var dir = Directory.CreateTempSubdirectory("mado-signer-").FullName;
+        File.WriteAllBytes(Path.Combine(dir, "session.key"), new byte[5]);
+        Signer.Open(dir);
+        await Assert.That(new FileInfo(Path.Combine(dir, "session.key")).Length).IsEqualTo(32);
+    }
+
+    [Test]
     public async Task 鍵はファイルに残り次の起動でも同じ()
     {
         var dir = Directory.CreateTempSubdirectory("mado-signer-").FullName;
@@ -47,6 +56,9 @@ public class SignerTests
         // ブラウザは \ を / として扱う
         await Assert.That(Oidc.SafeReturn("/\\evil.example")).IsEqualTo("/");
         await Assert.That(Oidc.SafeReturn("/a\\b")).IsEqualTo("/");
+        // タブや改行はブラウザが取り除くので、/\t/evil.example は //evil.example になる
+        await Assert.That(Oidc.SafeReturn("/\t/evil.example")).IsEqualTo("/");
+        await Assert.That(Oidc.SafeReturn("/\n/evil.example")).IsEqualTo("/");
         await Assert.That(Oidc.SafeReturn(null)).IsEqualTo("/");
     }
 }

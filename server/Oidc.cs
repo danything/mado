@@ -81,10 +81,11 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
 
     /// <summary>
     /// 戻る先は自分のところの絶対パスだけ(`//evil.example` で外へ飛ばす踏み台にしない)。
-    /// ブラウザは `\` を `/` として扱うので、`/\evil.example` も弾く(`\` はどこにあっても受けない)
+    /// ブラウザは `\` を `/` として扱い、タブや改行は取り除くので、`/\evil.example` や `/\t/evil.example` も弾く
+    /// (`\` と制御文字はどこにあっても受けない)
     /// </summary>
     public static string SafeReturn(string? to) =>
-        to is not null && to.StartsWith('/') && !to.StartsWith("//") && !to.Contains('\\') ? to : "/";
+        to is not null && to.StartsWith('/') && !to.StartsWith("//") && !to.Contains('\\') && !to.Any(char.IsControl) ? to : "/";
 
     /// <summary>口の一覧。一度読んだら覚える(取れなかったときは覚えず、次にまた取りに行く)</summary>
     async Task<OidcDiscovery> Discover()
@@ -156,10 +157,11 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
             if (keys.TryGetValue(kid, out var cached)) return cached;
             if (DateTimeOffset.UtcNow - lastFetch < RefetchInterval)
                 throw new InvalidOperationException($"ID トークンの鍵 ({kid}) が見つからない");
-            lastFetch = DateTimeOffset.UtcNow;
             var doc = await Discover();
             using var res = await http.GetAsync(doc.JwksUri);
             if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"署名の鍵を取得できない ({(int)res.StatusCode})");
+            // 取れたときだけ数える(一時的に取れなかったあと、5 分待たずに取り直せるように)
+            lastFetch = DateTimeOffset.UtcNow;
             var jwks = JsonSerializer.Deserialize(await res.Content.ReadAsStringAsync(), ApiJson.Default.Jwks);
             foreach (var k in jwks?.Keys ?? [])
             {
