@@ -99,8 +99,10 @@ export class RdpClient {
 				return e.message;
 			throw e;
 		} finally {
-			// 溜めたタイルは、切れる前の最後の画面なので描いておく
-			this.surface.flush();
+			// 溜めたタイルは、切れる前の最後の画面なので描いておく(失敗しても、切れた本当の理由を隠さない)
+			try {
+				this.surface.flush();
+			} catch {}
 		}
 		return "切断した";
 	}
