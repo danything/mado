@@ -34,6 +34,8 @@ jobs:
           dotnet-version: 10.0.401
       - run: bun i --frozen-lockfile
       - run: bun run build:web
+      # Windows でも試験を回す(CNG など、Linux と違うところで落ちることがある)
+      - run: dotnet run --project tests/Mado.Tests.csproj
       - run: dotnet publish server/Mado.csproj -c Release -r win-x64 -o publish
       - run: |
           dotnet tool install --global wix --version 5.0.2
