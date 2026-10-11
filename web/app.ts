@@ -216,7 +216,7 @@ function autoScale(size: string): number {
 }
 
 /**
- * キーボード配列。OS の配列に JIS 特有のキー(¥・ろ)があれば日本語(0x0411)、なければ米国(0x0409)。
+ * キーボード配列。OS の配列がはっきり US の形なら米国(0x0409)、それ以外は日本語(0x0411)。
  * 調べられないブラウザ(Chromium 以外)は日本語にする
  */
 async function detectKeyboardLayout(): Promise<number> {
@@ -227,7 +227,16 @@ async function detectKeyboardLayout(): Promise<number> {
 	).keyboard;
 	try {
 		const map = await kb?.getLayoutMap();
-		if (map) return map.has("IntlYen") || map.has("IntlRo") ? 0x0411 : 0x0409;
+		// JIS の目印: ¥・ろのキーがある、または [ の位置が @・' の位置が : になる。どれも無く、US の形(' と [)なら米国
+		if (map) {
+			const jis =
+				map.has("IntlYen") ||
+				map.has("IntlRo") ||
+				map.get("BracketLeft") === "@" ||
+				map.get("Quote") === ":";
+			const us = map.get("BracketLeft") === "[" && map.get("Quote") === "'";
+			if (!jis && us) return 0x0409;
+		}
 	} catch {}
 	return 0x0411;
 }
