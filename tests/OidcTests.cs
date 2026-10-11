@@ -5,14 +5,16 @@ using System.Text;
 
 namespace Mado.Tests;
 
-/// <summary>ID トークンの確かめ方。偽の IdP(HttpMessageHandler)が、ここで作った RSA の鍵で署名する</summary>
+/// <summary>ID トークンの確かめ方。偽の IdP(HttpMessageHandler)が、ここで作った RSA の鍵で署名する。
+/// 鍵は試験ごとに作り、並べて走らせない(Windows の CNG で 1 つの鍵を並列に使うと落ちた)</summary>
+[NotInParallel]
 public class OidcTests
 {
     const string Issuer = "https://idp.example.test";
     const string ClientId = "client";
-    static readonly RSA Key = RSA.Create(2048);
+    readonly RSA Key = RSA.Create(2048);
 
-    sealed class FakeIdp : HttpMessageHandler
+    sealed class FakeIdp(RSA key) : HttpMessageHandler
     {
         public int JwksFetches;
         public bool JwksDown;
@@ -27,7 +29,7 @@ public class OidcTests
             {
                 if (JwksDown) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
                 JwksFetches++;
-                var p = Key.ExportParameters(false);
+                var p = key.ExportParameters(false);
                 body = $$"""{"keys":[{"kty":"RSA","kid":"k1","n":"{{B64(p.Modulus!)}}","e":"{{B64(p.Exponent!)}}"}]}""";
             }
             else return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
@@ -38,7 +40,7 @@ public class OidcTests
     static string B64(byte[] b) => Base64Url.EncodeToString(b);
     static string B64(string s) => B64(Encoding.UTF8.GetBytes(s));
 
-    static string Token(string? claims = null, string alg = "RS256", string kid = "k1", RSA? key = null)
+    string Token(string? claims = null, string alg = "RS256", string kid = "k1", RSA? key = null)
     {
         var exp = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 600;
         claims ??= $$"""{"iss":"{{Issuer}}","sub":"u1","aud":"{{ClientId}}","exp":{{exp}},"nonce":"n1","name":"名前","roles":["admin"]}""";
@@ -48,9 +50,9 @@ public class OidcTests
         return $"{head}.{body}.{B64(sig)}";
     }
 
-    static (Oidc Oidc, FakeIdp Idp) New()
+    (Oidc Oidc, FakeIdp Idp) New()
     {
-        var idp = new FakeIdp();
+        var idp = new FakeIdp(Key);
         return (new Oidc(new Config.OidcOptions(Issuer, ClientId, "secret", "admin"), "https://md/callback", new HttpClient(idp)), idp);
     }
 
