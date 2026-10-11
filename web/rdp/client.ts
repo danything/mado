@@ -209,18 +209,13 @@ export class RdpClient {
 				break;
 			case UPDATE.POINTER:
 			case UPDATE.LARGE_POINTER: {
-				const { index, cursor } = pointer.parseNewPointer(
-					data,
-					code === UPDATE.LARGE_POINTER,
+				this.setPointer(() =>
+					pointer.parseNewPointer(data, code === UPDATE.LARGE_POINTER),
 				);
-				this.cursors.set(index, cursor);
-				this.screen.setCursor(cursor);
 				break;
 			}
 			case UPDATE.COLOR: {
-				const { index, cursor } = pointer.parseColorPointer(data);
-				this.cursors.set(index, cursor);
-				this.screen.setCursor(cursor);
+				this.setPointer(() => pointer.parseColorPointer(data));
 				break;
 			}
 			case UPDATE.CACHED: {
@@ -229,6 +224,19 @@ export class RdpClient {
 				break;
 			}
 			// SYNCHRONIZE、PTR_POSITION(サーバーがマウスを動かす指示。ブラウザでは動かせない)、Orders(断っている)は何もしない
+		}
+	}
+
+	/** ポインタの形が壊れていても、セッションは続ける(既定のカーソルにする) */
+	private setPointer(
+		parse: () => { index: number; cursor: pointer.Cursor },
+	): void {
+		try {
+			const { index, cursor } = parse();
+			this.cursors.set(index, cursor);
+			this.screen.setCursor(cursor);
+		} catch {
+			this.screen.setCursor("default");
 		}
 	}
 

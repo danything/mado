@@ -2,6 +2,15 @@
 
 import { concat, Writer } from "./bytes";
 
+/** eventHeader は 上位 3 ビットが種類、下位 5 ビットがフラグ */
+const EVENT = {
+	SCANCODE: 0,
+	MOUSE: 1,
+	MOUSEX: 2,
+	SYNC: 3,
+	UNICODE: 4,
+} as const;
+
 const KBD_RELEASE = 0x01;
 const KBD_EXTENDED = 0x02;
 
@@ -129,13 +138,13 @@ export function keyEvent(code: string, down: boolean): Uint8Array | undefined {
 	const sc = SCANCODES[code];
 	if (!sc) return undefined;
 	const flags = (down ? 0 : KBD_RELEASE) | (sc[1] ? KBD_EXTENDED : 0);
-	return Uint8Array.of((flags << 5) | 0, sc[0]);
+	return Uint8Array.of(flags | (EVENT.SCANCODE << 5), sc[0]);
 }
 
 /** Unicode 1 文字(IME で確定した文字など、スキャンコードで表せないもの) */
 export function unicodeEvent(char: number, down: boolean): Uint8Array {
 	return new Writer(3)
-		.u8(((down ? 0 : KBD_RELEASE) << 5) | 4)
+		.u8((down ? 0 : KBD_RELEASE) | (EVENT.UNICODE << 5))
 		.u16(char)
 		.done();
 }
@@ -167,7 +176,7 @@ export function mouseButton(
 	if (button === 3 || button === 4) {
 		// 戻る / 進む(PTRXFLAGS_BUTTON1 / 2)
 		return new Writer(7)
-			.u8(2 << 5) // MOUSEX
+			.u8(EVENT.MOUSEX << 5)
 			.u16((down ? 0x8000 : 0) | (button === 3 ? 1 : 2))
 			.u16(clamp(x))
 			.u16(clamp(y))
@@ -195,7 +204,7 @@ export function mouseWheel(delta: number, horizontal = false): Uint8Array {
 
 function mouse(flags: number, x: number, y: number): Uint8Array {
 	return new Writer(7)
-		.u8(1 << 5)
+		.u8(EVENT.MOUSE << 5)
 		.u16(flags)
 		.u16(clamp(x))
 		.u16(clamp(y))
@@ -206,7 +215,7 @@ const clamp = (v: number) => Math.max(0, Math.min(0xffff, Math.round(v)));
 
 /** Num / Caps / Scroll Lock の状態を伝える(つないだ直後に 0 で) */
 export function syncEvent(flags = 0): Uint8Array {
-	return Uint8Array.of((flags << 5) | 3);
+	return Uint8Array.of(flags | (EVENT.SYNC << 5));
 }
 
 /** イベントを Fast-Path Input の PDU にする。1 つの PDU は 15 イベントまで */

@@ -220,3 +220,28 @@ describe("RdpClient", () => {
 		expect(stream.written.length).toBe(1 + 5);
 	});
 });
+
+describe("壊れたポインタ", () => {
+	test("セッションは続けて、既定のカーソルにする", async () => {
+		// 大きすぎる新しいポインタ(Fast-Path の 0xB)
+		const bad = new Writer()
+			.u16(32)
+			.u16(0)
+			.u16(0)
+			.u16(0)
+			.u16(5000)
+			.u16(5000)
+			.u16(0)
+			.u16(0)
+			.done();
+		const update = new Writer().u8(0xb).u16(bad.length).bytes(bad).done();
+		const fast = concat(Uint8Array.of(0, update.length + 2), update);
+		const screen = new Recorder();
+		const reason = await new RdpClient(
+			fakeSession(scripted([fast])),
+			screen,
+		).run();
+		expect(reason).toContain("connection closed");
+		expect(screen.events).toEqual(["resize 64x48", "cursor default"]);
+	});
+});

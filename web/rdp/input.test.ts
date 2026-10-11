@@ -7,22 +7,22 @@ import * as input from "./input";
 describe("キーボード", () => {
 	test("押す・離す", () => {
 		expect(hex(input.keyEvent("KeyA", true) ?? new Uint8Array())).toBe("001e");
-		expect(hex(input.keyEvent("KeyA", false) ?? new Uint8Array())).toBe("201e");
+		expect(hex(input.keyEvent("KeyA", false) ?? new Uint8Array())).toBe("011e");
 	});
 	test("拡張キーは E0 の印が付く", () => {
 		expect(hex(input.keyEvent("ArrowUp", true) ?? new Uint8Array())).toBe(
-			"4048",
+			"0248",
 		);
 		expect(hex(input.keyEvent("ControlRight", false) ?? new Uint8Array())).toBe(
-			"601d",
+			"031d",
 		);
 	});
 	test("知らないキーは undefined", () => {
 		expect(input.keyEvent("Unidentified", true)).toBeUndefined();
 	});
 	test("Unicode", () => {
-		expect(hex(input.unicodeEvent(0x3042, true))).toBe("044230");
-		expect(hex(input.unicodeEvent(0x3042, false))).toBe("244230");
+		expect(hex(input.unicodeEvent(0x3042, true))).toBe("804230");
+		expect(hex(input.unicodeEvent(0x3042, false))).toBe("814230");
 	});
 	test("物理キーが重ならない(スキャンコード + 拡張で一意)", () => {
 		const seen = new Set<string>();
@@ -54,6 +54,13 @@ describe("キーボード", () => {
 			expect(seen.has(k)).toBe(false);
 			seen.add(k);
 		}
+	});
+});
+
+describe("同期", () => {
+	test("イベント ヘッダーは 上位 3 ビットが種類(仕様の例: 同期は 0x60)", () => {
+		expect(hex(input.syncEvent(0))).toBe("60");
+		expect(hex(input.syncEvent(0x4))).toBe("64");
 	});
 });
 

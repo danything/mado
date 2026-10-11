@@ -153,6 +153,19 @@ client.sendInput([
 await sleep(8000);
 png(out);
 console.log("cursor updates:", cursors);
+// キーボード: ドックの端末アイコン(567, 696)をクリックして開き、"echo mado" と打つ
+const key = (code: string, down: boolean) => input.keyEvent(code, down) as Uint8Array;
+client.sendInput([input.mouseMove(567, 696)]);
+await sleep(300);
+client.sendInput([
+	input.mouseButton(0, true, 567, 696) as Uint8Array,
+	input.mouseButton(0, false, 567, 696) as Uint8Array,
+]);
+await sleep(6000);
+for (const c of ["KeyE", "KeyC", "KeyH", "KeyO", "Space", "KeyM", "KeyA", "KeyD", "KeyO", "Enter"])
+	client.sendInput([key(c, true), key(c, false)]);
+await sleep(3000);
+png(out.replace(/.png$/, ".keys.png"));
 client.close();
 await ended;
 process.exit(0);
