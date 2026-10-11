@@ -510,3 +510,19 @@ describe("ClearCodec", () => {
 		);
 	});
 });
+
+describe("コマンドの番号([MS-RDPEGFX] 2.2.1.5)", () => {
+	test("DELETEENCODINGCONTEXT(0x0003)の後ろがずれていない", () => {
+		expect([
+			CMD.SOLIDFILL,
+			CMD.SURFACETOSURFACE,
+			CMD.SURFACETOCACHE,
+			CMD.CACHETOSURFACE,
+			CMD.EVICTCACHEENTRY,
+			CMD.CREATESURFACE,
+			CMD.DELETESURFACE,
+			CMD.STARTFRAME,
+			CMD.ENDFRAME,
+		]).toEqual([0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc]);
+	});
+});
