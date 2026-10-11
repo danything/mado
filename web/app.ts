@@ -26,7 +26,7 @@ const screen = $<HTMLElement>("#screen");
 const field = (name: string) =>
 	form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-/** 前回選んだつなぐ先とユーザー名(パスワードは覚えない) */
+/** 前回選んだつなぐ先・画面の大きさ・ユーザー名(パスワードは覚えない) */
 const REMEMBER = "mado:last";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -49,10 +49,14 @@ $<HTMLElement>("#target-field").hidden = session.targets.length < 2;
 try {
 	const last = JSON.parse(localStorage.getItem(REMEMBER) ?? "{}") as {
 		target?: string;
+		size?: string;
 		username?: string;
 	};
 	if (last.target && session.targets.includes(last.target))
 		select.value = last.target;
+	const sizes = field("size") as HTMLSelectElement;
+	if (last.size && [...sizes.options].some((o) => o.value === last.size))
+		sizes.value = last.size;
 	if (last.username) field("username").value = last.username;
 } catch {}
 home.hidden = false;
@@ -79,9 +83,10 @@ ui.setEnableClipboard(true);
 form.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const target = select.value;
+	const size = field("size").value;
 	const username = field("username").value;
 	try {
-		localStorage.setItem(REMEMBER, JSON.stringify({ target, username }));
+		localStorage.setItem(REMEMBER, JSON.stringify({ target, size, username }));
 	} catch {}
 	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
 	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
@@ -106,11 +111,9 @@ form.addEventListener("submit", async (e) => {
 			.withDestination(target)
 			.withProxyAddress(session.ws)
 			.withAuthToken(token)
-			.withDesktopSize({
-				width: screen.clientWidth || innerWidth,
-				height: screen.clientHeight || innerHeight,
-			})
-			.withExtension(displayControl(true))
+			.withDesktopSize(desktopSize(size))
+			// 「窓に合わせる」のときだけ、窓の大きさが変わったら RDP の解像度も変える
+			.withExtension(displayControl(size === "auto"))
 			.build();
 		ui.setVisibility(true);
 		const info = await ui.connect(config);
@@ -134,6 +137,19 @@ toolbar.addEventListener("click", (e) => {
 	else if (action === "fullscreen") void screen.requestFullscreen();
 	else if (action === "disconnect") ui.shutdown();
 });
+
+/**
+ * RDP の解像度。「窓に合わせる」なら画面の場所の大きさ、ほかは選んだ大きさ(小さいほど描く量が減って軽い)。
+ * 固定の大きさでも、表示は窓に合わせて拡大縮小される(scale="fit")
+ */
+function desktopSize(size: string): { width: number; height: number } {
+	const m = size.match(/^(\d+)x(\d+)$/);
+	if (m) return { width: Number(m[1]), height: Number(m[2]) };
+	return {
+		width: screen.clientWidth || innerWidth,
+		height: screen.clientHeight || innerHeight,
+	};
+}
 
 /** IronRDP の例外は backtrace() を持つ */
 function describe(err: unknown): string {
