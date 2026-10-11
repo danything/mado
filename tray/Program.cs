@@ -24,10 +24,17 @@ internal static unsafe partial class Program
     static uint taskbarCreated;
     static string[] startArgs = [];
     /// <summary>自分の版と exe の置き場所(起動したときのもの)</summary>
-    static readonly string ownVersion = VersionOf(typeof(Program).Assembly
-        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
-        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion);
     static readonly string? exePath = Environment.ProcessPath;
+    /// <summary>
+    /// 自分の版。属性から取れなければ、起動したときの exe のファイルの版。どちらも取れなければ null で、
+    /// 起こし直しはしない(「0.0.0 より新しい」で 5 秒ごとに起こし直し続けないため)
+    /// </summary>
+    static readonly string? ownVersion = Known(typeof(Program).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion)
+        ?? (exePath is null ? null : Known(System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).ProductVersion));
+
+    static string? Known(string? v) => string.IsNullOrEmpty(v) || VersionOf(v) == "v0.0.0" ? null : VersionOf(v);
 
     /// <summary>最後に聞けた状態(聞けなければ null)。背景で取ってきて、タイマーで反映する</summary>
     static volatile StatusView? status;
@@ -164,7 +171,7 @@ internal static unsafe partial class Program
     /// </summary>
     static void RestartIfUpdated(string serviceVersion)
     {
-        if (exePath is null || !Newer(serviceVersion, ownVersion)) return;
+        if (exePath is null || ownVersion is null || !Newer(serviceVersion, ownVersion)) return;
         var onDisk = VersionOf(System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).ProductVersion);
         if (!Newer(onDisk, ownVersion)) return;
         // 新しいほうが二重起動の確認で弾かれないよう、先に放す
