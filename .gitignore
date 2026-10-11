@@ -6,3 +6,4 @@ data/
 .nuget/
 bin/
 obj/
+logs/
