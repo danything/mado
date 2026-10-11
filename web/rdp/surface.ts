@@ -67,7 +67,7 @@ export function handleSurfaceCommands(
 				const top = r.u16();
 				const right = r.u16();
 				const bottom = r.u16();
-				r.u8(); // bpp
+				const bpp = r.u8();
 				const flags = r.u8();
 				r.u8(); // reserved
 				const codecId = r.u8();
@@ -87,6 +87,8 @@ export function handleSurfaceCommands(
 							drawTile(decodeRfxTile(t), t, left, top, area, ev.draw);
 					}
 				} else if (codecId === CODEC_NONE) {
+					if (bpp !== 32)
+						throw new Error(`生の Surface Bits は 32bpp だけ (${bpp})`);
 					drawRaw(bits, left, top, width, height, screen, ev.draw);
 				}
 				// 知らないコーデックは描かない(能力で宣言していないので来ない)

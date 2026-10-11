@@ -54,6 +54,10 @@ export type Session = {
 export async function connect(o: ConnectOptions): Promise<Session> {
 	const log = o.onLog ?? (() => {});
 	const stream = await WsStream.open(o.url);
+	if (o.signal?.aborted) {
+		stream.close();
+		throw new Error("つなぐのに時間がかかりすぎた(または取り消した)");
+	}
 	const abort = () => stream.close();
 	o.signal?.addEventListener("abort", abort, { once: true });
 	try {
