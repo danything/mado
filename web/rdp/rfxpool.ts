@@ -54,9 +54,16 @@ export class WorkerPool implements TilePool {
 	private slots: Slot[] = [];
 	private waiting = new Map<
 		number,
-		{ resolve(v: Uint8ClampedArray): void; reject(e: Error): void; slot: Slot }
+		{
+			resolve(v: Uint8ClampedArray): void;
+			reject(e: Error): void;
+			slot: Slot;
+			job: [number, TileData, TileQuant];
+		}
 	>();
 	private nextId = 1;
+	/** Worker が読めない(404・MIME など)ときや落ちたときは、その場で復号に切り替える(画面を真っ黒にしない) */
+	private fallback = new SyncPool();
 
 	/** Worker が作れなければ例外 */
 	constructor(size: number) {
@@ -81,17 +88,20 @@ export class WorkerPool implements TilePool {
 		data: TileData,
 		quant: TileQuant,
 	): Promise<Uint8ClampedArray> {
-		// いちばん空いている Worker へ
-		let slot = this.slots[0] as Slot;
-		for (const s of this.slots) if (s.busy < slot.busy) slot = s;
+		// いちばん空いている Worker へ。生きている Worker が無ければ、その場で復号
+		let slot: Slot | undefined;
+		for (const s of this.slots) if (!slot || s.busy < slot.busy) slot = s;
+		if (!slot) return this.fallback.decode(mode, data, quant);
 		const id = this.nextId++;
 		// data は PDU 全体の buffer の一部(subarray)なので、構造化複製だと全体が複製される。小さく切り出して渡す
 		const copy = data.map((d) => d.slice()) as TileData;
+		const job: [number, TileData, TileQuant] = [mode, data, quant];
+		const target = slot;
 		return new Promise((resolve, reject) => {
-			this.waiting.set(id, { resolve, reject, slot });
-			slot.busy++;
+			this.waiting.set(id, { resolve, reject, slot: target, job });
+			target.busy++;
 			const req: WorkerRequest = { id, mode, data: copy, quant };
-			slot.worker.postMessage(
+			target.worker.postMessage(
 				req,
 				copy.map((d) => d.buffer),
 			);
@@ -107,13 +117,21 @@ export class WorkerPool implements TilePool {
 		else w.resolve(r.rgba);
 	}
 
-	/** Worker が落ちた: その Worker に頼んであったものを失敗にする */
+	/** Worker が読めなかった・落ちた: その Worker は使わず、頼んであったものはその場で復号し直す */
 	private fail(slot: Slot, e: Error): void {
+		const i = this.slots.indexOf(slot);
+		if (i >= 0) {
+			this.slots.splice(i, 1);
+			slot.worker.terminate();
+			console.warn(
+				"RemoteFX の Worker が使えない。その場で復号する:",
+				e.message,
+			);
+		}
 		for (const [id, w] of this.waiting) {
 			if (w.slot !== slot) continue;
 			this.waiting.delete(id);
-			slot.busy--;
-			w.reject(e);
+			this.fallback.decode(...w.job).then(w.resolve, w.reject);
 		}
 	}
 

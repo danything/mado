@@ -540,7 +540,6 @@ export class SurfaceRenderer {
 			}
 			for (const id of b.ended) this.ack?.(id);
 			for (const fn of b.after) fn();
-			if (this.batches.length === 0) this.byKey.clear();
 		}
 	}
 
