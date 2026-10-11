@@ -278,25 +278,30 @@ async function tryUpdate(): Promise<boolean> {
 	if (!canUpdate) return false;
 	const state = await updater.check();
 	if (!state.available || sessions.size > 0) return false;
-	if (!(await updater.apply())) return false;
+	if (!(await updater.apply(() => sessions.size === 0))) return false;
 	setTimeout(() => process.exit(EXIT_UPDATED), 200);
 	return true;
 }
 
 if (config.statusPort) {
-	serveStatus(
-		config.statusPort,
-		() => ({
-			version: VERSION,
-			origin: base,
-			startedAt,
-			sessions: sessions.size,
-			certDaysLeft,
-			update: updater.state,
-		}),
-		async () => ({ updated: await tryUpdate(), state: updater.state }),
-	);
-	log(`状態の口: http://127.0.0.1:${config.statusPort}/status`);
+	// 使えなくても本体(画面と中継)は止めない
+	try {
+		serveStatus(
+			config.statusPort,
+			() => ({
+				version: VERSION,
+				origin: base,
+				startedAt,
+				sessions: sessions.size,
+				certDaysLeft,
+				update: updater.state,
+			}),
+			async () => ({ updated: await tryUpdate(), state: updater.state }),
+		);
+		log(`状態の口: http://127.0.0.1:${config.statusPort}/status`);
+	} catch (e) {
+		log(`状態の口を開けない (${config.statusPort}): ${(e as Error).message}`);
+	}
 }
 if (canUpdate) {
 	const every = config.update.checkHours * 60 * 60 * 1000;

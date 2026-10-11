@@ -88,9 +88,16 @@ export class Updater {
 	};
 	private release: Release | null = null;
 	private busy = false;
+	/** 署名が合わなかった・入れ替えに失敗した版。次の版が出るまで取り直さない */
+	private failed: string | null = null;
 
 	constructor(
-		private opts: { repo: string; exePath: string },
+		private opts: {
+			repo: string;
+			exePath: string;
+			/** 試験のときだけ変える */
+			publicKey?: string;
+		},
 		private log: (msg: string) => void,
 	) {}
 
@@ -108,15 +115,17 @@ export class Updater {
 						accept: "application/vnd.github+json",
 						"user-agent": `mado/${VERSION}`,
 					},
+					signal: AbortSignal.timeout(30_000),
 				},
 			);
 			if (!res.ok) throw new Error(`GitHub (${res.status})`);
 			this.release = (await res.json()) as Release;
+			const tag = this.release.tag_name;
 			this.state = {
-				latest: this.release.tag_name,
-				available: compareVersions(this.release.tag_name, VERSION) > 0,
+				latest: tag,
+				available: compareVersions(tag, VERSION) > 0 && tag !== this.failed,
 				checkedAt: new Date().toISOString(),
-				error: null,
+				error: tag === this.failed ? `${tag} は前に失敗した` : null,
 			};
 		} catch (e) {
 			this.state = {
@@ -128,8 +137,11 @@ export class Updater {
 		return this.state;
 	}
 
-	/** 新しい版を落として確かめ、入れ替える。入れ替えたら true(呼んだ側が EXIT_UPDATED で終わる) */
-	async apply(): Promise<boolean> {
+	/**
+	 * 新しい版を落として確かめ、入れ替える。入れ替えたら true(呼んだ側が EXIT_UPDATED で終わる)。
+	 * isIdle は入れ替える直前にもう一度聞く(落としているあいだに誰かがつないだら入れ替えない)
+	 */
+	async apply(isIdle: () => boolean = () => true): Promise<boolean> {
 		const r = this.release;
 		if (!r || !this.state.available || this.busy) return false;
 		this.busy = true;
@@ -141,15 +153,35 @@ export class Updater {
 				if (!a) throw new Error(`${r.tag_name} に ${name} が無い`);
 				return a.browser_download_url;
 			};
-			const sig = await (await ok(fetch(url("mado.exe.sig")))).text();
-			await Bun.write(fresh, await ok(fetch(url("mado.exe"))));
+			const get = (name: string) =>
+				ok(fetch(url(name), { signal: AbortSignal.timeout(10 * 60_000) }));
+			const sig = await (await get("mado.exe.sig")).text();
+			await Bun.write(fresh, await get("mado.exe"));
 			const digest = await sha256File(fresh);
-			if (!(await verifySignature(signedMessage(r.tag_name, digest), sig))) {
+			const message = signedMessage(r.tag_name, digest);
+			if (!(await verifySignature(message, sig, this.opts.publicKey))) {
+				this.failed = r.tag_name;
+				this.state.available = false;
 				throw new Error(`${r.tag_name} の署名が合わない`);
+			}
+			if (!isIdle()) {
+				this.log(
+					`update: ${r.tag_name} を落としたが、つないでいる人がいるので後で入れ替える`,
+				);
+				await unlink(fresh).catch(() => {});
+				return false;
 			}
 			await unlink(`${exe}.old`).catch(() => {});
 			await rename(exe, `${exe}.old`);
-			await rename(fresh, exe);
+			try {
+				await rename(fresh, exe);
+			} catch (e) {
+				// 新しいものを置けなければ、今のものを戻す(mado.exe が無いまま終わらない)
+				await rename(`${exe}.old`, exe);
+				this.failed = r.tag_name;
+				this.state.available = false;
+				throw e;
+			}
 			this.log(
 				`update: ${VERSION} → ${r.tag_name} に入れ替えた。終わって起こし直してもらう`,
 			);
@@ -164,7 +196,6 @@ export class Updater {
 		}
 	}
 }
-
 async function ok(res: Promise<Response>): Promise<Response> {
 	const r = await res;
 	if (!r.ok) throw new Error(`${r.url} (${r.status})`);

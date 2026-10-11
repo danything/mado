@@ -53,3 +53,87 @@ test("版の比較", () => {
 	expect(compareVersions("0.2.1", "v0.2.1")).toBe(0);
 	expect(compareVersions("v0.2.1", "v1.0.0")).toBeLessThan(0);
 });
+
+// --- 入れ替え(apply)。fetch を差し替え、一時フォルダの exe で試す -----------------------------
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { sha256File, Updater } from "../src/update.ts";
+
+async function setup(opts: { badSig?: boolean }) {
+	const dir = await mkdtemp(path.join(tmpdir(), "mado-update-"));
+	const exe = path.join(dir, "mado.exe");
+	await writeFile(exe, "old");
+	const fresh = path.join(dir, "payload");
+	await writeFile(fresh, "new");
+	const tag = "v99.0.0";
+	const sig = await sign(
+		signedMessage(opts.badSig ? "v98.0.0" : tag, await sha256File(fresh)),
+	);
+	const release = {
+		tag_name: tag,
+		assets: [
+			{ name: "mado.exe", browser_download_url: "https://example.test/exe" },
+			{
+				name: "mado.exe.sig",
+				browser_download_url: "https://example.test/sig",
+			},
+		],
+	};
+	const real = globalThis.fetch;
+	globalThis.fetch = (async (input: string | URL | Request) => {
+		const u = String(input);
+		if (u.includes("/releases/latest")) return Response.json(release);
+		if (u.endsWith("/sig")) return new Response(sig);
+		if (u.endsWith("/exe")) return new Response("new");
+		return new Response("nf", { status: 404 });
+	}) as typeof fetch;
+	const updater = new Updater(
+		{ repo: "x/y", exePath: exe, publicKey: pub },
+		() => {},
+	);
+	return {
+		dir,
+		exe,
+		updater,
+		done: async () => {
+			globalThis.fetch = real;
+			await rm(dir, { recursive: true, force: true });
+		},
+	};
+}
+
+test("新しい版を確かめて入れ替える(今のものは .old に)", async () => {
+	const s = await setup({});
+	try {
+		expect((await s.updater.check()).available).toBe(true);
+		expect(await s.updater.apply()).toBe(true);
+		expect(await readFile(s.exe, "utf8")).toBe("new");
+		expect(await readFile(`${s.exe}.old`, "utf8")).toBe("old");
+	} finally {
+		await s.done();
+	}
+});
+
+test("署名が合わなければ入れ替えず、その版は取り直さない", async () => {
+	const s = await setup({ badSig: true });
+	try {
+		await s.updater.check();
+		expect(await s.updater.apply()).toBe(false);
+		expect(await readFile(s.exe, "utf8")).toBe("old");
+		expect((await s.updater.check()).available).toBe(false);
+	} finally {
+		await s.done();
+	}
+});
+
+test("落としているあいだに誰かつないだら入れ替えない", async () => {
+	const s = await setup({});
+	try {
+		await s.updater.check();
+		expect(await s.updater.apply(() => false)).toBe(false);
+		expect(await readFile(s.exe, "utf8")).toBe("old");
+	} finally {
+		await s.done();
+	}
+});
