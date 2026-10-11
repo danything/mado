@@ -135,3 +135,14 @@ $env:OUT = "out/screen.png"; node out/rdp-smoke.mjs                         # �
 - GCC のヘッダーの `00` が 1 バイト抜けていたのを、xrdp が 23 バイト決め打ちで読むことで見つけた(実際のクライアントのバイト列と突き合わせる試験を書いたつもりが、実装に合わせて試験を直していた)
 - xrdp は LICENSE_REQUEST を返す。試験では `dummyLicense` で答える(Windows は「ライセンス不要」を返すので本番では要らない)
 - 16 ビット色 + Interleaved RLE で、Xfce の画面が正しく描けた
+
+### GFX / H.264 の試験(xrdp 0.10)
+
+xrdp 0.9.5 には GFX が無いので、GFX と H.264(x264)を有効にした xrdp 0.10 をソースからビルドしたコンテナを使う(`tools/xrdp-gfx/`)。
+
+```powershell
+wslc build -t mado-xrdp-gfx tools/xrdp-gfx
+wslc run -d --name xrdp-gfx -p 13390:3389 mado-xrdp-gfx   # ubuntu / ubuntu、TLS のみ
+```
+
+Windows Sandbox は使えない: Sandbox は自分の画面表示にリモートデスクトップのサービスを使っていて、3389 の待ち受け(RDP-Tcp)を上げるにはサービスの再起動が要り、そのとき Sandbox ごと閉じる。

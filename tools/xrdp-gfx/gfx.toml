@@ -1,0 +1,13 @@
+# GFX の設定。H.264(AVC420)を先に、だめなら RFX(Progressive)
+[codec]
+order = [ "H.264", "RFX" ]
+h264_encoder = "x264"
+
+[x264.default]
+preset = "ultrafast"
+tune = "zerolatency"
+profile = "main"
+vbv_max_bitrate = 0
+vbv_buffer_size = 0
+fps_num = 60
+fps_den = 1
