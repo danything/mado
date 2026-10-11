@@ -320,7 +320,8 @@ describe("GfxClient の流れ", () => {
 		);
 		await gfx.idle();
 		expect(errors.length).toBe(1);
-		expect(gfx.stats.skipped).toBe(2);
+		expect(gfx.stats.skipped).toBe(1);
+		expect(gfx.stats.cacheMiss).toBe(1);
 		expect(ops.calls).toEqual(["present"]);
 	});
 
@@ -638,6 +639,6 @@ describe("レビューの指摘(#33)", () => {
 		expect(ops.calls.filter((c) => c.startsWith("fromCache"))).toEqual([
 			"fromCache 11 1 0,0",
 		]);
-		expect(gfx.stats.skipped).toBe(1);
+		expect(gfx.stats.cacheMiss).toBe(1);
 	});
 });

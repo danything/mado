@@ -124,14 +124,18 @@ form.addEventListener("submit", async (e) => {
 			clearTimeout(timer);
 			connecting = undefined;
 		});
-		const client = new RdpClient(rdp, display, { pool: createPool() });
+		const pool = createPool();
+		const client = new RdpClient(rdp, display, { pool });
 		const gfxClient = gfx
 			? new GfxClient(new CanvasGfxOps(display), new WebCodecsAvc())
 			: undefined;
 		/** H.264 の画面が回復できない形で壊れたときの理由(切断して、つなぎ直してもらう) */
 		let fatal: string | undefined;
 		if (gfxClient) {
-			gfxClient.onError = (e) => console.warn("GFX:", e);
+			gfxClient.onError = (e) => {
+				console.warn("GFX:", e);
+				noteError(`GFX: ${describe(e)}`);
+			};
 			gfxClient.onFatal = (e) => {
 				console.error("GFX:", e);
 				fatal = "H.264 の画面が壊れた。つなぎ直してください";
@@ -141,6 +145,7 @@ form.addEventListener("submit", async (e) => {
 		const channels = attachChannels(client, writeClipboard, { gfx: gfxClient });
 		current = { client, channels };
 		if (gfxClient) stops.push(() => gfxClient.onClose());
+		stops.push(watchDiag(() => diagText(client, gfxClient, pool.async)));
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
 		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える
@@ -170,6 +175,73 @@ form.addEventListener("submit", async (e) => {
 	field("password").value = "";
 });
 
+// ---- 診断表示(ツールバーの「診断」) ----
+
+const diag = $<HTMLPreElement>("#diag");
+/** 直近のエラー(新しい順に 5 つまで) */
+const recentErrors: string[] = [];
+function noteError(text: string): void {
+	recentErrors.unshift(`${new Date().toLocaleTimeString()} ${text}`);
+	recentErrors.length = Math.min(recentErrors.length, 5);
+}
+
+window.addEventListener("error", (e) => noteError(e.message));
+window.addEventListener("unhandledrejection", (e) =>
+	noteError(describe(e.reason)),
+);
+
+/** Fast-Path の更新の種類の名前 */
+const UPDATE_NAMES: Record<number, string> = {
+	0: "orders",
+	1: "bitmap",
+	2: "palette",
+	3: "sync",
+	4: "surfcmds",
+	5: "ptr-null",
+	6: "ptr-default",
+	8: "ptr-pos",
+	9: "ptr-color",
+	10: "ptr-cached",
+	11: "ptr-new",
+	12: "ptr-large",
+};
+
+function diagText(
+	client: RdpClient,
+	gfx: GfxClient | undefined,
+	workers: boolean,
+): string {
+	const lines = [
+		`mado ${session.version}  方式: ${gfx ? "H.264(GFX)" : "RemoteFX / ビットマップ"}  復号: ${workers ? "Worker" : "その場"}`,
+		`画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}`,
+		`更新: ${
+			Object.entries(client.stats)
+				.map(([k, v]) => `${UPDATE_NAMES[Number(k)] ?? k}=${v}`)
+				.join(" ") || "-"
+		}`,
+		`RemoteFX: 間引き=${client.surfaceStats.coalesced} 捨てた=${client.surfaceStats.skipped}`,
+	];
+	if (gfx)
+		lines.push(
+			`GFX: ${Object.entries(gfx.stats)
+				.map(([k, v]) => `${k}=${v}`)
+				.join(" ")} clear未対応=${gfx.clearUnsupported}`,
+		);
+	if (recentErrors.length) lines.push("エラー:", ...recentErrors);
+	return lines.join("\n");
+}
+
+/** 開いている間だけ 1 秒ごとに書き直す */
+function watchDiag(text: () => string): () => void {
+	const t = setInterval(() => {
+		if (!diag.hidden) diag.textContent = text();
+	}, 1000);
+	return () => {
+		clearInterval(t);
+		diag.hidden = true;
+	};
+}
+
 /** キーを押して離す(Ctrl+Alt+Del のような組み合わせ用) */
 function tap(codes: string[]): void {
 	const events: Uint8Array[] = [];
@@ -188,6 +260,7 @@ toolbar.addEventListener("click", (e) => {
 	const action = (e.target as HTMLElement).closest("button")?.dataset.action;
 	if (action === "ctrl-alt-del") tap(["ControlLeft", "AltLeft", "Delete"]);
 	else if (action === "meta") tap(["MetaLeft"]);
+	else if (action === "diag") diag.hidden = !diag.hidden;
 	else if (action === "fullscreen") void screen.requestFullscreen();
 	else if (action === "disconnect") {
 		current?.client.close();
