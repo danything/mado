@@ -169,7 +169,16 @@ internal static unsafe partial class Program
         if (!Newer(onDisk, ownVersion)) return;
         // 新しいほうが二重起動の確認で弾かれないよう、先に放す
         CloseHandle(mutex);
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath, startArgs) { UseShellExecute = false });
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath, startArgs) { UseShellExecute = false });
+        }
+        catch
+        {
+            // 起動できなければ、放したものを取り直してこのまま動き続ける(次の確認でまた試す)
+            mutex = CreateMutexW(0, 0, "Local\\mado-tray");
+            return;
+        }
         Quit();
     }
 
