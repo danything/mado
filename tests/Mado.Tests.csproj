@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!-- TUnit。テストプロジェクト自体が実行ファイル(Microsoft.Testing.Platform)なので dotnet run で走る -->
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Mado.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" Version="1.73.19" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../server/Mado.csproj" />
+  </ItemGroup>
+</Project>

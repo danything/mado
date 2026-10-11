@@ -1,0 +1,62 @@
+<!--
+  mado の MSI(WiX v5)。入れるもの:
+  - C:\Program Files\mado\mado.exe(.NET の Native AOT。これ自体が Windows のサービス)
+  - サービス mado(LocalSystem、自動起動、落ちたら 5 秒後に起こし直す。引数で C:\ProgramData\mado\mado.json を読む)
+  - ファイアウォールの受信の許可(TCP 80 / 443)
+  - C:\ProgramData\mado(設定・client secret・証明書・ログ。SYSTEM と Administrators だけ)
+
+  設定(mado.json)と client secret は MSI に入れない(MSI のプロパティで渡すとインストールのログに残る)。
+  先に ProgramData\mado に置いてから入れるか、入れたあとに置いてサービスを起動し直す。
+  設定が無いうちはサービスは起動に失敗するだけで、インストールは止めない(起動は待たない)。
+
+  ビルド: wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext
+          -d Version=0.4.0 -d PublishDir=publish -o dist/mado.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="mado" Manufacturer="Doa" Version="$(Version)" Scope="perMachine"
+           UpgradeCode="686617C4-D113-448F-93B1-B4F997EDC5EC" Compressed="yes">
+    <SummaryInformation Description="OIDC でログインして、ブラウザから RDP する小さなゲートウェイ" />
+    <!-- 新しい版を入れると古い版を外す。古い版で上書きはさせない -->
+    <MajorUpgrade DowngradeErrorMessage="これより新しい mado が入っている。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="mado">
+        <Component Id="Service" Bitness="always64">
+          <File Id="MadoExe" Source="$(PublishDir)\mado.exe" KeyPath="yes" />
+          <ServiceInstall Id="MadoService" Name="mado" DisplayName="mado"
+                          Description="OIDC でログインして、ブラウザから RDP する小さなゲートウェイ"
+                          Type="ownProcess" Start="auto" Account="LocalSystem" ErrorControl="normal"
+                          Arguments="--config &quot;[CommonAppDataFolder]mado\mado.json&quot;">
+            <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                                ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5"
+                                ResetPeriodInDays="1" />
+          </ServiceInstall>
+          <!-- 止めるのは入れ替え・外すとき(待つ)。起動は入れたとき(待たない。設定が無いと起動に失敗するが、入れるのは止めない) -->
+          <ServiceControl Id="MadoServiceStop" Name="mado" Stop="both" Remove="uninstall" Wait="yes" />
+          <ServiceControl Id="MadoServiceStart" Name="mado" Start="install" Wait="no" />
+          <fw:FirewallException Id="MadoHttp" Name="mado (TCP 80)" Protocol="tcp" Port="80" Scope="any" />
+          <fw:FirewallException Id="MadoHttps" Name="mado (TCP 443)" Protocol="tcp" Port="443" Scope="any" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="mado">
+        <Component Id="DataFolder" Guid="1A50BB15-EFA8-470F-B39D-3FD6AB7057F9" Bitness="always64">
+          <!-- client secret とセッションの鍵が入るので、継承を切って SYSTEM と Administrators だけに -->
+          <CreateFolder>
+            <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+          </CreateFolder>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="Service" />
+      <ComponentRef Id="DataFolder" />
+    </Feature>
+  </Package>
+</Wix>

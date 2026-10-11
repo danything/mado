@@ -3,3 +3,6 @@ dist/
 # 手元で動かすときの設定とデータ (秘密が入る)
 mado.dev.json
 data/
+.nuget/
+bin/
+obj/
