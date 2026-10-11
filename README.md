@@ -48,6 +48,8 @@ Guacamole のようにサーバーで画面を描くのではなく、RDP は全
 | `oidc` | `issuer`・`client_id`・`client_secret`(または 1 行目を読む `client_secret_file`)。`required_role` を書くと、ID トークンの `roles` にそれが無い人は入れない |
 | `targets` | つなぐ先(`name`・`host`・`port`。`port` の既定は 3389)。画面で選ぶ。1 つだけなら選ぶ欄は出ない。省くとこのマシン(127.0.0.1:3389)だけ |
 | `listen` | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }` |
+| `status.port` | この PC の中からだけ見られる状態の口(既定 8788、`0` で開けない)。`GET /status` で版・つないでいる数・証明書の残り日数・更新の有無、`POST /update`(ヘッダー `x-mado: 1`)で今すぐ更新を確かめる |
+| `update` | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }` |
 | `tls` | `"off"` にすると TLS も ACME も使わず http だけで待ち受ける(localhost で試すとき) |
 
 IdP には戻り先 `https://<host>/callback` を登録する。Entra ID ならアプリロールを作って割り当て、`required_role` にその値を書く。
@@ -57,7 +59,29 @@ IdP には戻り先 `https://<host>/callback` を登録する。Entra ID なら�
 読めるようにする(client secret とセッションの鍵が入る)。
 
 画面の見た目は [Blades CSS](https://blades.ninja/)(Pico CSS の後継)。ライト / ダークは OS の設定に合わせる。
-### RDP の証明書について
+## 自動更新
+
+mado は `update.check_hours` ごとに GitHub のリリースの最新を見て、今より新しい版があれば入れ替える。
+
+- **署名を確かめてから入れ替える。** リリースの `mado.exe.sig` は、CI が Ed25519 の秘密鍵(GitHub の secret `MADO_SIGNING_KEY`)で
+  `mado <タグ> <exe の SHA-256>` に付けた署名で、exe に入っている公開鍵(`src/update.ts` の `PUBLIC_KEY`)で確かめる。
+  タグも署名の中なので、古い版を「最新」と偽って戻させることはできない(今より新しい版しか受けない)
+- **誰もつないでいないときだけ**入れ替える。動いている exe の名前を `mado.exe.old` に変えて新しいものを置き、**終了コード 75 で終わる**。
+  **起こし直すのは外側**(タスク スケジューラから、終わったらまた起動するループで動かす。例は下)
+- `bun run` で動かしているとき(exe でないとき)は入れ替えない
+
+```bat
+@echo off
+rem run.cmd: mado が終わったら(更新・落ちた)2 秒後に起こし直す
+:loop
+"%~dp0mado.exe" --config "%~dp0mado.json" >> "%~dp0mado.log" 2>&1
+timeout /t 2 /nobreak >nul
+goto loop
+```
+
+**署名の鍵を作り直すとき**は、新しい公開鍵を `PUBLIC_KEY` に入れてリリースし、動いている mado は一度だけ手で入れ替える
+(古い mado は新しい鍵の署名を受けないため)。
+## RDP の証明書について
 
 Windows の RDP の自己署名証明書は鍵の用途に Digital Signature が無く、bun の TLS(BoringSSL)は ECDHE の
 鍵交換でそれを拒む。そこで RDP とのあいだだけ TLS 1.2 の RSA 鍵交換に絞っている。前方秘匿性が無いのは

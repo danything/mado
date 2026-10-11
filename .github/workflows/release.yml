@@ -1,7 +1,8 @@
 name: Release
 
-# v* のタグで Windows 用の exe を作り、SHA-256 と一緒にリリースに載せる。入れる側(setup スクリプトなど)は
-# mado.exe.sha256 と照らしてから使う。
+# v* のタグで Windows 用の exe を作り、リリースに載せる。
+# - mado.exe.sig: Ed25519 の署名(scripts/sign.ts)。動いている mado はこれを確かめてから自分を入れ替える(src/update.ts)
+# - mado.exe.sha256 と出どころの証明(gh attestation verify): 手で入れる側(gitops の setup.ps1)が確かめる
 on:
   push:
     tags: ["v*"]
@@ -13,19 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # 作ったものの出どころの証明(gh attestation verify で確かめられる)
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: bun i --frozen-lockfile
+      # exe に入る版(package.json)とタグが食い違うと、自動更新が同じ版を延々と取り直す
+      - run: test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
       - run: bun test
       - run: bun run build
+      - run: bun scripts/sign.ts "$GITHUB_REF_NAME"
+        env:
+          MADO_SIGNING_KEY: ${{ secrets.MADO_SIGNING_KEY }}
       - run: cd dist && sha256sum mado.exe > mado.exe.sha256
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/mado.exe
-      - run: gh release create "$GITHUB_REF_NAME" dist/mado.exe dist/mado.exe.sha256 --generate-notes --verify-tag
+      - run: gh release create "$GITHUB_REF_NAME" dist/mado.exe dist/mado.exe.sig dist/mado.exe.sha256 --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ github.token }}
