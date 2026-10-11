@@ -104,6 +104,7 @@ function fakeSession(stream: Transport): Session {
 		userId: 1007,
 		ioChannelId: 1003,
 		channels: new Map([["drdynvc", 1004]]),
+		channelOptions: new Map([["drdynvc", 0xc0800000]]),
 		shareId: 0x103ea,
 		serverCapabilities: new Map(),
 		width: 64,

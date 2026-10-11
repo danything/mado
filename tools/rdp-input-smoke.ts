@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import * as zlib from "node:zlib";
+import { attachChannels } from "../web/rdp/channels";
 import { RdpClient, type Screen } from "../web/rdp/client";
 import { establish } from "../web/rdp/connect";
 import * as input from "../web/rdp/input";
@@ -138,6 +139,7 @@ const session = await establish(
 	new Uint8Array(t.getPeerCertificate().raw),
 );
 const client = new RdpClient(session, screen);
+const channels = attachChannels(client, (t) => console.log("remote text:", JSON.stringify(t)));
 const ended = client.run().then((r) => console.log("run ended:", r));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const out = process.env.OUT ?? "screen.png";
@@ -165,7 +167,13 @@ await sleep(6000);
 for (const c of ["KeyE", "KeyC", "KeyH", "KeyO", "Space", "KeyM", "KeyA", "KeyD", "KeyO", "Enter"])
 	client.sendInput([key(c, true), key(c, false)]);
 await sleep(3000);
-png(out.replace(/.png$/, ".keys.png"));
+png(out.replace(/\.png$/, ".keys.png"));
+// クリップボード: こちらでコピーした文字列を、リモートのターミナルへ Ctrl+Shift+V で貼る
+channels.clipboard.setLocalText("pasted-from-mado");
+await sleep(1500);
+client.sendInput([key("ControlLeft", true), key("ShiftLeft", true), key("KeyV", true), key("KeyV", false), key("ShiftLeft", false), key("ControlLeft", false)]);
+await sleep(2500);
+png(out.replace(/\.png$/, ".paste.png"));
 client.close();
 await ended;
 process.exit(0);
