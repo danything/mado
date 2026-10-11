@@ -52,7 +52,16 @@ export async function loadConfig(
 			? argv[i + 1]
 			: path.join(path.dirname(process.execPath), "mado.json"),
 	);
-	const raw = (await Bun.file(file).json()) as Raw;
+	if (file.endsWith(".toml"))
+		throw new Error(
+			`${file}: 設定は v0.2 から JSON(mado.json)。README の「使い方」の形に書き直して`,
+		);
+	let raw: Raw;
+	try {
+		raw = (await Bun.file(file).json()) as Raw;
+	} catch (e) {
+		throw new Error(`${file}: JSON として読めない (${(e as Error).message})`);
+	}
 	const dir = path.dirname(file);
 	const need = (v: string | undefined, name: string) => {
 		if (!v) throw new Error(`${file}: ${name} が要る`);
@@ -97,16 +106,24 @@ export async function loadConfig(
 }
 
 function readTargets(raw: Raw, file: string): Target[] {
-	if (!raw.targets?.length)
+	if (raw.targets === undefined)
 		return [{ name: "localhost", host: "127.0.0.1", port: 3389 }];
+	if (!Array.isArray(raw.targets) || raw.targets.length === 0)
+		throw new Error(`${file}: targets は 1 つ以上の配列`);
 	const seen = new Set<string>();
 	return raw.targets.map((t, i) => {
-		if (!t.host) throw new Error(`${file}: targets[${i}].host が要る`);
+		const at = `${file}: targets[${i}]`;
+		if (typeof t?.host !== "string" || !t.host)
+			throw new Error(`${at}.host が要る`);
 		const name = t.name ?? t.host;
-		if (seen.has(name))
-			throw new Error(`${file}: targets の name が重なっている (${name})`);
+		if (typeof name !== "string" || !name)
+			throw new Error(`${at}.name は空でない文字列`);
+		const port = t.port ?? 3389;
+		if (!Number.isInteger(port) || port < 1 || port > 65535)
+			throw new Error(`${at}.port は 1〜65535 の整数`);
+		if (seen.has(name)) throw new Error(`${at}.name が重なっている (${name})`);
 		seen.add(name);
-		return { name, host: t.host, port: t.port ?? 3389 };
+		return { name, host: t.host, port };
 	});
 }
 

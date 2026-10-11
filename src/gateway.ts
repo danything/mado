@@ -39,7 +39,6 @@ export class Relay {
 	private tls?: tls.TLSSocket;
 	private raw?: net.Socket;
 	private closed = false;
-	private target?: Target;
 
 	constructor(
 		private ws: ServerWebSocket<unknown>,
@@ -76,19 +75,22 @@ export class Relay {
 			);
 		const target = this.authorize(request.proxyAuth);
 		if (!target) return this.fail(401, "proxy_auth rejected");
-		this.target = target;
+
 		if (!request.x224)
 			return this.fail(
 				400,
 				"no X.224 connection request (VMConnect is not supported)",
 			);
-		this.connect(request.x224, request.preconnectionBlob).catch((e) =>
+		this.connect(target, request.x224, request.preconnectionBlob).catch((e) =>
 			this.fail(502, (e as Error).message),
 		);
 	}
 
-	private async connect(x224: Uint8Array, pcb: string | undefined) {
-		const target = this.target as Target;
+	private async connect(
+		target: Target,
+		x224: Uint8Array,
+		pcb: string | undefined,
+	) {
 		this.log(`relay to ${target.name} (${target.host}:${target.port})`);
 		const raw = net.connect(target.port, target.host);
 		this.raw = raw;
