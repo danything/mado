@@ -19,6 +19,8 @@ internal sealed partial class MadoJson : JsonSerializerContext;
 [JsonSerializable(typeof(TokenInfo))]
 [JsonSerializable(typeof(LoginRequired))]
 [JsonSerializable(typeof(Status))]
+[JsonSerializable(typeof(Release))]
+[JsonSerializable(typeof(UpdateResult))]
 [JsonSerializable(typeof(User))]
 [JsonSerializable(typeof(Pending))]
 [JsonSerializable(typeof(RelayToken))]
@@ -50,4 +52,9 @@ internal sealed record Status(
     [property: JsonPropertyName("origin")] string Origin,
     [property: JsonPropertyName("startedAt")] string StartedAt,
     [property: JsonPropertyName("sessions")] int Sessions,
-    [property: JsonPropertyName("certDaysLeft")] int? CertDaysLeft);
+    [property: JsonPropertyName("certDaysLeft")] int? CertDaysLeft,
+    [property: JsonPropertyName("update")] UpdateState Update);
+
+internal sealed record UpdateResult(
+    [property: JsonPropertyName("started")] bool Started,
+    [property: JsonPropertyName("state")] UpdateState State);

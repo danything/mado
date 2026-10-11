@@ -52,6 +52,10 @@ SslStreamCertificateContext? current = null;
 int? certDaysLeft = null;
 var sessions = 0;
 var startedAt = DateTimeOffset.UtcNow.ToString("o");
+var updater = new Updater(config.Update.Repo, version, config.DataDir, http, log.Write);
+// サービスとして動いているときだけ自分で上げる(手元で dotnet run しているときは入れる MSI が無い)
+var canUpdate = config.Update.Enabled && OperatingSystem.IsWindows()
+    && Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService();
 
 var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
 {
@@ -116,7 +120,16 @@ app.Use(async (ctx, next) =>
         if (host != $"127.0.0.1:{port}" && host != $"localhost:{port}") { await Text(403, "host が違う").ExecuteAsync(ctx); return; }
         if (ctx.Request.Path == "/status" && HttpMethods.IsGet(ctx.Request.Method))
         {
-            await Results.Json(new Status(version, origin, startedAt, sessions, certDaysLeft), ApiJson.Default.Status).ExecuteAsync(ctx);
+            await Results.Json(new Status(version, origin, startedAt, sessions, certDaysLeft, updater.State), ApiJson.Default.Status).ExecuteAsync(ctx);
+            return;
+        }
+        // 今すぐ新しい版を確かめて、あれば入れる(タスクトレイから)。ほかのサイトのページから投げさせないため、
+        // `x-mado: 1` のヘッダーを求める(足すと CORS の事前確認が要り、それには答えない)
+        if (ctx.Request.Path == "/update" && HttpMethods.IsPost(ctx.Request.Method))
+        {
+            if (ctx.Request.Headers["x-mado"] != "1") { await Text(403, "x-mado: 1 が要る").ExecuteAsync(ctx); return; }
+            var started = canUpdate && (await updater.Check()).Available && await updater.Apply(() => sessions == 0);
+            await Results.Json(new UpdateResult(started, updater.State), ApiJson.Default.UpdateResult).ExecuteAsync(ctx);
             return;
         }
         await Text(404, "not found").ExecuteAsync(ctx);
@@ -248,6 +261,34 @@ if (secure)
 else
 {
     log.Write($"http で待ち受け: {origin}");
+}
+
+if (canUpdate)
+{
+    updater.Cleanup();
+    // 起動直後は避けて 5 分後に 1 回、あとは check_hours ごと。つないでいて入れられなかったときは 10 分ごとに試す
+    async Task TryUpdate()
+    {
+        if ((await updater.Check()).Available) await updater.Apply(() => sessions == 0);
+    }
+    app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMinutes(5), app.Lifetime.ApplicationStopping);
+            await TryUpdate();
+            var last = DateTimeOffset.UtcNow;
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(10));
+            while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
+            {
+                var due = DateTimeOffset.UtcNow - last >= TimeSpan.FromHours(config.Update.CheckHours);
+                if (!due && !updater.State.Available) continue;
+                if (due) last = DateTimeOffset.UtcNow;
+                await TryUpdate();
+            }
+        }
+        catch (OperationCanceledException) { }
+    }));
 }
 
 await app.RunAsync();

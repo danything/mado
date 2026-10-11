@@ -18,8 +18,11 @@ internal sealed record Config(
     Config.AcmeOptions Acme,
     Config.OidcOptions Oidc,
     IReadOnlyList<Target> Targets,
-    int StatusPort)
+    int StatusPort,
+    Config.UpdateOptions Update)
 {
+    /// <summary>自動更新。CheckHours ごとに GitHub のリリースを見る(Updater.cs)</summary>
+    public sealed record UpdateOptions(bool Enabled, int CheckHours, string Repo);
     public sealed record ListenOptions(int Https, int Http, string Hostname);
     public sealed record AcmeOptions(string Email, bool Staging);
     public sealed record OidcOptions(string Issuer, string ClientId, string ClientSecret, string RequiredRole);
@@ -67,7 +70,8 @@ internal sealed record Config(
                 Need(secret, "oidc.client_secret または oidc.client_secret_file"),
                 o.RequiredRole ?? ""),
             ReadTargets(raw, file),
-            raw.Status?.Port ?? 8788);
+            raw.Status?.Port ?? 8788,
+            new UpdateOptions(raw.Update?.Enabled ?? true, raw.Update?.CheckHours ?? 6, raw.Update?.Repo ?? "danything/mado"));
         if (config.Tls == "acme" && config.Acme.Email == "") throw new ConfigException($"{file}: acme.email が要る");
         return config;
     }
@@ -106,7 +110,9 @@ internal sealed record Config(
         public RawOidc? Oidc { get; set; }
         public List<RawTarget>? Targets { get; set; }
         public RawStatus? Status { get; set; }
+        public RawUpdate? Update { get; set; }
     }
+    internal sealed class RawUpdate { public bool? Enabled { get; set; } public int? CheckHours { get; set; } public string? Repo { get; set; } }
     internal sealed class RawListen { public int? Https { get; set; } public int? Http { get; set; } public string? Hostname { get; set; } }
     internal sealed class RawAcme { public string? Email { get; set; } public bool? Staging { get; set; } }
     internal sealed class RawOidc

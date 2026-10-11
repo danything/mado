@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- コンソールの窓を出さない -->
+    <OutputType>WinExe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>mado-tray</AssemblyName>
+    <RootNamespace>Mado.Tray</RootNamespace>
+    <Version>0.5.0</Version>
+    <!-- Win32 を直接呼ぶ(WinForms は Native AOT に対応していない) -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StripSymbols>true</StripSymbols>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <ApplicationIcon>mado.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- アイコンを作る別の小さなスクリプト(dotnet run tray/make-icon.cs)。本体には入れない -->
+    <Compile Remove="make-icon.cs" />
+  </ItemGroup>
+</Project>
