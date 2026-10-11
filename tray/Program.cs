@@ -3,6 +3,7 @@
 // 状態は mado の状態の口(http://127.0.0.1:8788/status。`--port <番号>` で変える)を 5 秒ごとに見る。動いていればアプリのアイコン、
 // 聞けなければ注意のアイコンにして、ツールチップに版・つないでいる数・証明書の残り日数を出す。
 // 右クリックのメニュー: 画面を開く / 今すぐ更新を確かめる / サービスを再起動(UAC)/ ログを開く(UAC)/ 終了。
+// 自動更新でサービスと exe が新しい版になったら、自分も起こし直す(RestartIfUpdated)。
 //
 // WinForms は Native AOT に対応していないので、Win32(Shell_NotifyIcon と隠しウィンドウ)を直接呼ぶ。
 // ウィンドウはメッセージ専用ではなく普通の(見えない)トップレベルにして、MSI の更新のときに Restart Manager が
@@ -19,8 +20,14 @@ internal static unsafe partial class Program
     const uint WmTrayIcon = 0x8000 + 1; // WM_APP + 1
     const int MenuOpen = 1, MenuUpdate = 2, MenuRestart = 3, MenuLog = 4, MenuExit = 9;
 
-    static nint hwnd, hInstance, appIcon, warnIcon;
+    static nint hwnd, hInstance, appIcon, warnIcon, mutex;
     static uint taskbarCreated;
+    static string[] startArgs = [];
+    /// <summary>自分の版と exe の置き場所(起動したときのもの)</summary>
+    static readonly string ownVersion = VersionOf(typeof(Program).Assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion);
+    static readonly string? exePath = Environment.ProcessPath;
 
     /// <summary>最後に聞けた状態(聞けなければ null)。背景で取ってきて、タイマーで反映する</summary>
     static volatile StatusView? status;
@@ -35,8 +42,9 @@ internal static unsafe partial class Program
         // mado.json の status.port を変えたときは、Run の登録に --port <番号> を足す
         var i = Array.IndexOf(args, "--port");
         if (i >= 0 && i + 1 < args.Length && int.TryParse(args[i + 1], out var port)) Net.Base = $"http://127.0.0.1:{port}";
-        // 二重に起動しない(サインインし直したときなど)
-        CreateMutexW(0, 0, "Local\\mado-tray");
+        startArgs = args;
+        // 二重に起動しない(サインインし直したときなど)。起こし直すときは、新しいほうを起動する前に放す
+        mutex = CreateMutexW(0, 0, "Local\\mado-tray");
         if (Marshal.GetLastPInvokeError() == 183 /* ERROR_ALREADY_EXISTS */) return 0;
         // MSI の更新で Restart Manager に閉じられたら、終わったあとに起こし直してもらう
         // 起こし直すときも同じ引数(--port)で
@@ -146,7 +154,30 @@ internal static unsafe partial class Program
         if (wasUp is { } before && before != up)
             Balloon(up ? "mado が動き出した" : "mado が止まった", up ? $"{s!.Version}" : "サービス mado に聞けない。右クリックから再起動できる", !up);
         wasUp = up;
+        if (s is not null) RestartIfUpdated(s.Version);
     }
+
+    /// <summary>
+    /// サービスが新しい版になり、置き場所の mado-tray.exe も新しい版に入れ替わっていたら、自分を起こし直す。
+    /// サービスが入れる MSI は、サインインしている人のトレイを閉じられない(動いている exe は名前を変えて残り、
+    /// 新しい exe が置かれる)ので、トレイは古いまま動き続けてしまう。同じ引数(--port)で起動して、自分は終わる
+    /// </summary>
+    static void RestartIfUpdated(string serviceVersion)
+    {
+        if (exePath is null || !Newer(serviceVersion, ownVersion)) return;
+        var onDisk = VersionOf(System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).ProductVersion);
+        if (!Newer(onDisk, ownVersion)) return;
+        // 新しいほうが二重起動の確認で弾かれないよう、先に放す
+        CloseHandle(mutex);
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath, startArgs) { UseShellExecute = false });
+        Quit();
+    }
+
+    /// <summary>"0.5.1+abc" / "v0.5.1" を "v0.5.1" に</summary>
+    static string VersionOf(string? v) => "v" + (v ?? "0.0.0").TrimStart('v').Split('+')[0];
+
+    static bool Newer(string a, string b) =>
+        Version.TryParse(a.TrimStart('v').Split('-')[0], out var x) && Version.TryParse(b.TrimStart('v').Split('-')[0], out var y) && x > y;
 
     // --- メニュー -----------------------------------------------------------------------------------
 
@@ -289,6 +320,9 @@ internal static unsafe partial class Program
 
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint GetModuleHandleW(string? name);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial int CloseHandle(nint handle);
 
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int RegisterApplicationRestart(string? commandLine, uint flags);
