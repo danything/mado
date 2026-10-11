@@ -167,6 +167,7 @@ export const PDUTYPE2 = {
 	FONTMAP: 0x28,
 	SET_ERROR_INFO: 0x2f,
 	MONITOR_LAYOUT: 0x37,
+	FRAME_ACKNOWLEDGE: 0x38,
 } as const;
 
 export type ShareControl = { type: number; source: number; body: Uint8Array };
@@ -227,6 +228,10 @@ export function parseShareData(body: Uint8Array): ShareData {
 		throw new Error("圧縮された Share Data PDU は受けられない");
 	return { type2, payload: r.rest() };
 }
+
+/** Frame Acknowledge PDU の本体(TS_FRAME_ACKNOWLEDGE_PDU、[MS-RDPBCGR]): 描き終えたフレームの ID */
+export const frameAcknowledge = (frameId: number) =>
+	new Writer(4).u32(frameId).done();
 
 export const synchronize = (targetUser: number) =>
 	new Writer(4).u16(1).u16(targetUser).done();
@@ -293,6 +298,9 @@ export const CAP = {
 	BITMAP_CODECS: 0x1d,
 	FRAME_ACKNOWLEDGE: 0x1e,
 } as const;
+
+/** 応答していないフレームの最大数(Frame Acknowledge 能力) */
+export const MAX_UNACKNOWLEDGED_FRAMES = 3;
 
 /** サーバーと決める RemoteFX の codecId(クライアントが決めて宣言する) */
 export const RFX_CODEC_ID = 3;
@@ -487,6 +495,12 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 				.done(),
 		),
 		cap(CAP.BITMAP_CODECS, bitmapCodecs()),
+		// Frame Acknowledge: 応答していないフレームがこの数に達すると、サーバーは送るのを待つ。
+		// こちらの復号が遅いときにサーバーが送り続けて詰まるのを防ぐ。2 だと往復の遅い回線で止まりがちなので 3
+		cap(
+			CAP.FRAME_ACKNOWLEDGE,
+			new Writer(4).u32(MAX_UNACKNOWLEDGED_FRAMES).done(),
+		),
 	];
 }
 

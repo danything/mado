@@ -116,17 +116,16 @@ form.addEventListener("submit", async (e) => {
 		current = { client, channels };
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
-		// 「窓に合わせる」のときだけ、窓の大きさが変わったら RDP の解像度も変える
+		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える
 		const scale = autoScale(size);
-		if (scale)
-			stops.push(
-				watchSize(screen, (w, h) =>
-					channels.displayControl.resize(
-						even(Math.round(w * scale)),
-						Math.round(h * scale),
-					),
+		stops.push(
+			watchSize(screen, (w, h) =>
+				channels.displayControl.resize(
+					even(Math.round(w * scale)),
+					Math.round(h * scale),
 				),
-			);
+			),
+		);
 		display.canvas.focus();
 		status.textContent = "";
 		const reason = await client.run();
@@ -197,25 +196,20 @@ function watchClipboard(canvas: HTMLElement, channels: Channels): () => void {
 const even = (n: number) => n - (n % 2);
 
 /**
- * RDP の解像度。「窓に合わせる」なら画面の場所の大きさ、ほかは選んだ大きさ(小さいほど描く量が減って軽い)。
- * 固定の大きさでも、表示は窓に合わせて拡大縮小される(scale="fit")
+ * RDP の解像度。窓(画面の場所)の大きさ × 画素数の割合。減らしたぶんは、表示で窓に合わせて拡大される(小さいほど描く量が減って軽い)
  */
 function desktopSize(size: string): { width: number; height: number } {
-	const m = size.match(/^(\d+)x(\d+)$/);
-	if (m) return { width: Number(m[1]), height: Number(m[2]) };
-	// 「窓に合わせる」: 窓の大きさ × 画素数の割合(減らしたぶんは、表示で拡大する)
-	const k = autoScale(size) || 1;
+	const k = autoScale(size);
 	return {
 		width: Math.round((screen.clientWidth || innerWidth) * k),
 		height: Math.round((screen.clientHeight || innerHeight) * k),
 	};
 }
 
-/** 「窓に合わせる」の画素数の割合(auto は 1、auto@0.5 は 0.5)。固定の大きさなら 0 */
+/** 画素数の割合(auto は 1、auto@0.5 は 0.5)。分からない値は 1 */
 function autoScale(size: string): number {
 	const m = size.match(/^auto(?:@([\d.]+))?$/);
-	if (!m) return 0;
-	const k = m[1] ? Number(m[1]) : 1;
+	const k = m?.[1] ? Number(m[1]) : 1;
 	return k > 0 && k <= 1 ? k : 1;
 }
 
