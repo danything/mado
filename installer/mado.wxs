@@ -16,8 +16,10 @@
      xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="mado" Manufacturer="Doa" Version="$(Version)" Scope="perMachine"
-           UpgradeCode="686617C4-D113-448F-93B1-B4F997EDC5EC" Compressed="yes">
-    <SummaryInformation Description="OIDC でログインして、ブラウザから RDP する小さなゲートウェイ" />
+           UpgradeCode="686617C4-D113-448F-93B1-B4F997EDC5EC" Compressed="yes"
+           Codepage="932" Language="1041">
+    <!-- 説明などに日本語を使うので、MSI の文字コードは Shift_JIS(932)。MSI は UTF-8(65001)を正しく扱えない -->
+    <SummaryInformation Codepage="932" Description="OIDC でログインして、ブラウザから RDP する小さなゲートウェイ" />
     <!-- 新しい版を入れると古い版を外す。古い版で上書きはさせない -->
     <MajorUpgrade DowngradeErrorMessage="これより新しい mado が入っている。" />
     <MediaTemplate EmbedCab="yes" />
