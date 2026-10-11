@@ -135,6 +135,8 @@ export async function credssp(
 	const challenge = await readTsRequest(s);
 	if (!challenge.negoToken) throw new Error("CredSSP: no NTLM CHALLENGE");
 	const peerVersion = challenge.version;
+	// 版は、お互いに話せる低いほうに合わせる
+	const version = Math.min(VERSION, peerVersion);
 	const auth = ntlm.authenticate(challenge.negoToken);
 
 	// サーバーの公開鍵に結びつける。v5 からはハッシュ、それより前は公開鍵そのものを封印して送る(返りは 1 足したもの)
@@ -144,7 +146,7 @@ export async function credssp(
 			: publicKey;
 	s.write(
 		writeTsRequest({
-			version: VERSION,
+			version,
 			negoToken: auth,
 			pubKeyAuth: ntlm.seal(clientPub),
 			clientNonce: peerVersion >= 5 ? nonce : undefined,
@@ -163,7 +165,7 @@ export async function credssp(
 
 	s.write(
 		writeTsRequest({
-			version: VERSION,
+			version,
 			authInfo: ntlm.seal(tsCredentials(id.domain, id.user, password)),
 		}),
 	);
