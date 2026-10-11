@@ -128,7 +128,16 @@ form.addEventListener("submit", async (e) => {
 		const gfxClient = gfx
 			? new GfxClient(new CanvasGfxOps(display), new WebCodecsAvc())
 			: undefined;
-		if (gfxClient) gfxClient.onError = (e) => console.warn("GFX:", e);
+		/** H.264 の画面が回復できない形で壊れたときの理由(切断して、つなぎ直してもらう) */
+		let fatal: string | undefined;
+		if (gfxClient) {
+			gfxClient.onError = (e) => console.warn("GFX:", e);
+			gfxClient.onFatal = (e) => {
+				console.error("GFX:", e);
+				fatal = "H.264 の画面が壊れた。つなぎ直してください";
+				client.close();
+			};
+		}
 		const channels = attachChannels(client, writeClipboard, { gfx: gfxClient });
 		current = { client, channels };
 		if (gfxClient) stops.push(() => gfxClient.onClose());
@@ -147,7 +156,7 @@ form.addEventListener("submit", async (e) => {
 		display.canvas.focus();
 		status.textContent = "";
 		const reason = await client.run();
-		status.textContent = `切れた: ${reason}`;
+		status.textContent = `切れた: ${fatal ?? reason}`;
 	} catch (err) {
 		status.textContent = `つなげなかった: ${describe(err)}`;
 	}

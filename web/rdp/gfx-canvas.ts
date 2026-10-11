@@ -192,25 +192,60 @@ export class CanvasGfxOps implements GfxOps {
 	}
 
 	present(): void {
+		// 変わった範囲(画面の座標)を集める
+		const changed: Rect[] = [];
 		for (const s of this.surfaces.values()) {
 			const d = s.dirty;
-			if (!d || !s.map) continue;
 			s.dirty = undefined;
-			const w = Math.min(d.right, s.width) - d.left;
-			const h = Math.min(d.bottom, s.height) - d.top;
-			if (w <= 0 || h <= 0) continue;
-			this.display.blit(
-				s.canvas,
-				d.left,
-				d.top,
-				w,
-				h,
-				s.map.x + d.left,
-				s.map.y + d.top,
-			);
+			if (!d || !s.map) continue;
+			const r = clip(d, { left: 0, top: 0, right: s.width, bottom: s.height });
+			if (r)
+				changed.push({
+					left: s.map.x + r.left,
+					top: s.map.y + r.top,
+					right: s.map.x + r.right,
+					bottom: s.map.y + r.bottom,
+				});
+		}
+		// 変わった範囲ごとに、そこに掛かる全部の面を作成の順(後のものが上)に描き直す。面が重なっていても、変わっていない面が消えない
+		for (const c of changed) {
+			let first = true;
+			for (const s of this.surfaces.values()) {
+				if (!s.map) continue;
+				const onScreen = {
+					left: s.map.x,
+					top: s.map.y,
+					right: s.map.x + s.width,
+					bottom: s.map.y + s.height,
+				};
+				const r = clip(c, onScreen);
+				if (!r) continue;
+				const w = r.right - r.left;
+				const h = r.bottom - r.top;
+				const sx = r.left - s.map.x;
+				const sy = r.top - s.map.y;
+				// 最初の面は置き換え(消してから描く)、後の面は重ねる
+				if (first) this.display.blit(s.canvas, sx, sy, w, h, r.left, r.top);
+				else this.display.blitOver(s.canvas, sx, sy, w, h, r.left, r.top);
+				first = false;
+			}
 		}
 	}
 }
+
+/** 2 つの矩形の重なり。無ければ undefined */
+function clip(a: Rect, b: Rect): Rect | undefined {
+	const left = Math.max(a.left, b.left);
+	const top = Math.max(a.top, b.top);
+	const right = Math.min(a.right, b.right);
+	const bottom = Math.min(a.bottom, b.bottom);
+	return right > left && bottom > top
+		? { left, top, right, bottom }
+		: undefined;
+}
+
+/** 1 フレームの復号を待つ長さ。過ぎたら捨てる */
+const AVC_TIMEOUT_MS = 1000;
 
 /** WebCodecs の VideoDecoder で H.264(Annex B)を復号する。結果は timestamp で対応づける */
 export class WebCodecsAvc implements AvcDecoder {
@@ -219,8 +254,11 @@ export class WebCodecsAvc implements AvcDecoder {
 	private needKey = true;
 	private ts = 0;
 	private waiting = new Map<number, (f: VideoFrameLike | null) => void>();
+	/** close() のあと。復号器を作り直さない */
+	private closed = false;
 
 	decode(stream: Uint8Array, key: boolean): Promise<VideoFrameLike | null> {
+		if (this.closed) return Promise.resolve(null);
 		const codec = codecString(stream);
 		if (
 			codec &&
@@ -237,8 +275,11 @@ export class WebCodecsAvc implements AvcDecoder {
 		const timestamp = this.ts++;
 		return new Promise((resolve) => {
 			const timer = setTimeout(() => {
-				if (this.waiting.delete(timestamp)) resolve(null);
-			}, 1000);
+				if (!this.waiting.delete(timestamp)) return;
+				// このフレームを捨てたので、後の差分フレームは壊れた参照になる。次の鍵フレームまで待つ
+				this.needKey = true;
+				resolve(null);
+			}, AVC_TIMEOUT_MS);
 			this.waiting.set(timestamp, (f) => {
 				clearTimeout(timer);
 				resolve(f);
@@ -261,7 +302,7 @@ export class WebCodecsAvc implements AvcDecoder {
 	}
 
 	private reset(codec: string): void {
-		this.close();
+		this.shutdown();
 		this.codec = codec;
 		this.needKey = true;
 		this.decoder = new VideoDecoder({
@@ -284,6 +325,11 @@ export class WebCodecsAvc implements AvcDecoder {
 	}
 
 	close(): void {
+		this.closed = true;
+		this.shutdown();
+	}
+
+	private shutdown(): void {
 		for (const r of this.waiting.values()) r(null);
 		this.waiting.clear();
 		if (this.decoder && this.decoder.state !== "closed") this.decoder.close();

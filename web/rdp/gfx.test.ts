@@ -298,7 +298,7 @@ describe("GfxClient の流れ", () => {
 		]);
 	});
 
-	test("壊れた PDU は飛ばして続ける。無い面・キャッシュは例外として数える", async () => {
+	test("壊れた PDU は飛ばして続ける。無い面は例外、無いキャッシュは黙って飛ばす(上限で捨てたもの)", async () => {
 		const ops = new Recorder();
 		const gfx = new GfxClient(ops);
 		const errors: unknown[] = [];
@@ -319,7 +319,7 @@ describe("GfxClient の流れ", () => {
 			),
 		);
 		await gfx.idle();
-		expect(errors.length).toBe(2);
+		expect(errors.length).toBe(1);
 		expect(gfx.stats.skipped).toBe(2);
 		expect(ops.calls).toEqual(["present"]);
 	});
@@ -524,5 +524,120 @@ describe("コマンドの番号([MS-RDPEGFX] 2.2.1.5)", () => {
 			CMD.STARTFRAME,
 			CMD.ENDFRAME,
 		]).toEqual([0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc]);
+	});
+});
+
+describe("レビューの指摘(#33)", () => {
+	test("ZGFX の伸長に失敗したら、回復不能として以後のデータを捨てる", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(ops, new FakeAvc());
+		gfx.onOpen(channel());
+		const fatal: unknown[] = [];
+		const errors: unknown[] = [];
+		gfx.onFatal = (e) => fatal.push(e);
+		gfx.onError = (e) => errors.push(e);
+		// 知らない descriptor(例外は呼び出し元に投げない)
+		expect(() => gfx.onData(Uint8Array.of(0x12, 0, 0))).not.toThrow();
+		expect(fatal.length).toBe(1);
+		// 壊れた後は、正しいデータも捨てる
+		gfx.onData(
+			segmentedUncompressed(
+				pdu(CMD.RESETGRAPHICS, new Writer().u32(64).u32(48).u32(0).done()),
+			),
+		);
+		await gfx.idle();
+		expect(ops.calls).toEqual([]);
+		expect(errors.length).toBe(0);
+	});
+
+	test("PDU 1 つの失敗は飛ばして続ける(無い面への描画)", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(ops, new FakeAvc());
+		gfx.onOpen(channel());
+		const errors: unknown[] = [];
+		gfx.onError = (e) => errors.push(e);
+		const bad = wire(
+			9,
+			CODEC.UNCOMPRESSED,
+			{ left: 0, top: 0, right: 1, bottom: 1 },
+			new Uint8Array(4),
+		);
+		const reset = pdu(
+			CMD.RESETGRAPHICS,
+			new Writer().u32(64).u32(48).u32(0).done(),
+		);
+		gfx.onData(segmentedUncompressed(concat(bad, reset)));
+		await gfx.idle();
+		expect(errors.length).toBe(1);
+		expect(ops.calls).toEqual(["reset 64x48"]);
+	});
+
+	const create = (id: number, w: number, h: number) =>
+		pdu(CMD.CREATESURFACE, new Writer().u16(id).u16(w).u16(h).u8(0x20).done());
+	const toCache = (slot: number, w: number, h: number) => {
+		const b = new Writer().u16(1).zeros(8).u16(slot);
+		rect(b, { left: 0, top: 0, right: w, bottom: h });
+		return pdu(CMD.SURFACETOCACHE, b.done());
+	};
+	const fromCache = (slot: number) =>
+		pdu(
+			CMD.CACHETOSURFACE,
+			new Writer().u16(slot).u16(1).u16(1).u16(0).u16(0).done(),
+		);
+
+	test("面の数・総画素数の上限を超える面は作らない", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(ops, new FakeAvc());
+		gfx.onOpen(channel());
+		// 8192x8192 は 2^26 画素。2 つで上限(2^27)、3 つ目は作らない
+		gfx.onData(
+			segmentedUncompressed(
+				concat(
+					create(1, 8192, 8192),
+					create(2, 8192, 8192),
+					create(3, 8192, 8192),
+				),
+			),
+		);
+		await gfx.idle();
+		expect(ops.calls.filter((c) => c.startsWith("create")).length).toBe(2);
+		expect(gfx.stats.skipped).toBe(1);
+		// 1 つ消せば作れる
+		gfx.onData(
+			segmentedUncompressed(
+				concat(
+					pdu(CMD.DELETESURFACE, new Writer().u16(1).done()),
+					create(3, 8192, 8192),
+				),
+			),
+		);
+		await gfx.idle();
+		expect(ops.calls.filter((c) => c.startsWith("create")).length).toBe(3);
+	});
+
+	test("画像キャッシュの合計の上限を超えたら古いものから捨て、捨てたものを指されたら飛ばす", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(ops, new FakeAvc());
+		gfx.onOpen(channel());
+		// 8192x4096x4 = 128MB。2 つで上限(256MB)、3 つ目で 1 つ目を捨てる
+		gfx.onData(
+			segmentedUncompressed(
+				concat(
+					create(1, 8192, 8192),
+					toCache(10, 8192, 4096),
+					toCache(11, 8192, 4096),
+					toCache(12, 16, 16),
+				),
+			),
+		);
+		await gfx.idle();
+		expect(ops.calls).toContain("evict 10");
+		expect(ops.calls).not.toContain("evict 11");
+		gfx.onData(segmentedUncompressed(concat(fromCache(10), fromCache(11))));
+		await gfx.idle();
+		expect(ops.calls.filter((c) => c.startsWith("fromCache"))).toEqual([
+			"fromCache 11 1 0,0",
+		]);
+		expect(gfx.stats.skipped).toBe(1);
 	});
 });

@@ -60,6 +60,11 @@ const PIXEL_FORMAT_ARGB = 0x21;
 /** キャッシュの枠の数の上限(SMALL_CACHE を付けないとき) */
 const MAX_CACHE_SLOTS = 25600;
 const MAX_SURFACE_SIDE = 8192;
+/** 面の数と、全部の面の画素数の合計の上限(4 バイト / 画素で 512MB) */
+const MAX_SURFACES = 64;
+const MAX_SURFACE_PIXELS = 1 << 27;
+/** 画像キャッシュの合計の上限(4 バイト / 画素)。超えたら古いものから捨てる */
+const MAX_CACHE_BYTES = 256 * 1024 * 1024;
 
 export type Rect = { left: number; top: number; right: number; bottom: number };
 
@@ -248,7 +253,12 @@ export class GfxClient implements DynamicHandler {
 		number,
 		{ width: number; height: number; alpha: boolean }
 	>();
-	private cacheSlots = new Set<number>();
+	/** キャッシュの番号 → 大きさ(バイト)。入れた順(古いものから捨てる) */
+	private cacheSlots = new Map<number, number>();
+	private cacheBytes = 0;
+	private surfacePixels = 0;
+	/** ZGFX の伸長に失敗した。履歴が壊れたので、以後の絵は正しくならない */
+	private broken = false;
 	private totalFrames = 0;
 	/** 診断用 */
 	readonly stats = {
@@ -260,7 +270,10 @@ export class GfxClient implements DynamicHandler {
 		rfx: 0,
 		skipped: 0,
 	};
+	/** PDU 1 つの失敗(そのフレームの一部を飛ばして続ける) */
 	onError?: (e: unknown) => void;
+	/** 回復できない失敗(ZGFX の履歴が壊れた)。以後のデータは捨てる。つなぎ直すしかない */
+	onFatal?: (e: unknown) => void;
 
 	constructor(
 		private ops: GfxOps,
@@ -278,7 +291,17 @@ export class GfxClient implements DynamicHandler {
 	}
 
 	onData(data: Uint8Array): void {
-		const pdus = splitPdus(this.zgfx.decompress(data));
+		if (this.broken) return;
+		let pdus: GfxPdu[];
+		try {
+			pdus = splitPdus(this.zgfx.decompress(data));
+		} catch (e) {
+			// 伸長の途中で失敗すると、履歴が中途半端なまま残り、以後の一致がずれる
+			this.broken = true;
+			this.stats.skipped++;
+			(this.onFatal ?? this.onError)?.(e);
+			return;
+		}
 		for (const p of pdus) {
 			this.chain = this.chain
 				.then(() => this.handle(p))
@@ -316,12 +339,25 @@ export class GfxClient implements DynamicHandler {
 				if (width > MAX_SURFACE_SIDE || height > MAX_SURFACE_SIDE)
 					throw new Error("GFX: 面が大きすぎる");
 				const alpha = format === PIXEL_FORMAT_ARGB;
+				const old = this.surfaces.get(id);
+				const pixels = this.surfacePixels - (old ? old.width * old.height : 0);
+				if (
+					(!old && this.surfaces.size >= MAX_SURFACES) ||
+					pixels + width * height > MAX_SURFACE_PIXELS
+				) {
+					// 作らない。この面を指すコマンドは「無い面」で飛ばされる
+					this.stats.skipped++;
+					break;
+				}
+				this.surfacePixels = pixels + width * height;
 				this.surfaces.set(id, { width, height, alpha });
 				this.ops.createSurface(id, width, height, alpha);
 				break;
 			}
 			case CMD.DELETESURFACE: {
 				const id = r.u16();
+				const old = this.surfaces.get(id);
+				if (old) this.surfacePixels -= old.width * old.height;
 				this.surfaces.delete(id);
 				this.ops.deleteSurface(id);
 				break;
@@ -376,23 +412,39 @@ export class GfxClient implements DynamicHandler {
 				const slot = r.u16();
 				if (slot >= MAX_CACHE_SLOTS)
 					throw new Error("GFX: キャッシュの番号が不正");
-				this.cacheSlots.add(slot);
-				this.ops.toCache(slot, id, readRect(r));
+				const rect = readRect(r);
+				const bytes =
+					Math.max(0, rect.right - rect.left) *
+					Math.max(0, rect.bottom - rect.top) *
+					4;
+				this.forgetCache(slot);
+				// 合計の上限を超えるなら、古いものから捨てる(後で指されたら、その描画は飛ばす)
+				for (const [old] of this.cacheSlots) {
+					if (this.cacheBytes + bytes <= MAX_CACHE_BYTES) break;
+					this.forgetCache(old);
+					this.ops.evict(old);
+				}
+				this.cacheSlots.set(slot, bytes);
+				this.cacheBytes += bytes;
+				this.ops.toCache(slot, id, rect);
 				break;
 			}
 			case CMD.CACHETOSURFACE: {
 				const slot = r.u16();
 				const id = r.u16();
 				const n = r.u16();
-				if (!this.cacheSlots.has(slot))
-					throw new Error("GFX: キャッシュに無い");
+				if (!this.cacheSlots.has(slot)) {
+					// 上限で捨てたもの(またはサーバーの誤り)。その描画だけ飛ばす
+					this.stats.skipped++;
+					break;
+				}
 				for (let i = 0; i < n; i++)
 					this.ops.fromCache(slot, id, r.u16(), r.u16());
 				break;
 			}
 			case CMD.EVICTCACHEENTRY: {
 				const slot = r.u16();
-				this.cacheSlots.delete(slot);
+				this.forgetCache(slot);
 				this.ops.evict(slot);
 				break;
 			}
@@ -406,6 +458,13 @@ export class GfxClient implements DynamicHandler {
 				this.stats.skipped++;
 				break;
 		}
+	}
+
+	private forgetCache(slot: number): void {
+		const b = this.cacheSlots.get(slot);
+		if (b === undefined) return;
+		this.cacheBytes -= b;
+		this.cacheSlots.delete(slot);
 	}
 
 	private async wireToSurface(r: Reader): Promise<void> {

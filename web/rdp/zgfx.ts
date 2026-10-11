@@ -75,7 +75,19 @@ const TOKENS: Token[] = (
 
 export { TOKENS as ZGFX_TOKENS };
 
-/** 上位ビットから読む */
+/** 接頭辞は最長 9 ビット。先頭 9 ビットで引く表(接頭辞の符号は互いに接頭辞にならないので、一意に決まる) */
+const PREFIX_BITS = 9;
+const PREFIX_TABLE: (Token | undefined)[] = (() => {
+	const table: (Token | undefined)[] = new Array(1 << PREFIX_BITS);
+	for (const t of TOKENS) {
+		const shift = PREFIX_BITS - t.prefixLength;
+		const base = t.prefixCode << shift;
+		for (let i = 0; i < 1 << shift; i++) table[base + i] = t;
+	}
+	return table;
+})();
+
+/** 上位ビットから読む。32 ビットの窓で、まとめて取り出す */
 class BitReader {
 	private pos = 0;
 	constructor(
@@ -86,15 +98,35 @@ class BitReader {
 	get left(): number {
 		return this.limit - this.pos;
 	}
+	/** 今の位置から n ビット(1〜25)を、進めずに見る。入力の終わりの先は 0 */
+	peek(n: number): number {
+		const p = this.pos;
+		const i = p >> 3;
+		const d = this.data;
+		const len = d.length;
+		const w =
+			(((i < len ? (d[i] as number) : 0) << 24) |
+				((i + 1 < len ? (d[i + 1] as number) : 0) << 16) |
+				((i + 2 < len ? (d[i + 2] as number) : 0) << 8) |
+				(i + 3 < len ? (d[i + 3] as number) : 0)) >>>
+			0;
+		return ((w << (p & 7)) >>> 0) >>> (32 - n);
+	}
+	skip(n: number): void {
+		if (this.pos + n > this.limit) throw new Error("ZGFX: 入力が足りない");
+		this.pos += n;
+	}
 	bits(n: number): number {
 		if (n === 0) return 0;
 		if (this.pos + n > this.limit) throw new Error("ZGFX: 入力が足りない");
-		let v = 0;
-		for (let i = 0; i < n; i++) {
-			const p = this.pos++;
-			v = v * 2 + (((this.data[p >> 3] as number) >> (7 - (p & 7))) & 1);
+		if (n <= 25) {
+			const v = this.peek(n);
+			this.pos += n;
+			return v;
 		}
-		return v;
+		// 26 ビット以上(一致の長さの続き)は 2 回に分ける
+		const hi = this.bits(n - 16);
+		return hi * 65536 + this.bits(16);
 	}
 	/** 次のバイトの境目まで読み飛ばす */
 	align(): void {
@@ -105,6 +137,22 @@ class BitReader {
 	}
 	skipBytes(n: number): void {
 		this.pos += n * 8;
+	}
+}
+
+/** 伸長の出力。倍々に伸ばす */
+class Output {
+	buf = new Uint8Array(64 * 1024);
+	len = 0;
+	reserve(n: number): void {
+		const need = this.len + n;
+		if (need > MAX_OUTPUT) throw new Error("ZGFX: 大きすぎる");
+		if (need <= this.buf.length) return;
+		let size = this.buf.length * 2;
+		while (size < need) size *= 2;
+		const b = new Uint8Array(Math.min(size, MAX_OUTPUT));
+		b.set(this.buf.subarray(0, this.len));
+		this.buf = b;
 	}
 }
 
@@ -156,30 +204,20 @@ export class Zgfx {
 		const unused = body[body.length - 1] as number;
 		const bytes = body.subarray(0, body.length - 1);
 		const r = new BitReader(bytes, bytes.length * 8 - unused);
-		const out: number[] = [];
-		const emit = (b: number) => {
-			if (out.length >= MAX_OUTPUT) throw new Error("ZGFX: 大きすぎる");
-			out.push(b);
-			this.push(b);
-		};
+		const out = new Output();
+		const hist = this.history;
 		while (r.left > 0) {
-			let have = 0;
-			let prefix = 0;
-			let token: Token | undefined;
-			for (const t of TOKENS) {
-				while (have < t.prefixLength) {
-					if (r.left <= 0) return Uint8Array.from(out);
-					prefix = prefix * 2 + r.bits(1);
-					have++;
-				}
-				if (prefix === t.prefixCode) {
-					token = t;
-					break;
-				}
-			}
+			// 末尾の詰め物(使わないビットは数えてあるので、残りが接頭辞に足りなければ終わり)
+			const token = PREFIX_TABLE[r.peek(PREFIX_BITS)];
 			if (!token) throw new Error("ZGFX: 知らない符号");
+			if (token.prefixLength > r.left) break;
+			r.skip(token.prefixLength);
 			if (!token.match) {
-				emit(token.valueBase + r.bits(token.valueBits));
+				out.reserve(1);
+				const v = token.valueBase + r.bits(token.valueBits);
+				out.buf[out.len++] = v;
+				hist[this.index] = v;
+				this.index = this.index + 1 === HISTORY_SIZE ? 0 : this.index + 1;
 				continue;
 			}
 			const distance = token.valueBase + r.bits(token.valueBits);
@@ -197,22 +235,38 @@ export class Zgfx {
 					count += r.bits(extra);
 				}
 				if (distance > HISTORY_SIZE) throw new Error("ZGFX: 距離が大きすぎる");
-				let from = (this.index - distance + HISTORY_SIZE) % HISTORY_SIZE;
+				out.reserve(count);
+				const o = out.buf;
+				let at = out.len;
+				let from = this.index - distance;
+				if (from < 0) from += HISTORY_SIZE;
+				let to = this.index;
 				for (let i = 0; i < count; i++) {
-					emit(this.history[from] as number);
-					from = (from + 1) % HISTORY_SIZE;
+					const v = hist[from] as number;
+					o[at++] = v;
+					hist[to] = v;
+					if (++from === HISTORY_SIZE) from = 0;
+					if (++to === HISTORY_SIZE) to = 0;
 				}
+				out.len = at;
+				this.index = to;
 			} else {
 				// 符号化しない並び: 15 ビットの長さ、バイトの境目から生のバイト
 				const count = r.bits(15);
 				r.align();
 				const at = r.bytePos;
 				if (at + count > bytes.length) throw new Error("ZGFX: 生の並びが短い");
-				for (let i = 0; i < count; i++) emit(bytes[at + i] as number);
+				out.reserve(count);
+				for (let i = 0; i < count; i++) {
+					const v = bytes[at + i] as number;
+					out.buf[out.len++] = v;
+					hist[this.index] = v;
+					this.index = this.index + 1 === HISTORY_SIZE ? 0 : this.index + 1;
+				}
 				r.skipBytes(count);
 			}
 		}
-		return Uint8Array.from(out);
+		return out.buf.slice(0, out.len);
 	}
 
 	private push(b: number): void {

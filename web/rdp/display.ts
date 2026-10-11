@@ -102,6 +102,19 @@ export class Display implements Screen {
 		this.ctx.drawImage(src, sx, sy, w, h, dx, dy, w, h);
 	}
 
+	/** blit と同じだが、消さずに重ねる(GFX で面が重なるとき、上の面を描く) */
+	blitOver(
+		src: CanvasImageSource,
+		sx: number,
+		sy: number,
+		w: number,
+		h: number,
+		dx: number,
+		dy: number,
+	): void {
+		this.ctx.drawImage(src, sx, sy, w, h, dx, dy, w, h);
+	}
+
 	setCursor(cursor: Cursor | "default" | null): void {
 		if (cursor === null) this.canvas.style.cursor = "none";
 		else if (cursor === "default") this.canvas.style.cursor = "default";
