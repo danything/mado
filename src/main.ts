@@ -280,7 +280,8 @@ async function tryUpdate(): Promise<boolean> {
 	const state = await updater.check();
 	if (!state.available || sessions.size > 0) return false;
 	if (!(await updater.apply(() => sessions.size === 0))) return false;
-	setTimeout(() => process.exit(EXIT_UPDATED), 200);
+	// POST /update の返事を返し切ってから終わる(すぐ終わると呼んだ側に「返事が途中で切れた」と出る)
+	setTimeout(() => process.exit(EXIT_UPDATED), 1500);
 	return true;
 }
 
