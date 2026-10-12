@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"build:web": "bun tools/build-web.ts",
-		"check": "biome check --write && tsc --noEmit"
+		"check": "biome check --write && tsc --noEmit && bun test web"
 	},
 	"devDependencies": {
 		"@anyblades/blades": "3.0.0",

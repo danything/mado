@@ -22,7 +22,7 @@ Guacamole のようにサーバーで画面を描くのではなく、RDP は全
 | 部分 | 中身 |
 | --- | --- |
 | `server/` | **.NET 10(Native AOT)**。`CreateSlimBuilder` の Kestrel で、`UseWindowsService` でそのままサービスになる。OIDC・ACME・DER・RDCleanPath は手書き(ASP.NET Core の OIDC の仕組みは AOT に対応していない)。外から入れているのは Microsoft の `Microsoft.Extensions.Hosting.WindowsServices` だけ |
-| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、自前の RDP クライアント(`web/rdp/`: CredSSP / NTLM、X.224、MCS、ビットマップ、入力、クリップボード、解像度の追従)。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
+| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、自前の RDP クライアント(`web/rdp/`: CredSSP / NTLM、MCS、旧ビットマップ・RemoteFX・試験中の H.264、入力、クリップボード、解像度の追従。中身と試験は [docs/rdp-client.md](docs/rdp-client.md))。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
 | `tray/` | タスクトレイ(`mado-tray.exe`、.NET の Native AOT)。Win32 の `Shell_NotifyIcon` を直接呼ぶ(WinForms は AOT に対応していない)。サインイン時に起動する |
 | `installer/` | MSI(WiX v5)。サービスの登録、タスクトレイとサインイン時の起動、ファイアウォール(TCP 80 / 443)、`C:\ProgramData\mado` の権限 |
 
@@ -70,6 +70,13 @@ IdP には戻り先 `https://<host>/callback` を登録する。Entra ID なら�
 
 ログは `C:\ProgramData\mado\logs\mado.log`(10 MB を超えたら `.1` に回す)。
 
+## 画面
+
+- **画面の大きさ**: 窓に合わせて RDP の解像度を決め、窓の大きさが変わったら追従する。画素数 75% / 50% にすると、解像度を下げて拡大表示する(描く量が減って軽い)
+- **H.264(試験中)**: オンにすると、ブラウザが H.264 を復号できるとき GFX で受ける。既定はオフ(旧ビットマップ / RemoteFX)
+- **キーボード**: OS の配列から JIS / US を判定して接続先に伝える
+- ツールバー: Ctrl+Alt+Del / Windows キー / 診断(方式・更新の数・直近のエラーを左下に出す)/ 全画面 / 切断。クリップボードは文字列だけ行き来する
+
 ## タスクトレイ
 
 `mado-tray.exe` がサインイン時に起動し、状態の口を 5 秒ごとに見る。動いていれば mado のアイコン、聞けなければ注意のアイコンにして、
@@ -96,7 +103,7 @@ bun run build:web                          # 画面を dist/web に(server が�
 dotnet run --project tests/Mado.Tests.csproj   # 試験(TUnit)
 dotnet run --project server/Mado.csproj -- --config mado.dev.json   # "tls": "off" にすると http だけで試せる
 dotnet run tray/make-icon.cs tray/mado.ico   # アイコンを作り直す
-bun run check                              # 画面の biome と tsc
+bun run check                              # 画面の biome・tsc・試験(bun test web)
 ```
 
 **リリースは main に入ったときに自動**: `server/Mado.csproj` の `<Version>` を上げてマージすると、その版のタグを打って MSI を出す(`release.yml`。版を上げない変更はリリースしない)。

@@ -39,6 +39,15 @@
       <ComputerName>MADO-TEST</ComputerName>
       <TimeZone>Tokyo Standard Time</TimeZone>
     </component>
+    <!-- 最初のサインインのプライバシーの設定の画面を出さない -->
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\OOBE" /v DisablePrivacyExperience /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
     <!-- RDP を受ける(NLA あり)。ファイアウォールも開ける -->
     <component name="Microsoft-Windows-TerminalServices-LocalSessionManager" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <fDenyTSConnections>false</fDenyTSConnections>
@@ -53,8 +62,18 @@
     </component>
   </settings>
   <settings pass="oobeSystem">
+    <!-- 地域とキーボードを決めておく(初期設定の画面で聞かれない) -->
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <InputLocale>0411:00000411</InputLocale>
+      <SystemLocale>ja-JP</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>ja-JP</UserLocale>
+    </component>
+    <!-- 初期設定(OOBE)を飛ばす。残すとコンソールに初期設定用のユーザー(defaultuser0)が自動ログオンし、RDP で入るたびに取り合いになる -->
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <OOBE>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <SkipUserOOBE>true</SkipUserOOBE>
         <HideEULAPage>true</HideEULAPage>
         <HideLocalAccountScreen>true</HideLocalAccountScreen>
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
