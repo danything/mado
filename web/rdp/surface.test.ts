@@ -313,7 +313,7 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 		expect(draws.slice(2)).toEqual(["0,0 64x64"]);
 	});
 
-	test("コマンドの範囲で切られた(見える範囲が狭い)新しいタイルは、古いタイルを置き換えない(Windows で前の絵が残った)", () => {
+	test("Region で左半分だけ描く新しいタイルは、全体を描いた古いタイルを置き換えない(Windows で前の絵が残った)", () => {
 		const { draws, scheduled, cmds, r } = setup();
 		cmds(
 			setBits(
@@ -324,20 +324,34 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 				64,
 				rfxStream(full, [tile(0, 0)]),
 			),
-			// 同じ位置のタイルだが、コマンドの範囲は左半分だけ
 			setBits(
 				0x0006,
-				[0, 0, 32, 64],
+				[0, 0, 64, 64],
 				RFX_ID,
 				64,
 				64,
-				rfxStream(full, [tileB(0, 0)]),
+				rfxStream([{ x: 0, y: 0, w: 32, h: 64 }], [tileB(0, 0)]),
 			),
 		);
 		scheduled[0]?.();
 		expect(r.coalesced).toBe(0);
-		expect(draws.length).toBe(2);
-		expect(draws[0]).toBe("0,0 64x64");
+		expect(draws).toEqual(["0,0 64x64", "0,0 32x64"]);
+	});
+
+	test("コマンドの右下(destRight / destBottom)では切らない。切るのは Region と画面だけ(FreeRDP と同じ)", () => {
+		const { draws, scheduled, cmds } = setup();
+		cmds(
+			setBits(
+				0x0006,
+				[0, 0, 16, 16],
+				RFX_ID,
+				64,
+				64,
+				rfxStream(full, [tile(0, 0)]),
+			),
+		);
+		scheduled[0]?.();
+		expect(draws).toEqual(["0,0 64x64"]);
 	});
 
 	test("生のビットマップが間に入ったら、その前に保留を描く(順序を保つ)", () => {

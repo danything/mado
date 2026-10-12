@@ -139,20 +139,24 @@ function crop(
 	return out;
 }
 
-/** コマンドの矩形のうち画面に入る部分(絶対座標)。画面の外なら null */
+/**
+ * RemoteFX のタイルを描いてよい範囲。コマンドの左上から画面の右下まで。
+ * コマンドの右下(destRight / destBottom)では切らない。FreeRDP と同じで、タイルを切るのは Region の矩形と画面だけ。
+ * 以前は右下でも切っていて、Windows では Region からはみ出たタイルが描かれず、黒い四角が残った
+ */
 function commandArea(
 	left: number,
 	top: number,
-	right: number,
-	bottom: number,
+	_right: number,
+	_bottom: number,
 	screen: ScreenSize,
 ): Rect | null {
 	return intersect(
 		{
 			x: left,
 			y: top,
-			w: Math.max(0, right - left),
-			h: Math.max(0, bottom - top),
+			w: Math.max(0, screen.width - left),
+			h: Math.max(0, screen.height - top),
 		},
 		{ x: 0, y: 0, w: screen.width, h: screen.height },
 	);
