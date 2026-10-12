@@ -125,6 +125,11 @@ export type ProgressiveTile = {
 	job: ProgressiveTileJob;
 	x: number;
 	y: number;
+};
+
+/** 読み取った 1 つの WireToSurface2: 復号するタイルと、描く矩形(Region の矩形。タイルの無い矩形もある) */
+export type ProgressiveMessage = {
+	tiles: ProgressiveTile[];
 	rects: ProgressiveRect[];
 };
 
@@ -171,8 +176,8 @@ export function parseProgressive(
 	data: Uint8Array,
 	width: number,
 	height: number,
-): ProgressiveTile[] {
-	const out: ProgressiveTile[] = [];
+): ProgressiveMessage {
+	const out: ProgressiveMessage = { tiles: [], rects: [] };
 	const r = new Reader(data);
 	while (r.left >= 6) {
 		const type = r.u16();
@@ -199,16 +204,51 @@ export function parseProgressive(
 	return out;
 }
 
-/** 復号したタイルを、Region の矩形と面で切る */
-export function clipTile(
-	t: ProgressiveTile,
-	rgba: Uint8ClampedArray,
-	width: number,
-	height: number,
-): ProgressivePart[] {
-	const out: ProgressivePart[] = [];
-	clip(rgba, t.x, t.y, t.rects, width, height, out);
-	return out;
+/**
+ * 1 つの GFX のフレーム(StartFrame から EndFrame まで)の中で復号したタイル。
+ * Windows は、同じフレームの前の PDU で送ったタイルを、後の PDU の矩形にも描かせる(矩形だけでタイルの無い PDU も来る)。
+ * そこで FreeRDP と同じく、PDU ごとに「このフレームで復号したタイル全部」を、その PDU の矩形で切って描く。
+ * その PDU のタイルだけを描くと、窓を動かしたあとの空いたところが描かれず、残像が残った
+ */
+export class ProgressiveFrame {
+	private surfaces = new Map<
+		number,
+		Map<number, { x: number; y: number; rgba: Uint8ClampedArray }>
+	>();
+
+	/** フレームの始まり(StartFrame) */
+	reset(): void {
+		this.surfaces.clear();
+	}
+
+	deleteSurface(id: number): void {
+		this.surfaces.delete(id);
+	}
+
+	/** msg のタイルを復号した rgba(64x64、タイルと同じ順)を覚え、面に描く部分を返す。width / height は面の大きさ */
+	draw(
+		surface: number,
+		msg: ProgressiveMessage,
+		rgba: Uint8ClampedArray[],
+		width: number,
+		height: number,
+	): ProgressivePart[] {
+		let tiles = this.surfaces.get(surface);
+		if (!tiles) {
+			tiles = new Map();
+			this.surfaces.set(surface, tiles);
+		}
+		for (const [i, t] of msg.tiles.entries())
+			tiles.set(t.job.key, {
+				x: t.x,
+				y: t.y,
+				rgba: rgba[i] as Uint8ClampedArray,
+			});
+		const out: ProgressivePart[] = [];
+		for (const t of tiles.values())
+			clip(t.rgba, t.x, t.y, msg.rects, width, height, out);
+		return out;
+	}
 }
 
 /** Progressive の復号器(その場で復号する。Worker を使わないとき・試験用)。タイルの状態を面ごとに持つ(面を消したら deleteSurface) */
@@ -226,9 +266,10 @@ export class ProgressiveDecoder {
 		width: number,
 		height: number,
 	): ProgressivePart[] {
+		const msg = parseProgressive(surfaceId, data, width, height);
 		const out: ProgressivePart[] = [];
-		for (const t of parseProgressive(surfaceId, data, width, height))
-			out.push(...clipTile(t, this.tiles.decode(t.job), width, height));
+		for (const t of msg.tiles)
+			clip(this.tiles.decode(t.job), t.x, t.y, msg.rects, width, height, out);
 		return out;
 	}
 }
@@ -238,7 +279,7 @@ function region(
 	surface: number,
 	width: number,
 	height: number,
-	out: ProgressiveTile[],
+	out: ProgressiveMessage,
 ): void {
 	const tileSize = r.u8();
 	const numRects = r.u16();
@@ -259,6 +300,7 @@ function region(
 	};
 	for (let i = 0; i < numRects; i++)
 		reg.rects.push({ x: r.u16(), y: r.u16(), w: r.u16(), h: r.u16() });
+	out.rects.push(...reg.rects);
 	for (let i = 0; i < numQuant; i++)
 		reg.quants.push(parseProgressiveQuant(r.bytes(5)));
 	for (let i = 0; i < numProgQuant; i++) {
@@ -315,7 +357,7 @@ function region(
 		}
 		// 面の外のタイルは描けないので飛ばす(ほかのタイルは描く)
 		if (xIdx * TILE >= width || yIdx * TILE >= height) continue;
-		out.push({
+		out.tiles.push({
 			job: {
 				...job,
 				surface,
@@ -325,7 +367,6 @@ function region(
 			},
 			x: xIdx * TILE,
 			y: yIdx * TILE,
-			rects: reg.rects,
 		});
 	}
 }

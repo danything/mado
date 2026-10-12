@@ -816,6 +816,92 @@ function lanePool(lanes: number): TilePool {
 
 describe("WireToSurface2", () => {
 	for (const pool of [undefined, lanePool(2)])
+		test(`同じフレームで前の PDU が送ったタイルを、後の PDU の矩形にも描く。フレームが変わったら描かない(${pool ? "Worker" : "その場"})`, async () => {
+			const ops = new Recorder();
+			const gfx = new GfxClient(ops, undefined, pool);
+			gfx.onOpen(channel());
+			const blk = (t: number, b: Uint8Array) =>
+				new Writer()
+					.u16(t)
+					.u32(b.length + 6)
+					.bytes(b)
+					.done();
+			// 空のタイル(係数が全部 0 = 灰色)。tiles が空なら矩形だけの Region
+			const region = (
+				rect: [number, number, number, number],
+				tiles: number,
+			) => {
+				const tile = blk(
+					0xccc5,
+					new Writer()
+						.u8(0)
+						.u8(0)
+						.u8(0)
+						.u16(0)
+						.u16(0)
+						.u8(0)
+						.u32(0)
+						.u32(0)
+						.done(),
+				);
+				const w = new Writer()
+					.u8(64)
+					.u16(1)
+					.u8(1)
+					.u8(0)
+					.u8(1)
+					.u16(tiles)
+					.u32(tile.length * tiles)
+					.u16(rect[0])
+					.u16(rect[1])
+					.u16(rect[2])
+					.u16(rect[3])
+					.bytes(new Uint8Array(5).fill(0x66));
+				for (let i = 0; i < tiles; i++) w.bytes(tile);
+				return blk(0xccc4, w.done());
+			};
+			const w2 = (data: Uint8Array) =>
+				pdu(
+					CMD.WIRETOSURFACE_2,
+					new Writer()
+						.u16(1)
+						.u16(CODEC.CAPROGRESSIVE)
+						.u32(7)
+						.u8(0x20)
+						.u32(data.length)
+						.bytes(data)
+						.done(),
+				);
+			const start = (id: number) =>
+				pdu(CMD.STARTFRAME, new Writer().u32(0).u32(id).done());
+			const end = (id: number) =>
+				pdu(CMD.ENDFRAME, new Writer().u32(id).done());
+			gfx.onData(
+				segmentedUncompressed(
+					concat(
+						pdu(
+							CMD.CREATESURFACE,
+							new Writer().u16(1).u16(64).u16(64).u8(0x20).done(),
+						),
+						start(1),
+						w2(region([0, 0, 8, 8], 1)),
+						// タイルの無い矩形だけの PDU: 前の PDU のタイル (0, 0) をここにも描く
+						w2(region([8, 0, 8, 8], 0)),
+						end(1),
+						start(2),
+						w2(region([16, 0, 8, 8], 0)),
+						end(2),
+					),
+				),
+			);
+			await gfx.idle();
+			expect(ops.calls.filter((c) => c.startsWith("put"))).toEqual([
+				"put 1 0,0 8x8 808080ff",
+				"put 1 8,0 8x8 808080ff",
+			]);
+		});
+
+	for (const pool of [undefined, lanePool(2)])
 		test(`Progressive は面に描く(タイルの位置は面の座標)。ほかのコーデックは飛ばす(${pool ? "Worker" : "その場"})`, async () => {
 			const ops = new Recorder();
 			const gfx = new GfxClient(ops, undefined, pool);
