@@ -21,6 +21,8 @@ export type ClientCore = {
 	keyboardLayout?: number;
 	/** GFX(Graphics Pipeline)を使えると伝える(SUPPORT_DYNVC_GFX_PROTOCOL) */
 	gfx?: boolean;
+	/** 回線の自動検出を頼む(既定で頼む)。頼まないときは LAN と言う */
+	autodetect?: boolean;
 };
 
 /** 静的チャネル。名前は 7 文字まで(8 バイト、NUL 終わり) */
@@ -44,8 +46,14 @@ function block(type: number, body: Uint8Array): Uint8Array {
 		.done();
 }
 
+/** earlyCapabilityFlags の SUPPORT_NETCHAR_AUTODETECT と、connectionType の LAN / AUTODETECT */
+const SUPPORT_NETCHAR_AUTODETECT = 0x0080;
+const CONNECTION_TYPE_LAN = 6;
+const CONNECTION_TYPE_AUTODETECT = 7;
+
 function clientCore(c: ClientCore): Uint8Array {
 	const layout = c.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT;
+	const autodetect = c.autodetect ?? true;
 	return block(
 		0xc001,
 		new Writer(216)
@@ -67,10 +75,19 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u16(24) // highColorDepth: 24(WANT_32BPP_SESSION で 32 を頼む)
 			.u16(0x0001 | 0x0002 | 0x0004 | 0x0008) // supportedColorDepths: 24 / 16 / 15 / 32
 			// earlyCapabilityFlags: ERRINFO_PDU | WANT_32BPP_SESSION | STATUSINFO_PDU | VALID_CONNECTION_TYPE
-			// (+ SUPPORT_DYNVC_GFX_PROTOCOL: GFX を使うときだけ)
-			.u16(0x0001 | 0x0002 | 0x0004 | 0x0020 | (c.gfx ? 0x0100 : 0))
+			// (+ SUPPORT_NETCHAR_AUTODETECT: 回線を測ってもらうとき、SUPPORT_DYNVC_GFX_PROTOCOL: GFX を使うときだけ)
+			.u16(
+				0x0001 |
+					0x0002 |
+					0x0004 |
+					0x0020 |
+					(autodetect ? SUPPORT_NETCHAR_AUTODETECT : 0) |
+					(c.gfx ? 0x0100 : 0),
+			)
 			.zeros(64) // clientDigProductId
-			.u8(6) // connectionType: LAN(サーバーによっては、LAN でないとコーデックを使わない)
+			// connectionType: 測ってもらうなら AUTODETECT(サーバーが測った結果で画質を決める)。
+			// 測らないなら LAN(サーバーによっては、LAN でないとコーデックを使わない)
+			.u8(autodetect ? CONNECTION_TYPE_AUTODETECT : CONNECTION_TYPE_LAN)
 			.u8(0) // pad
 			.u32(c.selectedProtocol)
 			.done(),
@@ -103,6 +120,11 @@ function clientCluster(): Uint8Array {
 	);
 }
 
+/** Client Message Channel Data: 回線の自動検出に使う MCS のメッセージ チャネルを頼む(flags は 0) */
+function clientMessageChannel(): Uint8Array {
+	return block(0xc006, new Writer(4).u32(0).done());
+}
+
 /** PER の長さ(0x80 未満は 1 バイト、それ以上は 0x8000 | n の 2 バイト) */
 export function perLength(n: number): Uint8Array {
 	return n < 0x80 ? Uint8Array.of(n) : Uint8Array.of(0x80 | (n >> 8), n & 0xff);
@@ -118,12 +140,13 @@ export function gccCreateRequest(
 	core: ClientCore,
 	channels: StaticChannel[],
 ): Uint8Array {
-	const blocks = new Writer(256)
+	const w = new Writer(256)
 		.bytes(clientCore(core))
 		.bytes(clientCluster())
 		.bytes(clientSecurity())
-		.bytes(clientNet(channels))
-		.done();
+		.bytes(clientNet(channels));
+	if (core.autodetect ?? true) w.bytes(clientMessageChannel());
+	const blocks = w.done();
 	// ConferenceCreateRequest: 拡張ビット 0x00、選択 0x08、会議名 "1"(numeric)、user data が 1 つ、h221NonStandard の鍵 "Duca"。
 	// ここまでで 23 バイト(先頭の 7 + 長さ 2 + この 12 + 長さ 2)。サーバーによってはこの 23 バイトを決め打ちで読み飛ばす
 	const inner = new Writer(blocks.length + 32)
@@ -193,6 +216,7 @@ export type ServerData = {
 	channelIds: number[];
 	/** SC_CORE の clientRequestedProtocols / earlyCapabilityFlags(無ければ 0) */
 	earlyCapabilityFlags: number;
+	/** メッセージ チャネル(回線の自動検出)の ID。頼まなかった・サーバーが使わないときは無い */
 	messageChannelId?: number;
 };
 
@@ -241,8 +265,9 @@ export function parseConnectResponse(raw: Uint8Array): ServerData {
 			out.ioChannelId = b.u16();
 			const n = b.u16();
 			for (let i = 0; i < n; i++) out.channelIds.push(b.u16());
-		} else if (type === 0x0c04) {
-			out.messageChannelId = b.u16();
+		} else if (type === 0x0c04 && b.left >= 2) {
+			// SC_MCS_MSGCHANNEL: 0 は割り当てなし
+			out.messageChannelId = b.u16() || undefined;
 		}
 	}
 	if (!out.ioChannelId)

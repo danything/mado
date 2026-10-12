@@ -268,6 +268,7 @@ function diagText(
 		}`,
 		// 間引き・捨てたは、RemoteFX のタイルと旧ビットマップの両方を数える
 		`復号: 間引き=${client.decodeStats.coalesced} 捨てた=${client.decodeStats.skipped}`,
+		networkText(client.network),
 	];
 	if (switches.length) lines.push("切り替え:", ...switches);
 	if (gfx?.active)
@@ -278,6 +279,15 @@ function diagText(
 		);
 	if (recentErrors.length) lines.push("エラー:", ...recentErrors);
 	return lines.join("\n");
+}
+
+/** サーバーが測った回線(回線の自動検出)。測っていなければ答えた数だけ */
+function networkText(n: RdpClient["network"]): string {
+	const ms = (v?: number) => (v === undefined ? "-" : `${v}ms`);
+	const info = n.info
+		? `rtt=${ms(n.info.averageRtt)}(最小 ${ms(n.info.baseRtt)}) 帯域=${n.info.bandwidth === undefined ? "-" : `${n.info.bandwidth}kbps`}`
+		: "-";
+	return `回線: ${info}  測定に答えた数: rtt=${n.answered.rtt} 帯域=${n.answered.bandwidth}`;
 }
 
 /** 診断を開いた瞬間に書くためのもの(つないでいる間だけ) */

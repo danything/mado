@@ -227,6 +227,41 @@ describe("RdpClient", () => {
 	});
 });
 
+describe("メッセージ チャネル(回線の自動検出)", () => {
+	test("RTT の要求に同じチャネルで答え、知らせてきた回線の様子を覚える", async () => {
+		const ind = (data: Uint8Array) =>
+			x224.data(
+				mcs
+					.sendDataRequest(1002, 1008, data)
+					.map((b, i) => (i === 0 ? 0x68 : b)),
+			);
+		const rtt = fromHex("00100000" + "060007000110");
+		const netchar = new Writer()
+			.bytes(fromHex("00100000" + "06000800c008"))
+			.u32(3)
+			.u32(80000)
+			.u32(5)
+			.done();
+		const stream = scripted([ind(rtt), ind(netchar)]);
+		const client = new RdpClient(
+			{ ...fakeSession(stream), messageChannelId: 1008 },
+			new Recorder(),
+		);
+		await client.run();
+		// Input 同期のあとに、RTT Measure Response(Share Control としては読まない)
+		expect(stream.written.length).toBe(2);
+		expect(stream.written[1]).toEqual(
+			x224.data(
+				mcs.sendDataRequest(1007, 1008, fromHex("00200000" + "060107000000")),
+			),
+		);
+		expect(client.network).toEqual({
+			info: { baseRtt: 3, bandwidth: 80000, averageRtt: 5 },
+			answered: { rtt: 1, bandwidth: 0 },
+		});
+	});
+});
+
 describe("壊れたポインタ", () => {
 	test("セッションは続けて、既定のカーソルにする", async () => {
 		// 大きすぎる新しいポインタ(Fast-Path の 0xB)

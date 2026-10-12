@@ -102,8 +102,50 @@ describe("MCS", () => {
 		);
 	});
 
-	test("Connect Response から I/O チャネルと静的チャネルの ID を読む", () => {
-		const blocks = new Writer()
+	test("回線の自動検出: connectionType 7、SUPPORT_NETCHAR_AUTODETECT、Message Channel のブロック", () => {
+		const on = mcs.gccCreateRequest(core, [mcs.DRDYNVC]);
+		const off = mcs.gccCreateRequest({ ...core, autodetect: false }, [
+			mcs.DRDYNVC,
+		]);
+		// Client Core(ヘッダー 4 バイトのあと)の 140 バイト目が earlyCapabilityFlags、その 66 バイト先が connectionType
+		const flags = (gcc: Uint8Array) => {
+			const at = hex(gcc).indexOf("01c0d800") / 2 + 4 + 140;
+			return [
+				(gcc[at] as number) | ((gcc[at + 1] as number) << 8),
+				gcc[at + 2 + 64],
+			];
+		};
+		expect(flags(on)).toEqual([0x00a7, 7]);
+		expect(flags(off)).toEqual([0x0027, 6]);
+		expect(hex(on).endsWith("06c00800" + "00000000")).toBe(true);
+		expect(hex(off)).not.toContain("06c00800");
+		expect(off.length).toBe(on.length - 8);
+	});
+
+	/** サーバーのデータブロックを Connect Response で包む */
+	function connectResponse(blocks: Uint8Array): Uint8Array {
+		const gcc = concat(
+			fromHex("000500147c0001" + "0"),
+			Uint8Array.of(0x2a, 0x14, 0x76, 0x0a, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00),
+			new TextEncoder().encode("McDn"),
+			mcs.perLength(blocks.length),
+			blocks,
+		);
+		const params = der.tlv(
+			der.SEQUENCE,
+			...[34, 2, 0, 1, 0, 1, 65535, 2].map(der.integer),
+		);
+		return der.tlv(
+			0x7f66,
+			der.tlv(der.ENUMERATED, Uint8Array.of(0)),
+			der.integer(0),
+			params,
+			der.octets(gcc),
+		);
+	}
+
+	const serverBlocks = () =>
+		new Writer()
 			.u16(0x0c01)
 			.u16(16)
 			.u32(0x00080004)
@@ -118,32 +160,28 @@ describe("MCS", () => {
 			.u16(1003)
 			.u16(2)
 			.u16(1004)
-			.u16(1005)
-			.done();
-		const gcc = concat(
-			fromHex("000500147c0001" + "0"),
-			Uint8Array.of(0x2a, 0x14, 0x76, 0x0a, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00),
-			new TextEncoder().encode("McDn"),
-			mcs.perLength(blocks.length),
-			blocks,
-		);
-		const params = der.tlv(
-			der.SEQUENCE,
-			...[34, 2, 0, 1, 0, 1, 65535, 2].map(der.integer),
-		);
-		const resp = der.tlv(
-			0x7f66,
-			der.tlv(der.ENUMERATED, Uint8Array.of(0)),
-			der.integer(0),
-			params,
-			der.octets(gcc),
-		);
-		expect(mcs.parseConnectResponse(resp)).toEqual({
+			.u16(1005);
+
+	test("Connect Response から I/O チャネルと静的チャネルの ID を読む", () => {
+		expect(
+			mcs.parseConnectResponse(connectResponse(serverBlocks().done())),
+		).toEqual({
 			ioChannelId: 1003,
 			channelIds: [1004, 1005],
 			earlyCapabilityFlags: 1,
-			messageChannelId: undefined,
 		});
+	});
+
+	test("Connect Response の Message Channel Data(SC_MCS_MSGCHANNEL)", () => {
+		const blocks = serverBlocks().u16(0x0c04).u16(6).u16(1006).done();
+		expect(
+			mcs.parseConnectResponse(connectResponse(blocks)).messageChannelId,
+		).toBe(1006);
+		// 短すぎるブロックは読まない
+		const short = serverBlocks().u16(0x0c04).u16(4).done();
+		expect(
+			mcs.parseConnectResponse(connectResponse(short)).messageChannelId,
+		).toBeUndefined();
 	});
 
 	test("PER の PDU", () => {
