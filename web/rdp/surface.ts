@@ -490,11 +490,7 @@ export class SurfaceRenderer {
 		const batch: Batch = { jobs: entries, ended, after: [] };
 		this.batches.push(batch);
 		for (const e of entries) {
-			const job = jobOf(e);
-			(job.kind === "rfx"
-				? this.pool.decode(job.mode, job.data, job.quant)
-				: this.pool.decodeBitmap(job.rect)
-			).then(
+			this.pool.run(jobOf(e)).then(
 				(rgba) => {
 					e.rgba = rgba;
 					e.state = "done";

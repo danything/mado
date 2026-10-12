@@ -24,16 +24,9 @@ export function decodeJob(j: DecodeJob): Uint8ClampedArray {
 }
 
 export interface TilePool {
-	/** true なら decode は本当に非同期(完了の順序は保証されない)。false ならその場で復号するので、呼び出し側は同期の経路を使ってよい */
+	/** true なら run は本当に非同期(完了の順序は保証されない)。false ならその場で復号するので、呼び出し側は同期の経路を使ってよい */
 	readonly async: boolean;
-	/** RemoteFX のタイル */
-	decode(
-		mode: number,
-		data: TileData,
-		quant: TileQuant,
-	): Promise<Uint8ClampedArray>;
-	/** 旧ビットマップ(planar / Interleaved RLE) */
-	decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray>;
+	run(job: DecodeJob): Promise<Uint8ClampedArray>;
 	terminate(): void;
 }
 
@@ -46,16 +39,6 @@ export class SyncPool implements TilePool {
 		} catch (e) {
 			return Promise.reject(e);
 		}
-	}
-	decode(
-		mode: number,
-		data: TileData,
-		quant: TileQuant,
-	): Promise<Uint8ClampedArray> {
-		return this.run({ kind: "rfx", mode, data, quant });
-	}
-	decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray> {
-		return this.run({ kind: "bitmap", rect });
 	}
 	terminate(): void {}
 }
@@ -105,19 +88,7 @@ class WorkerPool implements TilePool {
 		}
 	}
 
-	decode(
-		mode: number,
-		data: TileData,
-		quant: TileQuant,
-	): Promise<Uint8ClampedArray> {
-		return this.run({ kind: "rfx", mode, data, quant });
-	}
-
-	decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray> {
-		return this.run({ kind: "bitmap", rect });
-	}
-
-	private run(job: DecodeJob): Promise<Uint8ClampedArray> {
+	run(job: DecodeJob): Promise<Uint8ClampedArray> {
 		// いちばん空いている Worker へ。生きている Worker が無ければ、その場で復号
 		let slot: Slot | undefined;
 		for (const s of this.slots) if (!slot || s.busy < slot.busy) slot = s;
@@ -127,12 +98,12 @@ class WorkerPool implements TilePool {
 		let req: WorkerRequest;
 		let transfer: ArrayBuffer[];
 		if (job.kind === "rfx") {
-			const copy = job.data.map((d) => d.slice()) as TileData;
-			req = { id, kind: "rfx", mode: job.mode, data: copy, quant: job.quant };
-			transfer = copy.map((d) => d.buffer as ArrayBuffer);
+			const data = job.data.map((d) => d.slice()) as TileData;
+			req = { ...job, id, data };
+			transfer = data.map((d) => d.buffer as ArrayBuffer);
 		} else {
-			const data = job.rect.data.slice();
 			const { width, height, bpp, compressed } = job.rect;
+			const data = job.rect.data.slice();
 			req = {
 				id,
 				kind: "bitmap",

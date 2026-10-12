@@ -1,7 +1,6 @@
 // ポインタの復号と、セッションのループ(偽の通信路で)の試験。
 
 import { describe, expect, test } from "bun:test";
-import { decodeBitmap } from "./bitmap";
 import { concat, fromHex, Reader, Writer } from "./bytes";
 import { RdpClient, type Screen } from "./client";
 import type { Session } from "./connect";
@@ -9,9 +8,8 @@ import { UPDATE } from "./fastpath";
 import * as mcs from "./mcs";
 import * as pdu from "./pdu";
 import * as pointer from "./pointer";
-import { decodeTile } from "./rfx";
 import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
-import type { TilePool } from "./rfxpool";
+import { type DecodeJob, decodeJob, type TilePool } from "./rfxpool";
 import { StreamClosed, type Transport } from "./stream";
 import * as x224 from "./x224";
 
@@ -399,13 +397,9 @@ describe("非同期のプールでの順序", () => {
 		const done: (() => void)[] = [];
 		const pool = {
 			async: true,
-			decode: (...args: Parameters<TilePool["decode"]>) =>
+			run: (job: DecodeJob) =>
 				new Promise<Uint8ClampedArray>((resolve) =>
-					done.push(() => resolve(decodeTile(...args))),
-				),
-			decodeBitmap: (rect: Parameters<TilePool["decodeBitmap"]>[0]) =>
-				new Promise<Uint8ClampedArray>((resolve) =>
-					done.push(() => resolve(decodeBitmap(rect))),
+					done.push(() => resolve(decodeJob(job))),
 				),
 			terminate() {},
 		} satisfies TilePool;
