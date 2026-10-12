@@ -3,7 +3,7 @@
 
 import { concat } from "./bytes";
 
-/** CredSSP などが使う読み書きの口。試験では WebSocket の代わりに TCP をつなぐ */
+/** CredSSP などが使う読み書きの口。試験では中継の代わりに TCP をつなぐ */
 export interface ByteStream {
 	peek(n: number): Promise<Uint8Array>;
 	read(n: number): Promise<Uint8Array>;
@@ -43,25 +43,25 @@ abstract class ChunkStream implements Transport {
 		w?.();
 	}
 
-	/** n バイト揃うまで待って返す */
-	async read(n: number): Promise<Uint8Array> {
+	/** n バイト溜まるまで待つ。その前に閉じたら例外にする */
+	private async fill(n: number): Promise<void> {
 		while (this.have < n) {
 			if (this.closed) throw this.closed;
 			await new Promise<void>((r) => {
 				this.waiter = r;
 			});
 		}
+	}
+
+	/** n バイト揃うまで待って返す */
+	async read(n: number): Promise<Uint8Array> {
+		await this.fill(n);
 		return this.take(n);
 	}
 
 	/** 先頭の n バイトを、取り出さずに見る */
 	async peek(n: number): Promise<Uint8Array> {
-		while (this.have < n) {
-			if (this.closed) throw this.closed;
-			await new Promise<void>((r) => {
-				this.waiter = r;
-			});
-		}
+		await this.fill(n);
 		const first = this.chunks[0] as Uint8Array;
 		if (first.length >= n) return first.subarray(0, n);
 		const all = concat(...this.chunks);
@@ -97,10 +97,6 @@ abstract class ChunkStream implements Transport {
 
 	abstract write(b: Uint8Array): void;
 	abstract close(): void;
-
-	get isClosed(): boolean {
-		return !!this.closed;
-	}
 }
 
 export class WsStream extends ChunkStream {

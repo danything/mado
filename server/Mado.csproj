@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>mado</AssemblyName>
     <RootNamespace>Mado</RootNamespace>
-    <Version>0.8.4</Version>
+    <Version>0.8.5</Version>
     <!-- 常駐 1 プロセスで動的コードも無いので Native AOT。exe 1 つで .NET を入れなくても動く -->
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -32,7 +32,7 @@
   <PropertyGroup>
     <MsQuicDll>$(PkgMicrosoft_Native_Quic_MsQuic_Schannel)/build/native/bin/x64/msquic.dll</MsQuicDll>
     <MsQuicDll Condition="$(RuntimeIdentifier.EndsWith('-arm64'))">$(PkgMicrosoft_Native_Quic_MsQuic_Schannel)/build/native/bin/arm64/msquic.dll</MsQuicDll>
-    <!-- Windows 向けのときだけ。Linux では libmsquic(パッケージの libmsquic)を使う -->
+    <!-- Windows 向けのときだけ。Linux では OS に入れた libmsquic を使う -->
     <WithMsQuic Condition="$(RuntimeIdentifier.StartsWith('win')) or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))">true</WithMsQuic>
   </PropertyGroup>
   <Target Name="CopyMsQuicBuild" AfterTargets="Build" Condition="'$(WithMsQuic)' == 'true'">

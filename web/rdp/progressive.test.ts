@@ -3,12 +3,32 @@
 import { describe, expect, test } from "bun:test";
 import { concat, Writer } from "./bytes";
 import {
-	ProgressiveDecoder,
-	type ProgressivePart,
+	ProgressiveFrame,
+	ProgressiveTiles,
+	parseProgressive,
 	parseProgressiveQuant,
 	srlValues,
 } from "./progressive";
+import type { TilePart } from "./rfx";
 import { rlgrEncode } from "./rfx.fixture";
+
+/** その場で復号する。gfx.ts と同じく ProgressiveTiles で復号し、ProgressiveFrame で切る。フレームは PDU ごとに始め直す */
+class Decoder {
+	private tiles = new ProgressiveTiles();
+	deleteSurface(id: number): void {
+		this.tiles.deleteSurface(id);
+	}
+	decode(
+		surface: number,
+		data: Uint8Array,
+		width: number,
+		height: number,
+	): TilePart[] {
+		const msg = parseProgressive(surface, data, width, height);
+		const rgba = msg.tiles.map((t) => this.tiles.decode(t.job));
+		return new ProgressiveFrame().draw(surface, msg, rgba, width, height);
+	}
+}
 
 const block = (type: number, body: Uint8Array) =>
 	new Writer()
@@ -138,7 +158,7 @@ function stream(...blocks: Uint8Array[]) {
 }
 
 /** すべての部分のすべての画素が同じ灰色なら、その値 */
-function gray(parts: ProgressivePart[]): number {
+function gray(parts: TilePart[]): number {
 	const v = parts[0]?.rgba[0] as number;
 	for (const p of parts)
 		for (let i = 0; i < p.rgba.length; i += 4) {
@@ -171,7 +191,7 @@ describe("Progressive", () => {
 
 	test("TILE_SIMPLE: DC だけなら一様な灰色(外挿・通常の逆 DWT とも)。Region の矩形と面で切る", () => {
 		for (const extrapolate of [true, false]) {
-			const d = new ProgressiveDecoder();
+			const d = new Decoder();
 			const parts = d.decode(
 				1,
 				stream(
@@ -196,7 +216,7 @@ describe("Progressive", () => {
 	});
 
 	test("空のタイルは灰色(128)。2 つ目のタイルの位置", () => {
-		const d = new ProgressiveDecoder();
+		const d = new Decoder();
 		const parts = d.decode(
 			1,
 			stream(
@@ -214,7 +234,7 @@ describe("Progressive", () => {
 	});
 
 	test("差分(RFX_TILE_DIFFERENCE)は前の係数に足す。面を消すと前の係数も消える", () => {
-		const d = new ProgressiveDecoder();
+		const d = new Decoder();
 		const run = () =>
 			gray(d.decode(1, stream(region([simple(0, 0, 1, dc(5))])), 64, 64));
 		expect(
@@ -231,7 +251,7 @@ describe("Progressive", () => {
 	});
 
 	test("TILE_FIRST(粗い段)→ TILE_UPGRADE(最後の段): 足りない下のビットを足す", () => {
-		const d = new ProgressiveDecoder();
+		const d = new Decoder();
 		// quality 0 では、Y の全部の帯が 2 ビット粗くなる。ビットの位置は 8、ずらしは 7
 		const prog = [[all(2), all(0), all(0)]];
 		const a = d.decode(
@@ -255,7 +275,7 @@ describe("Progressive", () => {
 	});
 
 	test("upgrade: LL3 は符号によらず RAW の値をそのまま足す", () => {
-		const d = new ProgressiveDecoder();
+		const d = new Decoder();
 		const prog = [[all(2), all(0), all(0)]];
 		d.decode(1, stream(region([first(0, 0, 0, dc(-10))], { prog })), 64, 64);
 		// LL3 は符号によらず RAW の値をそのまま足す: -1280 + 3 * 32 = -1184 → (−1184 + 4096) >> 5 = 91
@@ -278,7 +298,7 @@ describe("Progressive", () => {
 			return rlgrEncode(c, 1);
 		};
 		const prog = [[all(2), all(0), all(0)]];
-		const d = new ProgressiveDecoder();
+		const d = new Decoder();
 		d.decode(
 			1,
 			stream(region([first(0, 0, 0, coef(1, 10))], { prog })),
@@ -295,7 +315,7 @@ describe("Progressive", () => {
 			64,
 		);
 		// (1 << 2) + 3 = 7、(10 << 2) + 1 = 41
-		const [whole] = new ProgressiveDecoder().decode(
+		const [whole] = new Decoder().decode(
 			1,
 			stream(region([simple(0, 0, 0, coef(7, 41))])),
 			64,
@@ -306,7 +326,7 @@ describe("Progressive", () => {
 	});
 
 	test("面の外のタイルは飛ばし、ほかのタイルは描く", () => {
-		const out = new ProgressiveDecoder().decode(
+		const out = new Decoder().decode(
 			1,
 			stream(region([simple(1, 0, 0, EMPTY), simple(0, 0, 0, EMPTY)])),
 			64,
@@ -316,7 +336,7 @@ describe("Progressive", () => {
 	});
 
 	test("不正な入力は例外", () => {
-		const d = new ProgressiveDecoder();
+		const d = new Decoder();
 		expect(() => d.decode(1, block(0xccc9, EMPTY), 64, 64)).toThrow(
 			"知らないブロック",
 		);

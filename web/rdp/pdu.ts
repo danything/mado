@@ -1,6 +1,6 @@
 // 接続の手順([MS-RDPBCGR] 1.3.1.1)で使う PDU。Client Info、ライセンス、Share Control / Share Data、能力セット。
 
-import { Reader, Writer } from "./bytes";
+import { fromHex, Reader, Writer } from "./bytes";
 import { keyboardSubType, keyboardType } from "./mcs";
 import { type Bulk, PACKET_COMPR_TYPE_64K } from "./mppc";
 
@@ -165,24 +165,17 @@ export const PDUTYPE = {
 	CONFIRM_ACTIVE: 0x3,
 	DEACTIVATE_ALL: 0x6,
 	DATA: 0x7,
-	SERVER_REDIR: 0xa,
 } as const;
 
 export const PDUTYPE2 = {
 	UPDATE: 0x02,
 	CONTROL: 0x14,
 	POINTER: 0x1b,
-	INPUT: 0x1c,
 	SYNCHRONIZE: 0x1f,
-	REFRESH_RECT: 0x21,
-	SUPPRESS_OUTPUT: 0x23,
-	SHUTDOWN_REQUEST: 0x24,
 	SHUTDOWN_DENIED: 0x25,
-	SAVE_SESSION_INFO: 0x26,
 	FONTLIST: 0x27,
 	FONTMAP: 0x28,
 	SET_ERROR_INFO: 0x2f,
-	MONITOR_LAYOUT: 0x37,
 	FRAME_ACKNOWLEDGE: 0x38,
 } as const;
 
@@ -268,7 +261,6 @@ export const synchronize = (targetUser: number) =>
 export const CONTROL = {
 	REQUEST: 1,
 	GRANTED: 2,
-	DETACH: 3,
 	COOPERATE: 4,
 } as const;
 
@@ -329,36 +321,19 @@ export const CAP = {
 } as const;
 
 /** Frame Acknowledge 能力で伝える、応答していないフレームの最大数 */
-export const MAX_UNACKNOWLEDGED_FRAMES = 3;
+const MAX_UNACKNOWLEDGED_FRAMES = 3;
 
 /** RemoteFX の codecId。クライアントが決めて宣言する */
-export const RFX_CODEC_ID = 3;
+const RFX_CODEC_ID = 3;
 
 /** RemoteFX のコーデック GUID、76772F12-BD72-4463-AFB3-B73C9C6F7886。GUID は先頭 3 つの欄がリトル エンディアン */
-export const RFX_GUID = Uint8Array.of(
-	0x12,
-	0x2f,
-	0x77,
-	0x76,
-	0x72,
-	0xbd,
-	0x63,
-	0x44,
-	0xaf,
-	0xb3,
-	0xb7,
-	0x3c,
-	0x9c,
-	0x6f,
-	0x78,
-	0x86,
-);
+const RFX_GUID = fromHex("122f7776 72bd 6344 afb3 b73c9c6f7886");
 
 /**
  * Bitmap Codecs 能力の bitmapCodecCount 以降。載せるのは RemoteFX だけ。
  * 中身は 49 バイトの TS_RFX_CLNT_CAPS_CONTAINER で、RLGR1 と RLGR3、64x64 のタイル、ICT、DWT 5/3、画像モードを伝える
  */
-export function bitmapCodecs(): Uint8Array {
+function bitmapCodecs(): Uint8Array {
 	const icap = (entropy: number) =>
 		new Writer(8)
 			.u16(0x0100) // version 1.0

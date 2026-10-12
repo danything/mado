@@ -51,8 +51,6 @@ export class RdpClient {
 	private surface: SurfaceRenderer;
 	/** メッセージ チャネルでの回線の自動検出。つなぐ途中で使ったものを引き継ぐ */
 	private autodetect: AutoDetect;
-	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
-	errorInfo = 0;
 	/** Fast-Path の updateCode ごとの、受けた更新の数。診断に出す */
 	readonly stats: Record<number, number> = {};
 	onChannel?: ChannelHandler;
@@ -152,25 +150,22 @@ export class RdpClient {
 			(this.session.channelOptions.get(name) ?? 0) &
 			CHANNEL_OPTION_SHOW_PROTOCOL;
 		for (const chunk of splitChannelData(data, show ? SHOW_PROTOCOL : 0))
-			this.session.stream.write(
-				x224.data(mcs.sendDataRequest(this.session.userId, id, chunk)),
-			);
+			this.sendTo(id, chunk);
 	}
 
 	private send(fastPathPdu: Uint8Array): void {
 		this.session.stream.write(fastPathPdu);
 	}
 
-	private sendIo(data: Uint8Array): void {
+	/** MCS の Send Data Request で、チャネルへ送る */
+	private sendTo(channelId: number, data: Uint8Array): void {
 		this.session.stream.write(
-			x224.data(
-				mcs.sendDataRequest(
-					this.session.userId,
-					this.session.ioChannelId,
-					data,
-				),
-			),
+			x224.data(mcs.sendDataRequest(this.session.userId, channelId, data)),
 		);
+	}
+
+	private sendIo(data: Uint8Array): void {
+		this.sendTo(this.session.ioChannelId, data);
 	}
 
 	private handlePdu(p: x224.Pdu): void {
@@ -191,10 +186,7 @@ export class RdpClient {
 	private handleMessage(data: Uint8Array): void {
 		const id = this.session.messageChannelId;
 		const reply = this.autodetect.handle(data);
-		if (reply && id !== undefined)
-			this.session.stream.write(
-				x224.data(mcs.sendDataRequest(this.session.userId, id, reply)),
-			);
+		if (reply && id !== undefined) this.sendTo(id, reply);
 	}
 
 	private handleChannel(channelId: number, chunk: Uint8Array): void {
@@ -234,12 +226,10 @@ export class RdpClient {
 				break;
 			case pdu.PDUTYPE2.SET_ERROR_INFO: {
 				const code = pdu.parseErrorInfo(sd.payload);
-				if (code !== 0) {
-					this.errorInfo = code;
+				if (code !== 0)
 					throw new mcs.Disconnected(
 						`サーバーが切った (ErrorInfo 0x${code.toString(16)})`,
 					);
-				}
 				break;
 			}
 			case pdu.PDUTYPE2.SHUTDOWN_DENIED:
@@ -262,14 +252,14 @@ export class RdpClient {
 		}
 		this.rfxCodecId = pdu.serverRfxCodecId(d.capabilities);
 		const s = this.session;
-		// Confirm Active と同期の 4 つを送る。つないだときと同じで、connect.ts も同じ関数を使う
+		// Confirm Active と同期の 4 つを送る。つないだときと同じ関数を使う
 		for (const p of pdu.activationPdus(s.userId, d.shareId, {
 			width: this.width,
 			height: this.height,
 			keyboardLayout: s.keyboardLayout,
 		}))
 			this.sendIo(p);
-		// 復号中のタイルなど、大きさが変わる前の画面を先に描き終えておく
+		// 復号中のタイルを描き終えてから、大きさを変える
 		const { width, height } = this;
 		this.surface.ordered(() => this.screen.resize(width, height));
 	}
@@ -297,16 +287,14 @@ export class RdpClient {
 				this.screen.setCursor("default");
 				break;
 			case UPDATE.POINTER:
-			case UPDATE.LARGE_POINTER: {
+			case UPDATE.LARGE_POINTER:
 				this.setPointer(() =>
 					pointer.parseNewPointer(data, code === UPDATE.LARGE_POINTER),
 				);
 				break;
-			}
-			case UPDATE.COLOR: {
+			case UPDATE.COLOR:
 				this.setPointer(() => pointer.parseColorPointer(data));
 				break;
-			}
 			case UPDATE.CACHED: {
 				const c = this.cursors.get(pointer.parseCachedPointer(data));
 				if (c) this.screen.setCursor(c);

@@ -273,7 +273,7 @@ export class Ntlm {
 
 	unseal(msg: Uint8Array): Uint8Array {
 		const seal = this.recvSeal;
-		if (!seal) throw new Error("NTLM: 認証の前に封印しようとした");
+		if (!seal) throw new Error("NTLM: 認証の前に封印を解こうとした");
 		if (msg.length < 16) throw new Error("NTLM: 封印したメッセージが短い");
 		const r = new Reader(msg);
 		r.u32();

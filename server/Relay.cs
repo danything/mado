@@ -11,7 +11,7 @@ namespace Mado;
 /// 1. 最初に RDCleanPath の要求を受け取る。複数のメッセージに分かれて来てもよい
 /// 2. RDP サーバーに TCP でつなぎ、要求に入っていた X.224 の接続要求を送り、接続確認を受け取る
 /// 3. 同じソケットの上で TLS を張り、サーバーの証明書の連なりを取る
-/// 4. 接続確認と証明書を RDCleanPath の応答で返す。あとは WebSocket と TLS のあいだをそのまま流す
+/// 4. 接続確認と証明書を RDCleanPath の応答で返す。あとはブラウザ側の口と TLS のあいだをそのまま流す
 ///
 /// ブラウザ側の口は IRelayChannel で包む。WebSocket はメッセージ、WebTransport はバイトの流れだが、
 /// RDCleanPath の要求は DER で長さが分かるので、どちらも「届いた分を溜めて、揃ったら読む」で同じに扱える。
@@ -26,11 +26,34 @@ internal static class Relay
     /// <summary>つないでから RDCleanPath の要求が揃うまでの時間。ログインしていても、何も送らない口をいつまでも開けておかない</summary>
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
-    /// <summary>authorize は proxy_auth の使い捨てのトークンを確かめて、つなぐ先を返す。通らなければ null</summary>
-    public static Task Run(WebSocket ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct) =>
-        Run(new WebSocketChannel(ws), authorize, log, ct);
+    /// <summary>
+    /// 1 本の中継を最後まで動かす。/ws と /wt で同じ。接続の数を数え、開け閉めと思わぬ誤りをログに残す。
+    /// kind はログに出す道の名前(ws / wt)
+    /// </summary>
+    public static async Task Serve(string kind, string user, IRelayChannel client, Func<string?, Target?> authorize,
+        Action<string> log, Action<int> sessions, CancellationToken ct)
+    {
+        sessions(+1);
+        log($"{kind} open: {user}");
+        try
+        {
+            await Run(client, authorize, m => log($"{user}: {m}"), ct);
+        }
+        // 相手が切れただけ
+        catch (Exception e) when (e is IOException or WebSocketException or OperationCanceledException or ObjectDisposedException or Quic.QuicNativeException) { }
+        catch (Exception e)
+        {
+            log($"{user}: relay error: {e.Message}");
+        }
+        finally
+        {
+            sessions(-1);
+            log($"{kind} close: {user}");
+        }
+    }
 
-    public static async Task Run(IRelayChannel ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct, TimeSpan? requestTimeout = null)
+    /// <summary>authorize は proxy_auth の使い捨てのトークンを確かめて、つなぐ先を返す。通らなければ null</summary>
+    public static async Task Run(IRelayChannel client, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct, TimeSpan? requestTimeout = null)
     {
         var buf = new byte[64 * 1024];
         var pending = new MemoryStream();
@@ -40,11 +63,11 @@ internal static class Relay
         while (parsed is null)
         {
             int n;
-            try { n = await ws.ReceiveAsync(buf, wait.Token); }
+            try { n = await client.ReceiveAsync(buf, wait.Token); }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 // WebSocket は受信を取り消すと壊れるので、誤りの PDU は送れないことがある(Fail は失敗を飲み込む)
-                await Fail(ws, 408, "RDCleanPath request timeout", log, ct);
+                await Fail(client, 408, "RDCleanPath request timeout", log, ct);
                 return;
             }
             if (n == 0) return;
@@ -52,30 +75,30 @@ internal static class Relay
             // RDCleanPath の要求は 1 KB ほど。いつまでも揃わないものを溜め込まない
             if (pending.Length > MaxRequest)
             {
-                await Fail(ws, 413, "RDCleanPath request too large", log, ct);
+                await Fail(client, 413, "RDCleanPath request too large", log, ct);
                 return;
             }
             try { parsed = RdCleanPath.Parse(pending.ToArray()); }
             catch (FormatException e)
             {
-                await Fail(ws, 400, $"bad RDCleanPath request: {e.Message}", log, ct);
+                await Fail(client, 400, $"bad RDCleanPath request: {e.Message}", log, ct);
                 return;
             }
         }
         var (req, rest) = (parsed.Value.Request, parsed.Value.Remaining);
         if (req.Version != RdCleanPath.Version)
         {
-            await Fail(ws, 400, $"unsupported RDCleanPath version {req.Version}", log, ct);
+            await Fail(client, 400, $"unsupported RDCleanPath version {req.Version}", log, ct);
             return;
         }
         if (authorize(req.ProxyAuth) is not { } target)
         {
-            await Fail(ws, 401, "proxy_auth rejected", log, ct);
+            await Fail(client, 401, "proxy_auth rejected", log, ct);
             return;
         }
         if (req.X224 is null)
         {
-            await Fail(ws, 400, "no X.224 connection request (VMConnect is not supported)", log, ct);
+            await Fail(client, 400, "no X.224 connection request (VMConnect is not supported)", log, ct);
             return;
         }
 
@@ -93,8 +116,8 @@ internal static class Relay
             // RDP_NEG_FAILURE (0x03) なら TLS には進まず、そのまま返す。理由はブラウザが表示する
             if (cc.Length >= 12 && cc[11] == 0x03)
             {
-                await ws.SendAsync(RdCleanPath.Error(RdCleanPath.NegotiationError, x224: cc), ct);
-                await ws.CloseAsync("negotiation failure", ct);
+                await client.SendAsync(RdCleanPath.Error(RdCleanPath.NegotiationError, x224: cc), ct);
+                await client.CloseAsync("negotiation failure", ct);
                 return;
             }
             var chain = new List<byte[]>();
@@ -112,12 +135,12 @@ internal static class Relay
                 },
             }, ct);
             if (chain.Count == 0) throw new IOException("RDP server sent no certificate");
-            await ws.SendAsync(RdCleanPath.Response(cc, chain, $"{target.Host}:{target.Port}"), ct);
+            await client.SendAsync(RdCleanPath.Response(cc, chain, $"{target.Host}:{target.Port}"), ct);
             log($"relay up: {ssl.SslProtocol} {ssl.NegotiatedCipherSuite}");
         }
         catch (Exception e) when (e is IOException or SocketException or System.Security.Authentication.AuthenticationException)
         {
-            await Fail(ws, 502, e.Message, log, ct);
+            await Fail(client, 502, e.Message, log, ct);
             return;
         }
 
@@ -129,7 +152,7 @@ internal static class Relay
             {
                 while (true)
                 {
-                    var r = await ws.ReceiveAsync(buf, stop.Token);
+                    var r = await client.ReceiveAsync(buf, stop.Token);
                     if (r == 0) return;
                     await ssl.WriteAsync(buf.AsMemory(0, r), stop.Token);
                 }
@@ -141,14 +164,14 @@ internal static class Relay
                 {
                     var n = await ssl.ReadAsync(b, stop.Token);
                     if (n == 0) return;
-                    await ws.SendAsync(b.AsMemory(0, n), stop.Token);
+                    await client.SendAsync(b.AsMemory(0, n), stop.Token);
                 }
             });
             await Task.WhenAny(up, down);
             await stop.CancelAsync();
             await Task.WhenAll(up, down);
         }
-        await ws.CloseAsync("", CancellationToken.None);
+        await client.CloseAsync("", CancellationToken.None);
     }
 
     /// <summary>片方向の流し込み。相手が切れたら黙って終わる</summary>
@@ -158,13 +181,13 @@ internal static class Relay
         catch (Exception e) when (e is IOException or WebSocketException or OperationCanceledException or ObjectDisposedException) { }
     }
 
-    static async Task Fail(IRelayChannel ws, ulong httpStatus, string msg, Action<string> log, CancellationToken ct)
+    static async Task Fail(IRelayChannel client, ulong httpStatus, string msg, Action<string> log, CancellationToken ct)
     {
         log($"relay failed: {msg}");
         try
         {
-            await ws.SendAsync(RdCleanPath.Error(RdCleanPath.GeneralError, httpStatus), ct);
-            await ws.CloseAsync("relay failed", ct);
+            await client.SendAsync(RdCleanPath.Error(RdCleanPath.GeneralError, httpStatus), ct);
+            await client.CloseAsync("relay failed", ct);
         }
         catch (Exception e) when (e is IOException or WebSocketException or ObjectDisposedException or InvalidOperationException or OperationCanceledException) { }
     }

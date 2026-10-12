@@ -1,8 +1,9 @@
-// GFX のブラウザ側: 面を canvas に持ち、フレームの終わりに変わったところを画面(Display)へ写す。H.264 は WebCodecs の VideoDecoder。
+// GFX のブラウザ側。面を canvas に持ち、フレームの終わりに変わったところを画面(Display)へ写す。H.264 は WebCodecs の VideoDecoder。
 
 import type { Display } from "./display";
 import {
 	type AvcDecoder,
+	clipRect,
 	codecString,
 	type GfxOps,
 	type Rect,
@@ -66,7 +67,7 @@ export class CanvasGfxOps implements GfxOps {
 		private createGl: () => Yuv444Gl | undefined = sharedYuv444Gl,
 	) {}
 
-	/** AVC444 の YUV444 を GPU で組み立てる。WebGL2 が無い・失敗したときは undefined(CPU で組み立てる) */
+	/** AVC444 の YUV444 を GPU で組み立てる。WebGL2 が無いときや失敗したときは undefined で、CPU で組み立てることになる */
 	yuv444(id: number, width: number, height: number): Yuv444Target | undefined {
 		if (this.gl === undefined) {
 			const gl = this.createGl();
@@ -164,7 +165,7 @@ export class CanvasGfxOps implements GfxOps {
 		rgba: Uint8ClampedArray,
 	): void {
 		const s = this.surface(id);
-		// アルファを持たない面(XRGB)では、NSCodec や Planar が持つアルファは使わない(FreeRDP と同じ)
+		// アルファを持たない面(XRGB)では、NSCodec や Planar が持つアルファは使わない。FreeRDP と同じ
 		if (!s.alpha) for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
 		s.ctx.putImageData(
 			new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h),
@@ -279,8 +280,8 @@ export class CanvasGfxOps implements GfxOps {
 	}
 
 	/**
-	 * フレームの終わり。描画の周期(vsync)に 1 回だけ画面へ写す: 周期の最初のフレームはすぐ写し(待たせない)、
-	 * 同じ周期に続いて来たものは、周期の終わりにまとめて 1 回写す(変わったところは面ごとに和集合で残っている)
+	 * フレームの終わり。画面へ写すのは描画の周期(vsync)に 1 回だけ。周期の最初のフレームは待たせずにすぐ写す。
+	 * 同じ周期に続いて来たものは、周期の終わりにまとめて 1 回写す。変わったところは面ごとに和集合で残っている
 	 */
 	present(): void {
 		if (this.waitingTick) {
@@ -309,7 +310,12 @@ export class CanvasGfxOps implements GfxOps {
 			const d = s.dirty;
 			s.dirty = undefined;
 			if (!d || !s.map) continue;
-			const r = clip(d, { left: 0, top: 0, right: s.width, bottom: s.height });
+			const r = clipRect(d, {
+				left: 0,
+				top: 0,
+				right: s.width,
+				bottom: s.height,
+			});
 			if (r)
 				changed.push({
 					left: s.map.x + r.left,
@@ -329,7 +335,7 @@ export class CanvasGfxOps implements GfxOps {
 					right: s.map.x + s.width,
 					bottom: s.map.y + s.height,
 				};
-				const r = clip(c, onScreen);
+				const r = clipRect(c, onScreen);
 				if (!r) continue;
 				const w = r.right - r.left;
 				const h = r.bottom - r.top;
@@ -345,7 +351,7 @@ export class CanvasGfxOps implements GfxOps {
 }
 
 /**
- * 次の描画の周期に cb を 1 回呼ぶ。requestAnimationFrame は隠れたタブなどで止まるので、50ms で打ち切る(画面が止まったままにしない)
+ * 次の描画の周期に cb を 1 回呼ぶ。requestAnimationFrame は隠れたタブなどで止まる。画面が止まったままにならないよう、50ms で打ち切る
  */
 function nextTick(cb: () => void): void {
 	let done = false;
@@ -356,17 +362,6 @@ function nextTick(cb: () => void): void {
 	};
 	if (typeof requestAnimationFrame === "function") requestAnimationFrame(once);
 	setTimeout(once, 50);
-}
-
-/** 2 つの矩形の重なり。無ければ undefined */
-function clip(a: Rect, b: Rect): Rect | undefined {
-	const left = Math.max(a.left, b.left);
-	const top = Math.max(a.top, b.top);
-	const right = Math.min(a.right, b.right);
-	const bottom = Math.min(a.bottom, b.bottom);
-	return right > left && bottom > top
-		? { left, top, right, bottom }
-		: undefined;
 }
 
 /** 1 フレームの復号を待つ長さ。過ぎたら捨てる */
@@ -429,7 +424,7 @@ export class WebCodecsAvc implements AvcDecoder {
 		});
 	}
 
-	/** AVC444 用: 1 枚を復号して YUV420 の 3 面を読み出す(I420 / NV12 でなければ null) */
+	/** AVC444 用。1 枚を復号して YUV420 の 3 面を読み出す。I420 / NV12 でなければ null */
 	async decodeYuv(stream: Uint8Array, key: boolean): Promise<Yuv420 | null> {
 		const frame = await this.decode(stream, key);
 		if (!frame) return null;
@@ -460,8 +455,7 @@ export class WebCodecsAvc implements AvcDecoder {
 				this.hardware = false;
 				this.needKey = true;
 				this.codec = undefined;
-				for (const r of this.waiting.values()) r(null);
-				this.waiting.clear();
+				this.dropWaiting();
 			},
 		});
 		this.decoder.configure({
@@ -476,9 +470,14 @@ export class WebCodecsAvc implements AvcDecoder {
 		this.shutdown();
 	}
 
-	private shutdown(): void {
+	/** 待っている復号を全部 null で終わらせる */
+	private dropWaiting(): void {
 		for (const r of this.waiting.values()) r(null);
 		this.waiting.clear();
+	}
+
+	private shutdown(): void {
+		this.dropWaiting();
 		if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
 		this.decoder = undefined;
 	}

@@ -9,6 +9,7 @@
 // ウィンドウはメッセージ専用にせず、見えない普通のトップレベルにする。こうすると MSI の更新のときに Restart Manager が
 // WM_CLOSE で閉じられる。閉じたあとは RegisterApplicationRestart で起こし直してもらう。
 
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -29,9 +30,8 @@ internal static unsafe partial class Program
     /// 自分の版。属性から取れなければ、起動したときの exe のファイルの版を使う。どちらも取れなければ null にして、
     /// 起こし直しはしない。0.0.0 にすると、どの版も新しく見えて 5 秒ごとに起こし直し続けてしまう
     /// </summary>
-    static readonly string? ownVersion = Known(typeof(Program).Assembly
-            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
-            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion)
+    static readonly string? ownVersion =
+        Known(typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion)
         ?? (exePath is null ? null : Known(System.Diagnostics.FileVersionInfo.GetVersionInfo(exePath).ProductVersion));
 
     static string? Known(string? v) => string.IsNullOrEmpty(v) || VersionOf(v) == "v0.0.0" ? null : VersionOf(v);
@@ -281,11 +281,8 @@ internal static unsafe partial class Program
 
     // アイコン
 
-    static NOTIFYICONDATAW Data(uint flags)
-    {
-        var d = new NOTIFYICONDATAW { cbSize = (uint)sizeof(NOTIFYICONDATAW), hWnd = hwnd, uID = 1, uFlags = flags };
-        return d;
-    }
+    static NOTIFYICONDATAW Data(uint flags) =>
+        new() { cbSize = (uint)sizeof(NOTIFYICONDATAW), hWnd = hwnd, uID = 1, uFlags = flags };
 
     static void AddIcon()
     {
@@ -497,6 +494,8 @@ internal static class Net
             if (error is not null) return ("mado の更新", error, true);
             if (st.TryGetProperty("available", out var a) && a.GetBoolean())
                 return ("mado の更新", $"{latest} があるが、つないでいる人がいるので後で入れる", false);
+            // 自動更新が止まっているときは確かめないので、最新の版が空のまま返る
+            if (string.IsNullOrEmpty(latest)) return ("mado の更新", "更新を確かめていない。自動更新が止まっているかもしれない", false);
             return ("mado の更新", $"新しい版は無い(最新は {latest})", false);
         }
         catch (Exception ex)

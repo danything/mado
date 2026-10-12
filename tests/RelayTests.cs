@@ -195,6 +195,21 @@ public class RelayTests
     }
 
     [Test]
+    public async Task Serve_は数を戻して開け閉めをログに残す()
+    {
+        var ch = new FakeChannel();
+        var logs = new List<string>();
+        var count = 0;
+        var relay = Relay.Serve("wt", "u", ch, _ => null, logs.Add, d => count += d, CancellationToken.None);
+        ch.Feed(Request("bad", X224Request));
+        await relay.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(count).IsEqualTo(0);
+        await Assert.That(logs.First()).IsEqualTo("wt open: u");
+        await Assert.That(logs.Last()).IsEqualTo("wt close: u");
+        await Assert.That(logs.Any(l => l.StartsWith("u: relay failed: proxy_auth"))).IsTrue();
+    }
+
+    [Test]
     public async Task トークンが通らなければ_401_で閉じる()
     {
         var ch = new FakeChannel();

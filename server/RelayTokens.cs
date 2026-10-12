@@ -10,8 +10,6 @@ internal sealed class RelayTokens(Signer signer, int ttlSeconds)
 {
     readonly ConcurrentDictionary<string, long> _used = new();
 
-    public int TtlSeconds => ttlSeconds;
-
     public string Issue(RelayToken t) => signer.Sign(t, ApiJson.Default.RelayToken, ttlSeconds);
 
     /// <summary>確かめて使う。sub を渡すと、トークンの sub がそれと同じことも見る(/ws は Cookie の sub)。だめなら null</summary>

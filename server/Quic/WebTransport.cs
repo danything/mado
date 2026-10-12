@@ -54,7 +54,6 @@ internal sealed class Http3Connection
     bool _closed;
     // セッションの無いあいだ動く時計。SessionWait のうちに CONNECT が来なければ接続を閉じる
     Timer? _wait;
-    public Dictionary<ulong, ulong> PeerSettings { get; private set; } = [];
 
     /// <summary>
     /// セッションが無いまま待つ時間。握手の後とセッションが終わった後に数え始める。
@@ -73,6 +72,7 @@ internal sealed class Http3Connection
         quic.OnPeerStream = (_, s, uni) => { if (uni) AcceptUni(s); else AcceptBidi(s); };
         quic.OnDatagram = (_, d) => Datagram(d);
         quic.OnClosed = _ => Closed();
+        quic.OnError = e => _log($"webtransport: コールバックで例外: {e.Message}");
     }
 
     public QuicConnection Quic => _quic;
@@ -170,9 +170,8 @@ internal sealed class Http3Connection
                 if (!_peerSettingsSeen)
                 {
                     if (type != H3.FrameSettings) { Fail(H3.MissingSettings, "最初のフレームが SETTINGS でない"); return; }
-                    var settings = H3.ParseSettings(payload);
-                    if (settings == null) { Fail(H3.SettingsError, "SETTINGS が読めない"); return; }
-                    PeerSettings = settings;
+                    // 中身は使わない。形だけ確かめる
+                    if (H3.ParseSettings(payload) is null) { Fail(H3.SettingsError, "SETTINGS が読めない"); return; }
                     _peerSettingsSeen = true;
                 }
                 else if (type == H3.FrameSettings) { Fail(H3.FrameUnexpected, "SETTINGS が 2 度来た"); return; }
@@ -317,15 +316,6 @@ internal sealed class Http3Connection
         if (_sessions.TryGetValue(q * 4, out var session)) _handler.OnDatagram(session, d[n..]);
         // セッションが無ければ捨てる。閉じた直後に届くことがある
     }
-
-    internal void SendDatagram(ulong sessionId, ReadOnlySpan<byte> payload)
-    {
-        var w = new ByteWriter();
-        w.VarInt(sessionId / 4).Bytes(payload);
-        _quic.SendDatagram(w.Span);
-    }
-
-    internal QuicStream OpenStream(bool unidirectional) => _quic.OpenStream(unidirectional);
 }
 
 /// <summary>拡張 CONNECT(RFC 9220)の要求。WebTransport のときだけ受ける</summary>
@@ -465,7 +455,6 @@ internal sealed class RequestStream
 internal sealed class WebTransportSession
 {
     public const ulong CapsuleCloseSession = 0x2843;
-    public const ulong CapsuleDrainSession = 0x78ae;
     // stream を打ち切るときの番号(draft-ietf-webtrans-http3)
     public const ulong ErrorSessionGone = 0x170d7b68;
     public const ulong ErrorBufferedStreamRejected = 0x3994bd84;
@@ -477,7 +466,6 @@ internal sealed class WebTransportSession
     bool _finSent;
 
     public ulong Id { get; }
-    public string Authority { get; }
     public string Path { get; }
     public string Origin { get; }
     /// <summary>扱い手が好きに使う</summary>
@@ -489,13 +477,9 @@ internal sealed class WebTransportSession
         _connect = connect;
         connect.Session = this;
         Id = connect.Stream.Id;
-        Authority = request.Authority;
         Path = request.Path;
         Origin = request.Origin;
     }
-
-    public bool IsClosed => _closed;
-    public Lock Gate => _conn.Quic.Gate;
 
     internal void Add(WebTransportStream s)
     {
@@ -507,7 +491,7 @@ internal sealed class WebTransportSession
     /// <summary>こちらから閉じる。CLOSE_WEBTRANSPORT_SESSION を送って CONNECT の stream に FIN を付ける。どのスレッドからでも呼べる</summary>
     public void Close(uint code, string reason)
     {
-        lock (Gate)
+        lock (_conn.Quic.Gate)
         {
             if (_closed) return;
             var p = new ByteWriter();

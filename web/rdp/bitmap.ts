@@ -3,6 +3,7 @@
 // 画面は 32 ビットで頼む。mcs.ts と pdu.ts の能力を参照。
 
 import { Reader } from "./bytes";
+import { LITTLE_ENDIAN } from "./rfx";
 
 export type BitmapRect = {
 	left: number;
@@ -64,6 +65,22 @@ export type BitmapJob = Pick<
 	BitmapRect,
 	"width" | "height" | "bpp" | "compressed" | "data"
 >;
+
+/** 上の行から並ぶ 32 ビットの BGRA(または BGRX)を RGBA にする。alpha でなければ不透明にする */
+export function bgraToRgba(
+	src: Uint8Array,
+	pixels: number,
+	alpha = false,
+): Uint8ClampedArray {
+	const out = new Uint8ClampedArray(pixels * 4);
+	for (let i = 0; i < pixels * 4; i += 4) {
+		out[i] = src[i + 2] as number;
+		out[i + 1] = src[i + 1] as number;
+		out[i + 2] = src[i] as number;
+		out[i + 3] = alpha ? (src[i + 3] as number) : 255;
+	}
+	return out;
+}
 
 /** 矩形を RGBA にする。上の行から並ぶ width x height */
 export function decodeBitmap(b: BitmapJob | BitmapRect): Uint8ClampedArray {
@@ -443,8 +460,6 @@ function chromaTable(cll: number): Int16Array {
 	}
 	return t;
 }
-
-const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
 /**
  * Planar の 32bpp を、上の行から並ぶ RGBA にする。面はアルファ(無いこともある)、赤、緑、青の順。CLL が 0 でなければ赤、緑、青の代わりに Y、Co、Cg が来る。

@@ -14,7 +14,7 @@ export type Channels = {
 export function attachChannels(
 	client: RdpClient,
 	onRemoteText: (text: string) => void,
-	/** GFX(H.264)の受け手。connect で gfx を指定したときに渡す */
+	/** GFX の受け手。connect で gfx を頼んだときに渡す */
 	options: { gfx?: GfxClient } = {},
 ): Channels {
 	const dvc = new DynamicChannels((data) =>

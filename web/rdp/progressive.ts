@@ -1,12 +1,22 @@
 // RemoteFX Progressive([MS-RDPEGFX] 2.2.4.2)。GFX の WireToSurface2 で CAPROGRESSIVE として来る。
 // 64x64 のタイルを、まず TILE_FIRST / TILE_SIMPLE で粗く送り、あとから TILE_UPGRADE で細かくしていく。
-// タイルごとに、逆量子化した係数(current)、符号(sign)、どのビットまで来たか(bitPos)を面ごとに覚えておく。
+// 面ごと、タイルごとに覚えておくものは 3 つ。逆量子化した係数 current、符号 sign、どのビットまで来たか bitPos。
 // upgrade では、足りない下のビットを SRL と RAW の 2 つのビット列から係数に足して、復号し直す。
 // RLGR と色変換は RemoteFX(rfx.ts)と同じ。逆 DWT には、帯を 33 / 31 などに分ける「外挿」の形(RFX_DWT_REDUCE_EXTRAPOLATE)がある。
 // C の整数の割り算や INT16 のあふれといった細かいところは、FreeRDP の progressive.c に合わせる。
 
 import { Reader } from "./bytes";
-import { ENTROPY_RLGR1, inverseDwt, rlgrDecode, TILE, yccToRgba } from "./rfx";
+import {
+	BANDS,
+	cutTile,
+	ENTROPY_RLGR1,
+	inverseDwt,
+	type Rect,
+	rlgrDecode,
+	TILE,
+	type TilePart,
+	yccToRgba,
+} from "./rfx";
 
 const WBT_SYNC = 0xccc0;
 const WBT_FRAME_BEGIN = 0xccc1;
@@ -30,25 +40,7 @@ const MAX_TILES = 1 << 12;
 type Quant = number[];
 type Yuv<T> = [T, T, T];
 
-export type ProgressiveRect = { x: number; y: number; w: number; h: number };
-
-/** 面に描く部分。タイルを Region の矩形で切ったもの。位置は面の座標 */
-export type ProgressivePart = ProgressiveRect & { rgba: Uint8ClampedArray };
-
-/** 帯の [位置, 大きさ]。通常の形は RemoteFX と同じ */
-const NORMAL: [number, number][] = [
-	[0, 1024],
-	[1024, 1024],
-	[2048, 1024],
-	[3072, 256],
-	[3328, 256],
-	[3584, 256],
-	[3840, 64],
-	[3904, 64],
-	[3968, 64],
-	[4032, 64],
-];
-/** 外挿の形。1 段目は低域 33・高域 31、2 段目は 17・16、3 段目は 9・8 */
+/** 外挿の形の帯の [位置, 大きさ]。通常の形は rfx.ts の BANDS を使う。1 段目は低域 33・高域 31、2 段目は 17・16、3 段目は 9・8 */
 const EXTRAPOLATED: [number, number][] = [
 	[0, 1023], // HL1 31x33
 	[1023, 1023], // LH1 33x31
@@ -94,7 +86,7 @@ function newTile(): Tile {
 }
 
 type Region = {
-	rects: ProgressiveRect[];
+	rects: Rect[];
 	quants: Quant[];
 	/** quality の番号ごとの、Y・Cb・Cr の progressive の量子化 */
 	progQuants: Yuv<Quant>[];
@@ -130,7 +122,7 @@ export type ProgressiveTile = {
 /** 読み取った 1 つの WireToSurface2。復号するタイルと、描く矩形を持つ。矩形は Region のもので、タイルの無い矩形もある */
 export type ProgressiveMessage = {
 	tiles: ProgressiveTile[];
-	rects: ProgressiveRect[];
+	rects: Rect[];
 };
 
 /** タイルの状態を持って復号する。Worker で復号するときは、タイルの位置ごとに受け持つ Worker を決めて、同じタイルは同じ Worker で復号する */
@@ -232,7 +224,7 @@ export class ProgressiveFrame {
 		rgba: Uint8ClampedArray[],
 		width: number,
 		height: number,
-	): ProgressivePart[] {
+	): TilePart[] {
 		let tiles = this.surfaces.get(surface);
 		if (!tiles) {
 			tiles = new Map();
@@ -244,32 +236,9 @@ export class ProgressiveFrame {
 				y: t.y,
 				rgba: rgba[i] as Uint8ClampedArray,
 			});
-		const out: ProgressivePart[] = [];
+		const out: TilePart[] = [];
 		for (const t of tiles.values())
-			clip(t.rgba, t.x, t.y, msg.rects, width, height, out);
-		return out;
-	}
-}
-
-/** Progressive の復号器。Worker を使わないときと試験で、その場で復号する。タイルの状態は面ごとに持つので、面を消したら deleteSurface を呼ぶ */
-export class ProgressiveDecoder {
-	private tiles = new ProgressiveTiles();
-
-	deleteSurface(id: number): void {
-		this.tiles.deleteSurface(id);
-	}
-
-	/** 1 つの WireToSurface2 の bitmapData を復号し、面に描く部分を返す。width / height は面の大きさ */
-	decode(
-		surfaceId: number,
-		data: Uint8Array,
-		width: number,
-		height: number,
-	): ProgressivePart[] {
-		const msg = parseProgressive(surfaceId, data, width, height);
-		const out: ProgressivePart[] = [];
-		for (const t of msg.tiles)
-			clip(this.tiles.decode(t.job), t.x, t.y, msg.rects, width, height, out);
+			out.push(...cutTile(t.rgba, t.x, t.y, msg.rects, width, height));
 		return out;
 	}
 }
@@ -378,33 +347,6 @@ function progQuant(reg: Region, quality: number): Yuv<Quant> {
 	return q;
 }
 
-/** タイルを Region の矩形と面で切る */
-function clip(
-	rgba: Uint8ClampedArray,
-	tx: number,
-	ty: number,
-	rects: ProgressiveRect[],
-	width: number,
-	height: number,
-	out: ProgressivePart[],
-): void {
-	for (const rc of rects) {
-		const x0 = Math.max(tx, rc.x);
-		const y0 = Math.max(ty, rc.y);
-		const x1 = Math.min(tx + TILE, rc.x + rc.w, width);
-		const y1 = Math.min(ty + TILE, rc.y + rc.h, height);
-		if (x1 <= x0 || y1 <= y0) continue;
-		const w = x1 - x0;
-		const h = y1 - y0;
-		const part = new Uint8ClampedArray(w * h * 4);
-		for (let y = 0; y < h; y++) {
-			const s = ((y0 - ty + y) * TILE + (x0 - tx)) * 4;
-			part.set(rgba.subarray(s, s + w * 4), y * w * 4);
-		}
-		out.push({ x: x0, y: y0, w, h, rgba: part });
-	}
-}
-
 // ---- タイルの復号 ----
 
 const COEF = new Int32Array(4096);
@@ -430,7 +372,7 @@ function first(
 	diff: boolean,
 	extrapolate: boolean,
 ): Uint8ClampedArray {
-	const bands = extrapolate ? EXTRAPOLATED : NORMAL;
+	const bands = extrapolate ? EXTRAPOLATED : BANDS;
 	for (let c = 0; c < 3; c++) {
 		const bitPos = add(quant[c] as Quant, prog[c] as Quant);
 		tile.bitPos[c] = bitPos;
@@ -466,7 +408,7 @@ function upgrade(
 	data: Uint8Array[],
 	extrapolate: boolean,
 ): Uint8ClampedArray {
-	const bands = extrapolate ? EXTRAPOLATED : NORMAL;
+	const bands = extrapolate ? EXTRAPOLATED : BANDS;
 	for (let c = 0; c < 3; c++) {
 		const bitPos = add(quant[c] as Quant, prog[c] as Quant);
 		const old = tile.bitPos[c] as Quant;

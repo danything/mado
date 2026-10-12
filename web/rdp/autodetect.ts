@@ -7,7 +7,7 @@ import { securityHeader } from "./pdu";
 
 /** Basic Security Header の flags。サーバーの要求とクライアントの応答 */
 export const SEC_AUTODETECT_REQ = 0x1000;
-export const SEC_AUTODETECT_RSP = 0x2000;
+const SEC_AUTODETECT_RSP = 0x2000;
 
 const TYPE_ID_AUTODETECT_REQUEST = 0x00;
 const TYPE_ID_AUTODETECT_RESPONSE = 0x01;

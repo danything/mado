@@ -97,26 +97,15 @@ internal sealed class WebTransportRelay(
         var bytes = new WebTransportByteStream(stream);
         _ = Task.Run(async () =>
         {
-            sessions(+1);
-            log($"wt open: {claim.User}");
             try
             {
-                await Relay.Run(new StreamChannel(bytes), auth => Authorize(claim, auth), m => log($"{claim.User}: {m}"), cts.Token);
-            }
-            catch (Exception e) when (e is IOException or OperationCanceledException or ObjectDisposedException or QuicNativeException)
-            {
-            }
-            catch (Exception e)
-            {
-                log($"wt relay error: {e.Message}");
+                await Relay.Serve("wt", claim.User, new StreamChannel(bytes), auth => Authorize(claim, auth), log, sessions, cts.Token);
             }
             finally
             {
-                sessions(-1);
                 await bytes.DisposeAsync();
                 session.Close(0, "");
                 cts.Dispose();
-                log($"wt close: {claim.User}");
             }
         });
     }

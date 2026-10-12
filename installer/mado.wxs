@@ -12,7 +12,7 @@
   設定が無いうちはサービスの起動が失敗するが、起動は待たないので、インストールは止まらない。
 
   ビルド: wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext
-          -d Version=0.4.0 -d PublishDir=publish -o dist/mado.msi
+          -d Version=<版> -d PublishDir=publish -o dist/mado.msi(CI の release.yml と同じ)
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"

@@ -2,12 +2,12 @@
 // QUIC の上の HTTP/3 は stream ごとにフレームを並べる。フレームは「型、長さ、中身」で、型と長さは可変長整数。
 namespace Mado.Quic;
 
-/// <summary>QUIC の可変長整数(RFC 9000 16 節)。先頭 2 bit が長さ(1, 2, 4, 8 バイト)。</summary>
+/// <summary>QUIC の可変長整数(RFC 9000 16 節)。先頭 2 bit が長さ(1, 2, 4, 8 バイト)</summary>
 internal static class VarInt
 {
     public const ulong Max = (1UL << 62) - 1;
 
-    /// <summary>読めたら値と使ったバイト数を返す。足りなければ false。</summary>
+    /// <summary>読めたら値と使ったバイト数を返す。足りなければ false</summary>
     public static bool TryRead(ReadOnlySpan<byte> s, out ulong value, out int length)
     {
         value = 0;
@@ -31,7 +31,7 @@ internal static class VarInt
     }
 }
 
-/// <summary>書き出し用の小さな器。</summary>
+/// <summary>書き出し用の小さな器</summary>
 internal sealed class ByteWriter
 {
     byte[] _buf = new byte[64];
@@ -77,7 +77,7 @@ internal sealed class ByteWriter
     public byte[] ToArray() => _buf.AsSpan(0, Length).ToArray();
 }
 
-/// <summary>stream の受信を溜めて、頭から読んで捨てる。</summary>
+/// <summary>stream の受信を溜めて、頭から読んで捨てる</summary>
 internal sealed class RecvBuffer
 {
     byte[] _buf = new byte[256];
@@ -116,12 +116,11 @@ internal sealed class RecvBuffer
     }
 }
 
-/// <summary>HTTP/3 の定数。WebTransport の値は Chromium(quiche)の http_constants.h に合わせる。</summary>
+/// <summary>HTTP/3 の定数。WebTransport の値は Chromium(quiche)の http_constants.h に合わせる</summary>
 internal static class H3
 {
     // stream の型(単方向 stream の先頭の可変長整数)
     public const ulong StreamControl = 0x00;
-    public const ulong StreamPush = 0x01;
     public const ulong StreamQpackEncoder = 0x02;
     public const ulong StreamQpackDecoder = 0x03;
     public const ulong StreamWebTransportUni = 0x54;
@@ -140,37 +139,31 @@ internal static class H3
 
     // SETTINGS の識別子
     public const ulong SettingQpackMaxTableCapacity = 0x01;
-    public const ulong SettingMaxFieldSectionSize = 0x06;
     public const ulong SettingQpackBlockedStreams = 0x07;
     public const ulong SettingEnableConnectProtocol = 0x08;   // RFC 9220
     public const ulong SettingH3Datagram = 0x33;              // RFC 9297
-    public const ulong SettingH3DatagramDraft04 = 0xffd277;
     public const ulong SettingEnableWebTransportDraft02 = 0x2b603742;
     public const ulong SettingWebTransportMaxSessionsDraft07 = 0xc671706a;
-    public const ulong SettingWtMaxSessions = 0x14e9cd29;     // draft-09 以降。Chrome はまだ読まない
 
     // 誤りの番号(RFC 9114 8.1)
     public const ulong NoError = 0x100;
-    public const ulong GeneralProtocolError = 0x101;
     public const ulong InternalError = 0x102;
     public const ulong StreamCreationError = 0x103;
     public const ulong ClosedCriticalStream = 0x104;
     public const ulong FrameUnexpected = 0x105;
-    public const ulong FrameError = 0x106;
     public const ulong ExcessiveLoad = 0x107;
     public const ulong SettingsError = 0x109;
     public const ulong MissingSettings = 0x10a;
     public const ulong RequestRejected = 0x10b;
-    public const ulong RequestCancelled = 0x10c;
     public const ulong RequestIncomplete = 0x10d;
     public const ulong MessageError = 0x10e;
-    public const ulong QpackDecompressionFailed = 0x200;
-    public const ulong DatagramError = 0x33;
+    public const ulong QpackDecompressionFailed = 0x200;   // RFC 9204
+    public const ulong DatagramError = 0x33;              // RFC 9297
 
     // HTTP/2 にあって HTTP/3 で禁じた型(RFC 9114 7.2.8)。届いたら接続の誤り
     public static bool IsHttp2Only(ulong type) => type is 0x02 or 0x06 or 0x08 or 0x09;
 
-    /// <summary>フレームを 1 つ組み立てる。</summary>
+    /// <summary>フレームを 1 つ組み立てる</summary>
     public static byte[] Frame(ulong type, ReadOnlySpan<byte> payload)
     {
         var w = new ByteWriter();
@@ -178,7 +171,7 @@ internal static class H3
         return w.ToArray();
     }
 
-    /// <summary>SETTINGS の中身(識別子と値の組の並び)。</summary>
+    /// <summary>SETTINGS の中身(識別子と値の組の並び)</summary>
     public static byte[] Settings(IEnumerable<(ulong Id, ulong Value)> settings)
     {
         var p = new ByteWriter();
@@ -186,7 +179,7 @@ internal static class H3
         return Frame(FrameSettings, p.Span);
     }
 
-    /// <summary>SETTINGS の中身を読む。同じ識別子が 2 度来たら誤り。</summary>
+    /// <summary>SETTINGS の中身を読む。同じ識別子が 2 度来たら誤り</summary>
     public static Dictionary<ulong, ulong>? ParseSettings(ReadOnlySpan<byte> payload)
     {
         var d = new Dictionary<ulong, ulong>();
@@ -216,6 +209,6 @@ internal static class H3
         return buf.Length >= headerLength + payloadLength;
     }
 
-    /// <summary>GREASE の値(0x1f * N + 0x21)。読み飛ばす。</summary>
+    /// <summary>GREASE の値(0x1f * N + 0x21)。読み飛ばす</summary>
     public static bool IsGrease(ulong v) => v >= 0x21 && (v - 0x21) % 0x1f == 0;
 }

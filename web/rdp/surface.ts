@@ -5,9 +5,16 @@
 // 同じ左上にある古いもの(RemoteFX のタイルや旧ビットマップ)は、新しいものが描く範囲にすっぽり入るときに限って復号しない。
 // 旧ビットマップも同じ列に載せて、受けた順に描く。Windows は RemoteFX を使わないとき planar などで送ってくる。
 
-import type { BitmapRect } from "./bitmap";
+import { type BitmapRect, bgraToRgba } from "./bitmap";
 import { Reader } from "./bytes";
-import { decodeTile, parseTiles, type RawTile, type Rect, TILE } from "./rfx";
+import {
+	cutTile,
+	decodeTile,
+	parseTiles,
+	type RawTile,
+	type Rect,
+	TILE,
+} from "./rfx";
 import { type DecodeJob, decodeJob, SyncPool, type TilePool } from "./rfxpool";
 
 const CMD_SET_SURFACE_BITS = 0x0001;
@@ -39,14 +46,8 @@ type SurfaceEvents = {
 	draw: SurfaceDraw;
 	/** Frame Marker。0 が始まりで 1 が終わり */
 	frame?(action: number, frameId: number): void;
-	/** これを渡すと、RemoteFX は復号せずにこれへ渡す。bits は Surface Bits の本体で、復号は呼び出し側が後でする */
-	rfx?(
-		bits: Uint8Array,
-		left: number,
-		top: number,
-		right: number,
-		bottom: number,
-	): void;
+	/** これを渡すと、RemoteFX は復号せずにこれへ渡す。bits は Surface Bits の本体で、復号は呼び出し側が後でする。右下では切らないので渡さない */
+	rfx?(bits: Uint8Array, left: number, top: number): void;
 };
 
 /**
@@ -67,8 +68,7 @@ export function handleSurfaceCommands(
 			case CMD_STREAM_SURFACE_BITS: {
 				const left = r.u16();
 				const top = r.u16();
-				const right = r.u16();
-				const bottom = r.u16();
+				r.skip(4); // destRight, destBottom。commandArea を参照
 				const bpp = r.u8();
 				const flags = r.u8();
 				r.u8(); // reserved
@@ -82,9 +82,9 @@ export function handleSurfaceCommands(
 				if (width > MAX_SIDE || height > MAX_SIDE)
 					throw new Error("Surface Bits が大きすぎる");
 				if (codecId === rfxCodecId && codecId !== CODEC_NONE) {
-					if (ev.rfx) ev.rfx(bits, left, top, right, bottom);
+					if (ev.rfx) ev.rfx(bits, left, top);
 					else {
-						const area = commandArea(left, top, right, bottom, screen);
+						const area = commandArea(left, top, screen);
 						for (const t of parseTiles(bits))
 							drawTile(
 								decodeTile(t.mode, t.data, t.quant),
@@ -155,22 +155,15 @@ function crop(
 function commandArea(
 	left: number,
 	top: number,
-	_right: number,
-	_bottom: number,
 	screen: ScreenSize,
 ): Rect | null {
 	return intersect(
-		{
-			x: left,
-			y: top,
-			w: Math.max(0, screen.width - left),
-			h: Math.max(0, screen.height - top),
-		},
+		{ x: left, y: top, w: screen.width - left, h: screen.height - top },
 		{ x: 0, y: 0, w: screen.width, h: screen.height },
 	);
 }
 
-/** 復号したタイルを、Region の矩形と画面で切って描く */
+/** 復号したタイルを、Region の矩形と描いてよい範囲(画面の座標)で切って描く。タイルと矩形の位置はコマンドの左上 (left, top) からの相対 */
 function drawTile(
 	rgba: Uint8ClampedArray,
 	t: { x: number; y: number; rects: Rect[] },
@@ -179,29 +172,15 @@ function drawTile(
 	area: Rect | null,
 	draw: SurfaceDraw,
 ): void {
-	const tile: Rect = { x: t.x, y: t.y, w: TILE, h: TILE };
-	const clips = t.rects.length ? t.rects : [tile];
-	for (const clip of clips) {
-		const part = intersect(tile, clip);
-		if (!part) continue;
-		const abs = intersect(
-			{ x: part.x + left, y: part.y + top, w: part.w, h: part.h },
-			area ?? { x: 0, y: 0, w: 0, h: 0 },
-		);
-		if (!abs) continue;
-		draw(
-			abs.x,
-			abs.y,
-			abs.w,
-			abs.h,
-			crop(rgba, TILE, {
-				x: abs.x - left - t.x,
-				y: abs.y - top - t.y,
-				w: abs.w,
-				h: abs.h,
-			}),
-		);
-	}
+	if (!area) return;
+	const rects = t.rects.length
+		? t.rects
+		: [{ x: t.x, y: t.y, w: TILE, h: TILE }];
+	// area の左上は (left, top) なので、相対の座標では右下だけで切ればよい
+	const width = area.x + area.w - left;
+	const height = area.y + area.h - top;
+	for (const p of cutTile(rgba, t.x, t.y, rects, width, height))
+		draw(p.x + left, p.y + top, p.w, p.h, p.rgba);
 }
 
 /** コーデックなし。32 ビットの BGRA が上の行から並ぶ。大きさを超える分は切る */
@@ -216,13 +195,7 @@ function drawRaw(
 ): void {
 	if (bits.length < width * height * 4)
 		throw new Error("Surface Bits(生)が短い");
-	const rgba = new Uint8ClampedArray(width * height * 4);
-	for (let i = 0; i < width * height; i++) {
-		rgba[i * 4] = bits[i * 4 + 2] as number;
-		rgba[i * 4 + 1] = bits[i * 4 + 1] as number;
-		rgba[i * 4 + 2] = bits[i * 4] as number;
-		rgba[i * 4 + 3] = 255;
-	}
+	const rgba = bgraToRgba(bits, width * height);
 	const abs = intersect(
 		{ x: left, y: top, w: width, h: height },
 		{ x: 0, y: 0, w: screen.width, h: screen.height },
@@ -351,8 +324,8 @@ export class SurfaceRenderer {
 					this.request();
 				}
 			},
-			rfx: (bits, left, top, right, bottom) => {
-				const area = commandArea(left, top, right, bottom, screen);
+			rfx: (bits, left, top) => {
+				const area = commandArea(left, top, screen);
 				for (const tile of parseTiles(bits)) this.add(tile, left, top, area);
 				this.request();
 			},

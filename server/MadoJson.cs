@@ -13,7 +13,7 @@ namespace Mado;
 [JsonSerializable(typeof(Config.Raw))]
 internal sealed partial class MadoJson : JsonSerializerContext;
 
-/// <summary>API の返事、署名付きの値、OIDC・ACME・GitHub の API。名前は変換しない。camelCase か snake_case かは型の側で書く</summary>
+/// <summary>API の返事、署名付きの値、OIDC と GitHub の API。名前は変換しない。camelCase か snake_case かは型の側で書く。ACME は JsonNode で読み書きする</summary>
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(SessionInfo))]
 [JsonSerializable(typeof(TokenInfo))]
@@ -29,12 +29,6 @@ internal sealed partial class MadoJson : JsonSerializerContext;
 [JsonSerializable(typeof(Jwks))]
 [JsonSerializable(typeof(JwtHeader))]
 [JsonSerializable(typeof(JwtClaims))]
-[JsonSerializable(typeof(JsonElement))]
-[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
-[JsonSerializable(typeof(Dictionary<string, string>))]
-[JsonSerializable(typeof(Dictionary<string, object>))]
-[JsonSerializable(typeof(object[]))]
-[JsonSerializable(typeof(string[]))]
 internal sealed partial class ApiJson : JsonSerializerContext;
 
 internal sealed record SessionInfo(

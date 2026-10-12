@@ -16,7 +16,7 @@ const RESPONSE_OK = 0x0001;
 const RESPONSE_FAIL = 0x0002;
 const USE_LONG_FORMAT_NAMES = 0x0002;
 
-export const CF_UNICODETEXT = 13;
+const CF_UNICODETEXT = 13;
 
 function pdu(
 	type: number,
@@ -49,8 +49,6 @@ export function decodeText(data: Uint8Array): string {
 export class Clipboard {
 	private ready = false;
 	private local?: string;
-	/** サーバーがくれた書式の中に CF_UNICODETEXT があるか */
-	private remoteHasText = false;
 
 	/** 静的チャネル cliprdr へ送る。onRemoteText は、サーバー側でコピーされた文字列を受ける */
 	constructor(
@@ -92,10 +90,10 @@ export class Clipboard {
 				);
 				this.sendFormatList();
 				break;
-			case MSG.FORMAT_LIST: {
-				this.remoteHasText = parseFormatIds(body).includes(CF_UNICODETEXT);
+			case MSG.FORMAT_LIST:
+				// サーバーに文字列があれば、すぐに中身を頼む
 				this.send(pdu(MSG.FORMAT_LIST_RESPONSE, RESPONSE_OK));
-				if (this.remoteHasText)
+				if (parseFormatIds(body).includes(CF_UNICODETEXT))
 					this.send(
 						pdu(
 							MSG.FORMAT_DATA_REQUEST,
@@ -104,7 +102,6 @@ export class Clipboard {
 						),
 					);
 				break;
-			}
 			case MSG.FORMAT_DATA_REQUEST: {
 				const format = new Reader(body).u32();
 				if (format === CF_UNICODETEXT && this.local !== undefined)

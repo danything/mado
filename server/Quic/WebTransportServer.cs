@@ -179,12 +179,11 @@ internal sealed class WebTransportServer : IDisposable
     {
         try
         {
-            var all = new X509Certificate2Collection();
-            all.ImportFromPem(certPem);
-            if (all.Count < 2) return;
+            var intermediates = Acme.Intermediates(certPem);
+            if (intermediates.Count == 0) return;
             using var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.LocalMachine);
             store.Open(OpenFlags.ReadWrite);
-            for (var i = 1; i < all.Count; i++) store.Add(all[i]);
+            store.AddRange(intermediates);
         }
         catch (Exception e)
         {
@@ -192,14 +191,11 @@ internal sealed class WebTransportServer : IDisposable
         }
     }
 
-    internal static byte[] Pkcs12(string keyPem, string certPem, string? password = null)
+    static byte[] Pkcs12(string keyPem, string certPem, string? password = null)
     {
         using var leaf = X509Certificate2.CreateFromPem(certPem, keyPem);
-        var all = new X509Certificate2Collection();
-        all.ImportFromPem(certPem);
         var col = new X509Certificate2Collection { leaf };
-        foreach (var c in all)
-            if (c.Thumbprint != leaf.Thumbprint) col.Add(c);
+        col.AddRange(Acme.Intermediates(certPem));
         return col.Export(X509ContentType.Pkcs12, password)!;
     }
 

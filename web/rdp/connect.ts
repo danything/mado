@@ -21,8 +21,8 @@ export type ConnectOptions = {
 	/** /api/token でもらった使い捨てのトークン */
 	token: string;
 	/**
-	 * トークンを取り直す。WebTransport の CONNECT はトークンを使うので、WebTransport が開けずに WebSocket に移るときに使う
-	 * (サーバーが CONNECT を受けた後で、ブラウザの待ち時間が切れることがある)
+	 * トークンを取り直す。WebTransport が開けずに WebSocket に移るときに使う。
+	 * サーバーが CONNECT でトークンを使ったあとで、ブラウザの待ち時間が切れることがある
 	 */
 	newToken?: () => Promise<string>;
 	/** つなぐ先。実際の行き先はトークンで決まるので、サーバーはこれを見ない */
@@ -37,7 +37,7 @@ export type ConnectOptions = {
 	onLog?: (line: string) => void;
 	/** 中止の合図。時間がかかりすぎたときや、利用者が取り消したときに使う */
 	signal?: AbortSignal;
-	/** GFX(H.264)を使う。受け手の GfxClient を attachChannels に渡しておく */
+	/** GFX(Graphics Pipeline)を頼む。受け手の GfxClient は attachChannels に渡す */
 	gfx?: boolean;
 	/** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
 	allowTls?: boolean;
@@ -137,6 +137,8 @@ export async function openTransport(
 	return { stream: await openers.ws(o.url), kind: "WebSocket", token };
 }
 
+const ABORTED = "つなぐのに時間がかかりすぎたか、取り消した";
+
 export async function connect(
 	o: ConnectOptions,
 	openers?: TransportOpeners,
@@ -146,7 +148,7 @@ export async function connect(
 	log(`中継: ${kind}`);
 	if (o.signal?.aborted) {
 		stream.close();
-		throw new Error("つなぐのに時間がかかりすぎた(または取り消した)");
+		throw new Error(ABORTED);
 	}
 	const abort = () => stream.close();
 	o.signal?.addEventListener("abort", abort, { once: true });
@@ -165,20 +167,19 @@ export async function connect(
 		log("RDCleanPath OK");
 		const session = await establish(stream, o, resp.x224, cert);
 		session.transport = kind;
-		o.signal?.removeEventListener("abort", abort);
 		return session;
 	} catch (e) {
-		o.signal?.removeEventListener("abort", abort);
 		stream.close();
-		if (o.signal?.aborted)
-			throw new Error("つなぐのに時間がかかりすぎた(または取り消した)");
+		if (o.signal?.aborted) throw new Error(ABORTED);
 		throw e;
+	} finally {
+		o.signal?.removeEventListener("abort", abort);
 	}
 }
 
 /**
  * TLS が張れて、X.224 Connection Confirm とサーバーの証明書を受け取ったところから、つながるまで進める。
- * connect() は WebSocket でここまで来る。試験は TCP + TLS で直接ここから始める
+ * connect() は mado の中継と RDCleanPath でここまで来る。試験は TCP + TLS で直接ここから始める
  */
 export async function establish(
 	stream: Transport,

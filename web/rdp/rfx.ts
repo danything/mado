@@ -222,7 +222,7 @@ export function rlgrDecode(
 // ---- 逆量子化・逆 DWT・色変換 ----
 
 /** 係数の並び。1 成分は 4096 個で、HL1 LH1 HH1 | HL2 LH2 HH2 | HL3 LH3 HH3 | LL3 の順 */
-const BANDS: [offset: number, size: number][] = [
+export const BANDS: [offset: number, size: number][] = [
 	[0, 1024], // HL1
 	[1024, 1024], // LH1
 	[2048, 1024], // HH1
@@ -348,7 +348,8 @@ function horiz(
 	dst[d + 2 * n - 1] = (hPrev << 1) + ePrev;
 }
 
-const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+export const LITTLE_ENDIAN =
+	new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
 /** Y・Cb・Cr を RGBA にする。入力は 5 ビットの小数つきで、Y は -128 のオフセット。16.16 の固定小数と 5 ビットを合わせて 21 ビット右へずらす */
 export function yccToRgba(
@@ -400,6 +401,46 @@ export function decodeTile(
 		reconstruct(buf, quant[i] as number[]);
 	}
 	return yccToRgba(PLANES[0], PLANES[1], PLANES[2]);
+}
+
+/** 面に描く部分。タイルを矩形で切ったもの */
+export type TilePart = Rect & { rgba: Uint8ClampedArray };
+
+/**
+ * 64x64 のタイル(左上が tx, ty)を、rects のそれぞれと 0..width x 0..height の重なりで切り出す。
+ * rects が空なら何も返さない。全体を描くときは、呼ぶ側が全体の矩形を渡す
+ */
+export function cutTile(
+	rgba: Uint8ClampedArray,
+	tx: number,
+	ty: number,
+	rects: Rect[],
+	width: number,
+	height: number,
+): TilePart[] {
+	const out: TilePart[] = [];
+	for (const rc of rects) {
+		const x0 = Math.max(tx, rc.x);
+		const y0 = Math.max(ty, rc.y);
+		const x1 = Math.min(tx + TILE, rc.x + rc.w, width);
+		const y1 = Math.min(ty + TILE, rc.y + rc.h, height);
+		if (x1 <= x0 || y1 <= y0) continue;
+		const w = x1 - x0;
+		const h = y1 - y0;
+		let part: Uint8ClampedArray;
+		if (w === TILE) {
+			// 行をまるごと使うので、写さずに切り出す
+			part = rgba.subarray((y0 - ty) * TILE * 4, (y1 - ty) * TILE * 4);
+		} else {
+			part = new Uint8ClampedArray(w * h * 4);
+			for (let y = 0; y < h; y++) {
+				const s = ((y0 - ty + y) * TILE + (x0 - tx)) * 4;
+				part.set(rgba.subarray(s, s + w * 4), y * w * 4);
+			}
+		}
+		out.push({ x: x0, y: y0, w, h, rgba: part });
+	}
+	return out;
 }
 
 // ---- ストリーム ----

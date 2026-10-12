@@ -1,10 +1,10 @@
 // AVC444 / AVC444v2([MS-RDPEGFX] 2.2.4.5・2.2.4.6・3.3.8.3)の YUV444 の組み立て。
-// 主の絵(YUV420 そのまま)と補助の絵(4:4:4 で足りない色差を YUV420 の形に詰めたもの)を、面ごとの YUV444 の面に重ねる。
+// 主の絵と補助の絵を、面ごとの YUV444 に重ねる。主の絵は YUV420 そのもの。補助の絵は、4:4:4 にするのに足りない色差を YUV420 の形に詰めたもの。
 // 並べ方と色差の戻し方は FreeRDP の prim_YUV.c(general_LumaToYUV444・ChromaV1ToYUV444・ChromaV2ToYUV444・ChromaFilter)と同じ。
 
 import type { Rect } from "./gfx";
 
-/** 復号した YUV420 の 1 枚(I420 の 3 面)。width / height は面の大きさ(切り取り前の符号化の大きさのことがある) */
+/** 復号した YUV420 の 1 枚。I420 の 3 面。width / height は面の大きさで、切り取る前の符号化の大きさのこともある */
 export type Yuv420 = {
 	width: number;
 	height: number;
@@ -19,8 +19,8 @@ export type Yuv420 = {
 	uvStride?: number;
 };
 
-/** RGBA を面に置く(CPU で組み立てたとき) */
-export type PutRgba = (
+/** RGBA を面に置く。CPU で組み立てたときに使う */
+type PutRgba = (
 	x: number,
 	y: number,
 	w: number,
@@ -39,18 +39,16 @@ export interface Yuv444Target {
 	close(): void;
 }
 
-/** 色差を戻したとき、元(主の絵)とこれより近ければ元のまま(圧縮の雑音で色がにじまないように。FreeRDP の CONDITIONAL_CLIP) */
+/** 色差を戻したとき、元の主の絵との差がこれより小さければ元のままにする。圧縮の雑音で色がにじまないように。FreeRDP の CONDITIONAL_CLIP */
 const FILTER_THRESHOLD = 30;
 
 const clip = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
-/** 面 1 枚ぶんの YUV444。主の絵と補助の絵が別々に(または片方だけ)来るので、前のものを持っておく */
-export class Yuv444 implements Yuv444Target {
+/** CPU で持つ YUV444 の 3 面。Y=0、U=V=128 から始める。Yuv444 と Yuv444GlRef が使う */
+abstract class CpuYuv444 implements Yuv444Target {
 	readonly y: Uint8Array;
 	readonly u: Uint8Array;
 	readonly v: Uint8Array;
-	/** 最後の主の絵(偶数の行・列の色差を戻すのに使う) */
-	private main?: Yuv420;
 
 	constructor(
 		readonly width: number,
@@ -61,13 +59,36 @@ export class Yuv444 implements Yuv444Target {
 		this.v = new Uint8Array(width * height).fill(128);
 	}
 
-	/** 主の絵: Y はそのまま、色差は 2x2 に広げる(補助の絵が来るまでは 4:2:0 の色) */
+	abstract luma(p: Yuv420, rects: Rect[]): void;
+	abstract chroma(p: Yuv420, v2: boolean, rects: Rect[]): boolean;
+	/** 矩形を RGBA にする */
+	abstract rgba(r: Rect): Uint8ClampedArray;
+
+	draw(rects: Rect[], x: number, y: number, put: PutRgba): boolean {
+		for (const r of rects)
+			put(
+				x + r.left,
+				y + r.top,
+				r.right - r.left,
+				r.bottom - r.top,
+				this.rgba(r),
+			);
+		return true;
+	}
+
+	close(): void {}
+}
+
+/** 面 1 枚ぶんの YUV444。主の絵と補助の絵は別々に来る。片方だけのこともあるので、前のものを持っておく */
+export class Yuv444 extends CpuYuv444 {
+	/** 最後の主の絵。偶数の行・列の色差を戻すのに使う */
+	private main?: Yuv420;
+
+	/** 主の絵。Y はそのまま、色差は 2x2 に広げる。補助の絵が来るまでは 4:2:0 の色になる */
 	luma(p: Yuv420, rects: Rect[]): void {
 		this.main = p;
 		const W = this.width;
-		for (const r0 of rects) {
-			const r = evenRect(r0, W, this.height, p);
-			if (!r) continue;
+		for (const r of evenRects(rects, W, this.height, p)) {
 			for (let y = r.top; y < r.bottom; y++) {
 				const s = y * p.yStride;
 				this.y.set(p.y.subarray(s + r.left, s + r.right), y * W + r.left);
@@ -96,7 +117,7 @@ export class Yuv444 implements Yuv444Target {
 	}
 
 	/**
-	 * 補助の絵: 足りない色差(偶数の行・列以外)を埋め、偶数の行・列は主の絵の平均から戻す。
+	 * 補助の絵。偶数の行・列のところ以外は、足りない色差をここから埋める。偶数の行・列は主の絵の平均から戻す。
 	 * v1: 補助の Y は 16 行ごとに前の 8 行が U、後の 8 行が V の奇数行。補助の U / V は U / V の偶数行・奇数列。
 	 * v2: 補助の Y は左半分が U、右半分が V の奇数列。補助の U / V は左右の 4 分の 1 ずつが U / V の奇数行の 4 の倍数の列(U)と +2 の列(V)
 	 */
@@ -106,9 +127,7 @@ export class Yuv444 implements Yuv444Target {
 		const W = this.width;
 		const U = this.u;
 		const V = this.v;
-		for (const r0 of rects) {
-			const r = evenRect(r0, W, this.height);
-			if (!r) continue;
+		for (const r of evenRects(rects, W, this.height)) {
 			if (!v2) {
 				// B4 / B5: 奇数行の全部の列
 				for (let y = r.top + 1; y < r.bottom; y += 2) {
@@ -174,7 +193,7 @@ export class Yuv444 implements Yuv444Target {
 		return true;
 	}
 
-	/** 偶数の行・列: 主の絵の色差は 2x2 の平均なので、4 倍から残りの 3 つを引いて戻す */
+	/** 偶数の行・列。主の絵の色差は 2x2 の平均なので、4 倍から残りの 3 つを引いて戻す */
 	private filter(main: Yuv420, r: Rect): void {
 		const W = this.width;
 		const U = this.u;
@@ -205,7 +224,7 @@ export class Yuv444 implements Yuv444Target {
 		}
 	}
 
-	/** 矩形を RGBA に(BT.709・フル レンジ。FreeRDP の YUV2R / YUV2G / YUV2B と同じ係数) */
+	/** BT.709 のフル レンジ。係数は FreeRDP の YUV2R / YUV2G / YUV2B と同じ */
 	rgba(r: Rect): Uint8ClampedArray {
 		const w = r.right - r.left;
 		const h = r.bottom - r.top;
@@ -227,20 +246,6 @@ export class Yuv444 implements Yuv444Target {
 		}
 		return out;
 	}
-
-	draw(rects: Rect[], x: number, y: number, put: PutRgba): boolean {
-		for (const r of rects)
-			put(
-				x + r.left,
-				y + r.top,
-				r.right - r.left,
-				r.bottom - r.top,
-				this.rgba(r),
-			);
-		return true;
-	}
-
-	close(): void {}
 }
 
 /** 矩形を面(W x H)に収め、色差の 2x2 に合わせて偶数に広げる。p を渡すと、その絵にある範囲にも収める */
@@ -254,16 +259,12 @@ function evenRect(r: Rect, W: number, H: number, p?: Yuv420): Rect | undefined {
 		: undefined;
 }
 
-/** 描く範囲: 面に収めた矩形(regions が空なら全体) */
-export function clampRects(regions: Rect[], w: number, h: number): Rect[] {
-	if (!regions.length) return [{ left: 0, top: 0, right: w, bottom: h }];
+/** evenRect をそれぞれにかけ、空になったものを除く */
+function evenRects(rects: Rect[], W: number, H: number, p?: Yuv420): Rect[] {
 	const out: Rect[] = [];
-	for (const r of regions) {
-		const left = Math.max(0, r.left);
-		const top = Math.max(0, r.top);
-		const right = Math.min(w, r.right);
-		const bottom = Math.min(h, r.bottom);
-		if (right > left && bottom > top) out.push({ left, top, right, bottom });
+	for (const r of rects) {
+		const e = evenRect(r, W, H, p);
+		if (e) out.push(e);
 	}
 	return out;
 }
@@ -453,28 +454,14 @@ function rgbAt(Y: number, U: number, V: number): [number, number, number] {
 }
 
 /** シェーダーの計算を TS で書いたもの(試験用)。GPU と同じく、状態から読んで別の面に描き、矩形を写し戻す */
-export class Yuv444GlRef implements Yuv444Target {
-	readonly y: Uint8Array;
-	readonly u: Uint8Array;
-	readonly v: Uint8Array;
+export class Yuv444GlRef extends CpuYuv444 {
 	private main?: GlPlanes;
-
-	constructor(
-		readonly width: number,
-		readonly height: number,
-	) {
-		this.y = new Uint8Array(width * height);
-		this.u = new Uint8Array(width * height).fill(128);
-		this.v = new Uint8Array(width * height).fill(128);
-	}
 
 	luma(p: Yuv420, rects: Rect[]): void {
 		const m = glPlanes(p);
 		this.main = m;
 		const W = this.width;
-		for (const r0 of rects) {
-			const r = evenRect(r0, W, this.height, p);
-			if (!r) continue;
+		for (const r of evenRects(rects, W, this.height, p)) {
 			for (let y = r.top; y < r.bottom; y++)
 				for (let x = r.left; x < r.right; x++) {
 					const i = y * W + x;
@@ -497,11 +484,8 @@ export class Yuv444GlRef implements Yuv444Target {
 		const aux = (x: number, y: number) => auxAt(a, v2, W, x, y, prev(x, y));
 		const outU = this.u.slice();
 		const outV = this.v.slice();
-		const list: Rect[] = [];
-		for (const r0 of rects) {
-			const r = evenRect(r0, W, this.height);
-			if (!r) continue;
-			list.push(r);
+		const list = evenRects(rects, W, this.height);
+		for (const r of list) {
 			for (let y = r.top; y < r.bottom; y++)
 				for (let x = r.left; x < r.right; x++) {
 					let c: [number, number];
@@ -542,20 +526,6 @@ export class Yuv444GlRef implements Yuv444Target {
 			}
 		return out;
 	}
-
-	draw(rects: Rect[], x: number, y: number, put: PutRgba): boolean {
-		for (const r of rects)
-			put(
-				x + r.left,
-				y + r.top,
-				r.right - r.left,
-				r.bottom - r.top,
-				this.rgba(r),
-			);
-		return true;
-	}
-
-	close(): void {}
 }
 
 const GLSL_HEAD = `#version 300 es
@@ -832,7 +802,7 @@ class TexPlanes {
 	}
 }
 
-/** GPU で組み立てた矩形を面へ写す(src の (sx, sy) から w x h を、面の (dx, dy) へ) */
+/** GPU で組み立てた矩形を面へ写す。src の (sx, sy) から w x h を、面の (dx, dy) へ */
 export type GlBlit = (
 	src: CanvasImageSource,
 	sx: number,
@@ -1019,11 +989,7 @@ export class Yuv444GlTarget implements Yuv444Target {
 			const prog = this.owner.luma;
 			this.main.upload(p);
 			this.hasMain = true;
-			const list: Rect[] = [];
-			for (const r of rects) {
-				const e = evenRect(r, this.width, this.height, p);
-				if (e) list.push(e);
-			}
+			const list = evenRects(rects, this.width, this.height, p);
 			if (!list.length) return;
 			// 状態を読まずに全部の値を書くので、a に直に描く。描く先を読むことにならないよう、a は外しておく
 			this.bindState(null);
@@ -1044,11 +1010,7 @@ export class Yuv444GlTarget implements Yuv444Target {
 			const prog = this.owner.chroma;
 			const aux = this.owner.aux;
 			aux.upload(p);
-			const list: Rect[] = [];
-			for (const r of rects) {
-				const e = evenRect(r, this.width, this.height);
-				if (e) list.push(e);
-			}
+			const list = evenRects(rects, this.width, this.height);
 			if (!list.length) return;
 			gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb);
 			gl.viewport(0, 0, this.width, this.height);

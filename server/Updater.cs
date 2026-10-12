@@ -30,7 +30,7 @@ internal sealed record UpdateState(
 /// そもそも今より新しい版しか受けないし、MSI も古い版では上書きしない。入れるのは誰もつないでいないときだけ。
 /// </summary>
 internal sealed class Updater(
-    string repo, string version, string dataDir, HttpClient http, Action<string> log,
+    string repo, string version, string dataDir, string logDir, HttpClient http, Action<string> log,
     Action<string, string>? launch = null, string publicKey = Updater.PublicKey)
 {
     /// <summary>release.yml の秘密鍵と対になる公開鍵。SubjectPublicKeyInfo を base64 にしたもの</summary>
@@ -142,9 +142,9 @@ internal sealed class Updater(
                 log($"update: {r.TagName} を落としたが、つないでいる人がいるので後で入れる");
                 return false;
             }
-            var msiLog = Path.Combine(Path.GetDirectoryName(dataDir)!, "logs", $"msi-{r.TagName}.log");
+            var msiLog = Path.Combine(logDir, $"msi-{r.TagName}.log");
             log($"update: {version} → {r.TagName} を入れる(msiexec。ログは {msiLog})");
-            Directory.CreateDirectory(Path.GetDirectoryName(msiLog)!);
+            Directory.CreateDirectory(logDir);
             launch(msi, msiLog);
             launched = (r.TagName, DateTimeOffset.UtcNow);
             return true;

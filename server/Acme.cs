@@ -204,22 +204,29 @@ internal sealed class Acme(
     static string B64(string s) => Base64Url.EncodeToString(Encoding.UTF8.GetBytes(s));
 
     /// <summary>PEM の最初の証明書の残り日数</summary>
-    public static double DaysLeft(string pem) =>
-        (X509Certificate2.CreateFromPem(pem).NotAfter.ToUniversalTime() - DateTime.UtcNow).TotalDays;
+    public static double DaysLeft(string pem)
+    {
+        using var cert = X509Certificate2.CreateFromPem(pem);
+        return (cert.NotAfter.ToUniversalTime() - DateTime.UtcNow).TotalDays;
+    }
+
+    /// <summary>PEM の 2 つ目からの証明書。Let's Encrypt の中間証明書</summary>
+    public static X509Certificate2Collection Intermediates(string certPem)
+    {
+        var all = new X509Certificate2Collection();
+        all.ImportFromPem(certPem);
+        if (all.Count > 0) all.RemoveAt(0);
+        return all;
+    }
 
     /// <summary>
     /// Kestrel に渡す形にする。Windows の SChannel は PEM から作った一時的な鍵を受けないので、一度 PKCS#12 にして読み直す。
-    /// Let's Encrypt の中間証明書も一緒に送る
+    /// 中間証明書も一緒に送る
     /// </summary>
     public static SslStreamCertificateContext Context(string keyPem, string certPem)
     {
         using var leaf = X509Certificate2.CreateFromPem(certPem, keyPem);
         var cert = X509CertificateLoader.LoadPkcs12(leaf.Export(X509ContentType.Pkcs12), null);
-        var all = new X509Certificate2Collection();
-        all.ImportFromPem(certPem);
-        var intermediates = new X509Certificate2Collection();
-        foreach (var c in all)
-            if (c.Thumbprint != cert.Thumbprint) intermediates.Add(c);
-        return SslStreamCertificateContext.Create(cert, intermediates, offline: true);
+        return SslStreamCertificateContext.Create(cert, Intermediates(certPem), offline: true);
     }
 }

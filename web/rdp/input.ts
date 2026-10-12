@@ -149,7 +149,7 @@ export function unicodeEvent(char: number, down: boolean): Uint8Array {
 		.done();
 }
 
-export const PTR = {
+const PTR = {
 	WHEEL_NEGATIVE: 0x0100,
 	WHEEL: 0x0200,
 	HWHEEL: 0x0400,

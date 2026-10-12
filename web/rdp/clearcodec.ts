@@ -104,13 +104,12 @@ export class ClearDecoder {
 						(this.shortVBarCursor + 1) % SHORT_VBAR_STORAGE;
 					bar = this.fullBar(short, yOn, height, bg);
 				} else {
-					// VBAR_CACHE_HIT
+					// VBAR_CACHE_HIT。キャッシュには足さない
 					const hit = this.vBars[header & 0x7fff];
 					if (!hit) throw new Error("ClearCodec: キャッシュに無い棒");
-					bar = hit;
-					if (bar.length !== height * 3)
+					if (hit.length !== height * 3)
 						throw new Error("ClearCodec: 棒の高さが合わない");
-					this.drawBar(bar, x, yStart, height, out, w, h);
+					this.drawBar(hit, x, yStart, height, out, w, h);
 					continue;
 				}
 				this.vBars[this.vBarCursor] = bar;
