@@ -95,7 +95,6 @@ export class AutoScale {
 		this.scale = max;
 	}
 
-	/** 定期的に呼ぶ。割合を変えるべきなら新しい割合、変えないなら undefined */
 	/** until まで様子を見ない(つないだ直後の全面の送り直しを、混んでいるとみなさない) */
 	pause(until: number): void {
 		this.quietUntil = Math.max(this.quietUntil, until);
@@ -103,6 +102,7 @@ export class AutoScale {
 		this.good = 0;
 	}
 
+	/** 定期的に呼ぶ。割合を変えるべきなら新しい割合、変えないなら undefined */
 	sample(s: Sample, now: number): number | undefined {
 		if (now < this.quietUntil) return undefined;
 		const q = s.queued ?? 0;

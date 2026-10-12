@@ -548,6 +548,7 @@ export class GfxClient implements DynamicHandler {
 				this.queuedFrames = Math.max(0, this.queuedFrames - 1);
 				const frameId = r.u32();
 				this.ops.present();
+				// 遅れは「描き終えた」時刻で測る。画面へ写すのは描画の周期の終わりになることがあるが、その差(1 周期まで)は溜まった遅れには効かない
 				if (this.frameTimestamp !== undefined)
 					this.latency.add(
 						gfxTimestampMs(this.frameTimestamp),

@@ -419,6 +419,8 @@ export class WebCodecsAvc implements AvcDecoder {
 			},
 			error: () => {
 				// 復号器が壊れたら、次の鍵フレームの SPS で作り直す
+				// GPU での復号が壊れたなら、作り直すときは GPU を頼まない(大きい絵や別のプロファイルで、GPU の復号器だけ失敗することがある)
+				this.hardware = false;
 				this.needKey = true;
 				this.codec = undefined;
 				for (const r of this.waiting.values()) r(null);
