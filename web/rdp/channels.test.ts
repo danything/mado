@@ -46,7 +46,7 @@ describe("静的チャネルの断片", () => {
 	});
 
 	test("先頭のない断片・大きすぎる長さ・圧縮は例外", () => {
-		const asm = new ChannelAssembler(100);
+		const asm = new ChannelAssembler(undefined, 100);
 		expect(() => asm.push(fromHex("0100000002000000aa"))).toThrow("最初の断片");
 		expect(() => asm.push(fromHex("ffffff0001000000aa"))).toThrow("大きすぎる");
 		expect(() => asm.push(fromHex("0100000003002000aa"))).toThrow("圧縮");

@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>mado</AssemblyName>
     <RootNamespace>Mado</RootNamespace>
-    <Version>0.8.3</Version>
+    <Version>0.8.4</Version>
     <!-- 常駐 1 プロセスで動的コードも無いので Native AOT。exe 1 つで .NET を入れなくても動く -->
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>

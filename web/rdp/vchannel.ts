@@ -2,6 +2,7 @@
 // 断片には 8 バイトのヘッダーが付き、全体の長さとフラグが入る。
 
 import { concat, Reader, Writer } from "./bytes";
+import type { Bulk } from "./mppc";
 
 /** 1 つの断片の本体の最大。VCChunkSize の既定の値 */
 export const CHUNK_SIZE = 1600;
@@ -10,7 +11,8 @@ const FIRST = 0x01;
 const LAST = 0x02;
 /** 断片のヘッダーに、チャネルのオプションの SHOW_PROTOCOL を写す印 */
 export const SHOW_PROTOCOL = 0x10;
-const COMPRESSED = 0x00200000;
+/** CHANNEL_PACKET_COMPRESSED / AT_FRONT / FLUSHED と CompressionTypeMask。16 ビット右にずらすと圧縮のフラグのバイトになる */
+const COMPRESSION_FLAGS = 0x00ff0000;
 
 /** メッセージを断片に分ける。断片はそれぞれ Send Data Request の中身になる */
 export function splitChannelData(data: Uint8Array, flags = 0): Uint8Array[] {
@@ -31,22 +33,32 @@ export function splitChannelData(data: Uint8Array, flags = 0): Uint8Array[] {
 	return out;
 }
 
-/** 受けた断片を 1 つのメッセージに組み立てる。メッセージは大きくてもこの上限まで */
+/**
+ * 受けた断片を 1 つのメッセージに組み立てる。メッセージは大きくてもこの上限まで。
+ * 圧縮された断片は、組み立てる前に 1 つずつ伸長する。length は伸長したあとの長さ
+ */
 export class ChannelAssembler {
 	private parts: Uint8Array[] = [];
 	private have = 0;
 	private total = 0;
 
-	constructor(private max = 1 << 24) {}
+	/** bulk は静的チャネルの圧縮の文脈。無ければ圧縮された断片は例外にする */
+	constructor(
+		private bulk?: Bulk,
+		private max = 1 << 24,
+	) {}
 
 	/** 断片を 1 つ渡す。メッセージが揃ったらそれを、まだなら null */
 	push(chunk: Uint8Array): Uint8Array | null {
 		const r = new Reader(chunk);
 		const total = r.u32();
 		const flags = r.u32();
-		if (flags & COMPRESSED)
-			throw new Error("圧縮された仮想チャネルは受けられない");
-		const body = r.rest();
+		let body = r.rest();
+		const compression = (flags & COMPRESSION_FLAGS) >>> 16;
+		if (compression & 0xe0) {
+			if (!this.bulk) throw new Error("圧縮された仮想チャネルは受けられない");
+			body = this.bulk.decompress(body, compression);
+		}
 		if (flags & FIRST) {
 			if (total > this.max)
 				throw new Error(`仮想チャネルのメッセージが大きすぎる (${total})`);

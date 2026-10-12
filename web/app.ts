@@ -320,6 +320,7 @@ function diagText(
 		}`,
 		// 間引き・捨てたは、RemoteFX のタイルと旧ビットマップの両方を数える
 		`旧ビットマップ: 間引き=${client.decodeStats.coalesced} 捨てた=${client.decodeStats.skipped}`,
+		bulkText(client),
 		networkText(client.network),
 	];
 	if (switches.length) lines.push("切り替え:", ...switches);
@@ -336,6 +337,16 @@ function diagText(
 		);
 	if (recentErrors.length) lines.push("エラー:", ...recentErrors);
 	return lines.join("\n");
+}
+
+/** バルク圧縮で伸長した量。I/O チャネルと静的チャネルを合わせる */
+function bulkText(client: RdpClient): string {
+	const { bulk, channelBulk } = client.session;
+	if (!bulk) return "圧縮: 使わない";
+	const sum = (k: "packets" | "compressed" | "decompressed") =>
+		bulk.stats[k] + (channelBulk?.stats[k] ?? 0);
+	const kb = (n: number) => `${Math.round(n / 1024)}KB`;
+	return `圧縮: ${sum("packets")} 個  ${kb(sum("compressed"))} → ${kb(sum("decompressed"))}`;
 }
 
 /** 回線の自動検出でサーバーが測った値と、こちらが応答した回数 */
