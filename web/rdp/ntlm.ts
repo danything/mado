@@ -110,8 +110,9 @@ export type Challenge = {
 
 export function parseChallenge(raw: Uint8Array): Challenge {
 	const r = new Reader(raw);
-	if (!equal(r.bytes(8), SIGNATURE)) throw new Error("NTLM: bad signature");
-	if (r.u32() !== 2) throw new Error("NTLM: not a CHALLENGE");
+	if (!equal(r.bytes(8), SIGNATURE))
+		throw new Error("NTLM: NTLMSSP の印が無い");
+	if (r.u32() !== 2) throw new Error("NTLM: CHALLENGE ではない");
 	r.skip(8); // TargetNameFields
 	const flags = r.u32();
 	const serverChallenge = r.bytes(8);
@@ -258,7 +259,7 @@ export class Ntlm {
 	/** EncryptMessage と同じ: 署名(16 バイト)+ 封印した中身 */
 	seal(data: Uint8Array): Uint8Array {
 		const seal = this.sendSeal;
-		if (!seal) throw new Error("NTLM: not authenticated");
+		if (!seal) throw new Error("NTLM: 認証の前に封印しようとした");
 		const seq = this.sendSeq++;
 		const seqBytes = new Writer(4).u32(seq).done();
 		const digest = hmacMd5(this.sendSign, seqBytes, data);
@@ -272,18 +273,18 @@ export class Ntlm {
 
 	unseal(msg: Uint8Array): Uint8Array {
 		const seal = this.recvSeal;
-		if (!seal) throw new Error("NTLM: not authenticated");
-		if (msg.length < 16) throw new Error("NTLM: short sealed message");
+		if (!seal) throw new Error("NTLM: 認証の前に封印しようとした");
+		if (msg.length < 16) throw new Error("NTLM: 封印したメッセージが短い");
 		const r = new Reader(msg);
 		r.u32();
 		const checksum = r.bytes(8);
 		const seq = r.u32();
-		if (seq !== this.recvSeq) throw new Error("NTLM: bad sequence number");
+		if (seq !== this.recvSeq) throw new Error("NTLM: 続き番号が合わない");
 		this.recvSeq++;
 		const data = seal.apply(r.rest());
 		const digest = hmacMd5(this.recvSign, new Writer(4).u32(seq).done(), data);
 		if (!equal(seal.apply(digest.subarray(0, 8)), checksum))
-			throw new Error("NTLM: bad signature");
+			throw new Error("NTLM: 署名が合わない");
 		return data;
 	}
 }

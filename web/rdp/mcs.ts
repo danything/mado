@@ -7,7 +7,8 @@ import * as der from "./der";
 /** MCS のユーザー ID とチャネル ID は、PER では 1001 を引いた値で運ぶ */
 const BASE = 1001;
 
-export const GLOBAL_CHANNEL = 1003;
+/** キーボード配列を言わないときの既定: 日本語(0x0411)。米国は 0x0409 */
+export const DEFAULT_KEYBOARD_LAYOUT = 0x0411;
 
 // ---- クライアントのデータブロック ----
 
@@ -44,6 +45,7 @@ function block(type: number, body: Uint8Array): Uint8Array {
 }
 
 function clientCore(c: ClientCore): Uint8Array {
+	const layout = c.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT;
 	return block(
 		0xc001,
 		new Writer(216)
@@ -52,11 +54,11 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u16(c.height)
 			.u16(0xca01) // colorDepth: 8bpp(古い欄。下の highColorDepth が本当の値)
 			.u16(0xaa03) // SASSequence
-			.u32(c.keyboardLayout ?? 0x0411) // 日本語。0x0409 は米国
+			.u32(layout)
 			.u32(0x0000_4a61) // clientBuild
 			.utf16Fixed(c.clientName, 32)
-			.u32(keyboardType(c.keyboardLayout ?? 0x0411)) // keyboardType
-			.u32(keyboardSubType(c.keyboardLayout ?? 0x0411)) // keyboardSubType
+			.u32(keyboardType(layout))
+			.u32(keyboardSubType(layout))
 			.u32(12) // keyboardFunctionKey
 			.zeros(64) // imeFileName
 			.u16(0xca01) // postBeta2ColorDepth

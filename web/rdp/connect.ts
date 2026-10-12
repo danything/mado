@@ -101,6 +101,7 @@ export async function establish(
 ): Promise<Session> {
 	const log = o.onLog ?? (() => {});
 	const channels = o.channels ?? [mcs.DRDYNVC, mcs.CLIPRDR];
+	const keyboardLayout = o.keyboardLayout ?? mcs.DEFAULT_KEYBOARD_LAYOUT;
 	const cc = x224.parseConnectionConfirm(confirm);
 	if (!cc.ok) throw new Error(x224.failureMessage(cc.failureCode));
 	if (cc.selectedProtocol === x224.PROTOCOL.HYBRID) {
@@ -120,7 +121,7 @@ export async function establish(
 			height: o.height,
 			selectedProtocol: cc.selectedProtocol,
 			clientName: "mado",
-			keyboardLayout: o.keyboardLayout,
+			keyboardLayout,
 			gfx: o.gfx,
 		},
 		channels,
@@ -216,23 +217,12 @@ export async function establish(
 
 	// 7. Confirm Active → 同期
 	const shareId = demand.shareId;
-	send(
-		pdu.confirmActive(
-			userId,
-			shareId,
-			pdu.clientCapabilities({
-				width: o.width,
-				height: o.height,
-				keyboardLayout: o.keyboardLayout ?? 0x0411,
-			}),
-		),
-	);
-	const data2 = (type2: number, payload: Uint8Array) =>
-		send(pdu.shareData(userId, shareId, type2, payload));
-	data2(pdu.PDUTYPE2.SYNCHRONIZE, pdu.synchronize(pdu.SERVER_ID));
-	data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.COOPERATE));
-	data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.REQUEST));
-	data2(pdu.PDUTYPE2.FONTLIST, pdu.fontList());
+	for (const p of pdu.activationPdus(userId, shareId, {
+		width: o.width,
+		height: o.height,
+		keyboardLayout,
+	}))
+		send(p);
 
 	// サーバーの Synchronize / Control(Cooperate, Granted)/ Font Map を受けたら完了
 	for (let done = false; !done; ) {
@@ -259,7 +249,7 @@ export async function establish(
 		channelOptions: new Map(channels.map((c) => [c.name, c.options])),
 		shareId,
 		serverCapabilities: demand.capabilities,
-		keyboardLayout: o.keyboardLayout ?? 0x0411,
+		keyboardLayout,
 		width: o.width,
 		height: o.height,
 		pending,
