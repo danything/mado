@@ -142,12 +142,26 @@ body {
 #login label {
 	margin: 0;
 }
-#login :is(input, select) {
+#login :is(input:not([type="checkbox"]), select) {
 	margin: 0;
 	height: 2.875rem;
 	transition:
 		border-color 0.15s,
 		box-shadow 0.15s;
+}
+/* チェックボックスの行(H.264)。入力欄の高さは当てず、文字と横に並べる */
+#login label:has(> input[type="checkbox"]) {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 0.875rem;
+	cursor: pointer;
+}
+#login input[type="checkbox"] {
+	flex: none;
+	width: 1.125rem;
+	height: 1.125rem;
+	margin: 0;
 }
 #login button[type="submit"] {
 	margin: 0.25rem 0 0;
