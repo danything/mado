@@ -46,6 +46,13 @@ function makeCanvas(
 	return { canvas, ctx };
 }
 
+/** AVC444 の GPU(WebGL2 の文脈)。つなぎ直すたびに作ると文脈が増えてブラウザの上限に当たるので、1 つを使い回す。壊れていたら作り直す */
+let sharedGl: Yuv444Gl | undefined;
+function sharedYuv444Gl(): Yuv444Gl | undefined {
+	if (!sharedGl?.ok) sharedGl = Yuv444Gl.create();
+	return sharedGl;
+}
+
 export class CanvasGfxOps implements GfxOps {
 	private surfaces = new Map<number, Surface>();
 	private cache = new Map<number, OffscreenCanvas | HTMLCanvasElement>();
@@ -56,7 +63,7 @@ export class CanvasGfxOps implements GfxOps {
 	/** createGl は試験で差し替える */
 	constructor(
 		private display: Display,
-		private createGl: () => Yuv444Gl | undefined = () => Yuv444Gl.create(),
+		private createGl: () => Yuv444Gl | undefined = sharedYuv444Gl,
 	) {}
 
 	/** AVC444 の YUV444 を GPU で組み立てる。WebGL2 が無い・失敗したときは undefined(CPU で組み立てる) */
