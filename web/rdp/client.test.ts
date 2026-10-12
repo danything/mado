@@ -1,6 +1,7 @@
 // ポインタの復号と、セッションのループ(偽の通信路で)の試験。
 
 import { describe, expect, test } from "bun:test";
+import { decodeBitmap } from "./bitmap";
 import { concat, fromHex, Reader, Writer } from "./bytes";
 import { RdpClient, type Screen } from "./client";
 import type { Session } from "./connect";
@@ -159,10 +160,11 @@ describe("RdpClient", () => {
 		const stream = scripted([fast]);
 		const reason = await new RdpClient(fakeSession(stream), screen).run();
 		expect(reason).toContain("connection closed");
+		// ビットマップの復号は後回し(吐き出しのとき)なので、ポインタの変更が先に出る
 		expect(screen.events).toEqual([
 			"resize 64x48",
-			"draw 10,20 1x1",
 			"cursor none",
+			"draw 10,20 1x1",
 		]);
 		// つないだ直後に Input の同期を送る
 		expect(stream.written[0]?.[0]).toBe(1 << 2);
@@ -349,7 +351,7 @@ describe("RemoteFX の間引きと Frame Acknowledge", () => {
 		expect(acks).toEqual([1, 2, 3]);
 	});
 
-	test("旧ビットマップが間に入ったら、その前に保留のタイルを描く", async () => {
+	test("旧ビットマップとタイルが混ざっても受けた順に描く(後のタイルに覆われた前のタイルは描かない)", async () => {
 		const bitmap = new Writer()
 			.u16(1)
 			.u16(1)
@@ -375,7 +377,6 @@ describe("RemoteFX の間引きと Frame Acknowledge", () => {
 		await new RdpClient(fakeSession(stream), screen).run();
 		expect(screen.events).toEqual([
 			"resize 64x48",
-			"draw 0,0 64x48",
 			"draw 30,30 1x1",
 			"draw 0,0 64x48",
 		]);
@@ -401,6 +402,10 @@ describe("非同期のプールでの順序", () => {
 			decode: (...args: Parameters<TilePool["decode"]>) =>
 				new Promise<Uint8ClampedArray>((resolve) =>
 					done.push(() => resolve(decodeTile(...args))),
+				),
+			decodeBitmap: (rect: Parameters<TilePool["decodeBitmap"]>[0]) =>
+				new Promise<Uint8ClampedArray>((resolve) =>
+					done.push(() => resolve(decodeBitmap(rect))),
 				),
 			terminate() {},
 		} satisfies TilePool;

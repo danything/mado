@@ -1,6 +1,6 @@
 // つながったあとのセッション。届く PDU を読んで画面とポインタに流し、入力を送り、サーバーが画面を作り直す(Deactivate-Reactivate)のに付き合う。
 
-import { decodeBitmap, parseBitmapUpdate } from "./bitmap";
+import { parseBitmapUpdate } from "./bitmap";
 import type { Session } from "./connect";
 import { Reassembler, UPDATE } from "./fastpath";
 import * as input from "./input";
@@ -251,25 +251,11 @@ export class RdpClient {
 		this.stats[code] = (this.stats[code] ?? 0) + 1;
 		switch (code) {
 			case UPDATE.BITMAP:
-				{
-					// 復号は今(失敗はここで例外にする)。描くのは、タイルが先に描き終わってから(順序が意味を持つ)
-					const parts = parseBitmapUpdate(data).map((r) => {
-						const w = Math.min(r.right - r.left + 1, r.width);
-						const h = Math.min(r.bottom - r.top + 1, r.height);
-						const rgba = decodeBitmap(r);
-						// 矩形の幅が 4 の倍数に揃えられているときは、右の余りを切る
-						return {
-							r,
-							w,
-							h,
-							rgba: w === r.width ? rgba : crop(rgba, r.width, w, h),
-						};
-					});
-					this.surface.ordered(() => {
-						for (const p of parts)
-							this.screen.draw(p.r.left, p.r.top, p.w, p.h, p.rgba);
-					});
-				}
+				// 復号は後回し(Worker のプール。RemoteFX のタイルと同じ列で、受けた順に描く)。壊れた矩形は捨てて続ける
+				this.surface.bitmaps(parseBitmapUpdate(data), {
+					width: this.width,
+					height: this.height,
+				});
 				break;
 			case UPDATE.SURFCMDS:
 				this.surface.handle(data, this.rfxCodecId, {
@@ -343,17 +329,4 @@ export class RdpClient {
 				break;
 		}
 	}
-}
-
-/** 幅 fullW の RGBA から、左の w 列だけを残す */
-function crop(
-	rgba: Uint8ClampedArray,
-	fullW: number,
-	w: number,
-	h: number,
-): Uint8ClampedArray {
-	const out = new Uint8ClampedArray(w * h * 4);
-	for (let y = 0; y < h; y++)
-		out.set(rgba.subarray(y * fullW * 4, y * fullW * 4 + w * 4), y * w * 4);
-	return out;
 }

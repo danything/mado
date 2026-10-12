@@ -3,10 +3,12 @@
 //
 // RemoteFX のタイルは独立で、同じ位置の新しいタイルは古いものを完全に置き換える。サーバーが復号より速く送ってくると
 // 溜まった更新を順に全部復号して遅れが膨らむので、SurfaceRenderer は復号を後回しにして、同じ位置は最新だけを復号する。
+// 旧ビットマップ(Windows が RemoteFX を使わないときの planar など)も同じ列に載せて、受けた順に描く。
 
+import type { BitmapRect } from "./bitmap";
 import { Reader } from "./bytes";
 import { decodeTile, parseQuant, type Rect, TILE } from "./rfx";
-import { SyncPool, type TilePool } from "./rfxpool";
+import { type DecodeJob, decodeJob, SyncPool, type TilePool } from "./rfxpool";
 
 const CMD_SET_SURFACE_BITS = 0x0001;
 const CMD_FRAME_MARKER = 0x0004;
@@ -339,7 +341,12 @@ function drawRaw(
 // ---- 間引き ----
 
 type Pending = {
-	tile: RawTile;
+	/** RemoteFX のタイル。旧ビットマップなら undefined で、bitmap がある */
+	tile?: RawTile;
+	/** 旧ビットマップの矩形と、描く大きさ(幅が 4 の倍数に揃えられているときは右の余りを切る) */
+	bitmap?: { rect: BitmapRect; w: number; h: number };
+	/** 位置の索引の鍵(画面の座標の左上) */
+	key: string;
 	left: number;
 	top: number;
 	area: Rect | null;
@@ -351,6 +358,21 @@ type Pending = {
 	/** 実際に描く範囲を囲む矩形(画面の座標)。後のタイルがこれを全部描くなら、このタイルは要らない */
 	bounds: Rect;
 };
+
+/** 保留しているものの復号の仕事 */
+function jobOf(e: Pending): DecodeJob {
+	if (e.tile)
+		return {
+			kind: "rfx",
+			mode: e.tile.mode,
+			data: e.tile.data,
+			quant: e.tile.quant,
+		};
+	return {
+		kind: "bitmap",
+		rect: (e.bitmap as NonNullable<Pending["bitmap"]>).rect,
+	};
+}
 
 /** プールに回した 1 回ぶんの吐き出し。順番に描き、フレームの応答を返し、あとに予約された処理を流す */
 type Batch = {
@@ -375,7 +397,7 @@ export type SurfaceRendererOptions = {
 /**
  * Surface Commands を、RemoteFX の復号を後回しにして処理する。
  * 同じ位置のタイルは最新だけを復号する。復号がプール(Worker)で非同期でも、描く順序と Frame Acknowledge の順序は保つ。
- * 順序が意味を持つ更新(生のビットマップ・旧ビットマップ・画面の大きさの変更)は ordered() で包むこと
+ * 旧ビットマップは bitmaps() で同じ列に載せる。順序が意味を持つほかの更新(生のビットマップ・画面の大きさの変更)は ordered() で包むこと
  */
 export class SurfaceRenderer {
 	private entries: Pending[] = [];
@@ -469,24 +491,62 @@ export class SurfaceRenderer {
 		// (以前は「自分の見える範囲を全部描くか」だけで判定していて、見える範囲が狭い新しいタイルが古いタイルを捨て、
 		// その部分にさらに前の絵が残った。Windows は更新の範囲をタイルより細かく切って送る)
 		const cover = drawn.find((r) => sameRect(r, bounds));
-		const key = `${abs.x},${abs.y}`;
-		const e: Pending = {
-			tile,
-			left,
-			top,
-			area,
-			dead: false,
-			state: "waiting",
-			bounds,
-		};
-		const list = (this.byKey.get(key) ?? []).filter((old) => {
+		this.push(
+			{
+				tile,
+				key: `${abs.x},${abs.y}`,
+				left,
+				top,
+				area,
+				dead: false,
+				state: "waiting",
+				bounds,
+			},
+			cover,
+		);
+	}
+
+	/**
+	 * 旧ビットマップの更新(矩形の並び)。復号を後回しにして、RemoteFX のタイルと混ざっても受けた順に描く。
+	 * 同じ位置(左上)の古いもの(タイルでもビットマップでも)は、この矩形が描く範囲にすっぽり入るときだけ要らない
+	 */
+	bitmaps(rects: BitmapRect[], screen: ScreenSize): void {
+		for (const rect of rects) {
+			const w = Math.min(rect.right - rect.left + 1, rect.width);
+			const h = Math.min(rect.bottom - rect.top + 1, rect.height);
+			if (w <= 0 || h <= 0) continue;
+			const bounds = intersect(
+				{ x: rect.left, y: rect.top, w, h },
+				{ x: 0, y: 0, w: screen.width, h: screen.height },
+			);
+			if (!bounds) continue; // 画面の外
+			this.push(
+				{
+					bitmap: { rect, w, h },
+					key: `${rect.left},${rect.top}`,
+					left: rect.left,
+					top: rect.top,
+					area: null,
+					dead: false,
+					state: "waiting",
+					bounds,
+				},
+				bounds,
+			);
+		}
+		this.request();
+	}
+
+	/** 保留に足す。cover(1 つの矩形で描く範囲)が、同じ位置の古いものの描く範囲をすっぽり含むなら、古いものは捨てる */
+	private push(e: Pending, cover: Rect | undefined): void {
+		const list = (this.byKey.get(e.key) ?? []).filter((old) => {
 			if (!cover || !contains(cover, old.bounds)) return true;
 			if (!old.dead) this.coalesced++;
 			old.dead = true;
 			return false;
 		});
 		list.push(e);
-		this.byKey.set(key, list);
+		this.byKey.set(e.key, list);
 		this.entries.push(e);
 		if (this.entries.length >= MAX_PENDING) this.flush();
 	}
@@ -513,7 +573,7 @@ export class SurfaceRenderer {
 			for (const e of entries) {
 				this.forget(e);
 				try {
-					this.drawJob(e, decodeRfxTile(e.tile));
+					this.drawJob(e, decodeJob(jobOf(e)));
 				} catch {
 					this.skipped++; // 壊れたタイルは捨てて、ほかを描く
 				}
@@ -526,7 +586,11 @@ export class SurfaceRenderer {
 		const batch: Batch = { jobs: entries, ended, after: [] };
 		this.batches.push(batch);
 		for (const e of entries) {
-			this.pool.decode(e.tile.mode, e.tile.data, e.tile.quant).then(
+			const job = jobOf(e);
+			(job.kind === "rfx"
+				? this.pool.decode(job.mode, job.data, job.quant)
+				: this.pool.decodeBitmap(job.rect)
+			).then(
 				(rgba) => {
 					e.rgba = rgba;
 					e.state = "done";
@@ -573,17 +637,28 @@ export class SurfaceRenderer {
 	}
 
 	private drawJob(e: Pending, rgba: Uint8ClampedArray): void {
-		drawTile(rgba, e.tile, e.left, e.top, e.area, this.draw);
+		if (e.tile) {
+			drawTile(rgba, e.tile, e.left, e.top, e.area, this.draw);
+			return;
+		}
+		const b = e.bitmap as NonNullable<Pending["bitmap"]>;
+		const full = b.w === b.rect.width;
+		this.draw(
+			e.left,
+			e.top,
+			b.w,
+			b.h,
+			full ? rgba : crop(rgba, b.rect.width, { x: 0, y: 0, w: b.w, h: b.h }),
+		);
 	}
 
-	/** 描き終えた(捨てた)タイルを、位置の索引から外す */
+	/** 描き終えた(捨てた)ものを、位置の索引から外す */
 	private forget(e: Pending): void {
-		const key = `${e.tile.x + e.left},${e.tile.y + e.top}`;
-		const list = this.byKey.get(key);
+		const list = this.byKey.get(e.key);
 		if (!list) return;
 		const i = list.indexOf(e);
 		if (i >= 0) list.splice(i, 1);
-		if (list.length === 0) this.byKey.delete(key);
+		if (list.length === 0) this.byKey.delete(e.key);
 	}
 
 	/** Worker を止める(切断のとき) */

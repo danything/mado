@@ -1,6 +1,7 @@
-// RemoteFX のタイルの復号の置き場。ブラウザでは Web Worker のプール(メインスレッドを塞がず、複数コアで並列に復号する)、
+// 画面の復号の置き場(RemoteFX のタイルと旧ビットマップ)。ブラウザでは Web Worker のプール(メインスレッドを塞がず、複数コアで並列に復号する)、
 // それ以外(試験・Worker が作れない環境)では、その場で復号する同じ形のもの。
 
+import { type BitmapJob, decodeBitmap } from "./bitmap";
 import { decodeTile } from "./rfx";
 import type { WorkerReply, WorkerRequest } from "./rfx.worker";
 
@@ -10,37 +11,58 @@ declare const __RFX_WORKER__: string | undefined;
 export type TileData = [Uint8Array, Uint8Array, Uint8Array];
 export type TileQuant = [number[], number[], number[]];
 
+/** 復号の 1 つの仕事 */
+export type DecodeJob =
+	| { kind: "rfx"; mode: number; data: TileData; quant: TileQuant }
+	| { kind: "bitmap"; rect: BitmapJob };
+
+/** その場で復号する(Worker の中と同じ処理) */
+export function decodeJob(j: DecodeJob): Uint8ClampedArray {
+	return j.kind === "rfx"
+		? decodeTile(j.mode, j.data, j.quant)
+		: decodeBitmap(j.rect);
+}
+
 export interface TilePool {
 	/** true なら decode は本当に非同期(完了の順序は保証されない)。false ならその場で復号するので、呼び出し側は同期の経路を使ってよい */
 	readonly async: boolean;
+	/** RemoteFX のタイル */
 	decode(
 		mode: number,
 		data: TileData,
 		quant: TileQuant,
 	): Promise<Uint8ClampedArray>;
+	/** 旧ビットマップ(planar / Interleaved RLE) */
+	decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray>;
 	terminate(): void;
 }
 
 /** その場で復号する */
 export class SyncPool implements TilePool {
 	readonly async = false;
+	run(j: DecodeJob): Promise<Uint8ClampedArray> {
+		try {
+			return Promise.resolve(decodeJob(j));
+		} catch (e) {
+			return Promise.reject(e);
+		}
+	}
 	decode(
 		mode: number,
 		data: TileData,
 		quant: TileQuant,
 	): Promise<Uint8ClampedArray> {
-		try {
-			return Promise.resolve(decodeTile(mode, data, quant));
-		} catch (e) {
-			return Promise.reject(e);
-		}
+		return this.run({ kind: "rfx", mode, data, quant });
+	}
+	decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray> {
+		return this.run({ kind: "bitmap", rect });
 	}
 	terminate(): void {}
 }
 
 type Slot = {
 	worker: Worker;
-	/** 復号を頼んで、まだ返っていないタイルの数 */
+	/** 復号を頼んで、まだ返っていない仕事の数 */
 	busy: number;
 };
 
@@ -58,7 +80,7 @@ export class WorkerPool implements TilePool {
 			resolve(v: Uint8ClampedArray): void;
 			reject(e: Error): void;
 			slot: Slot;
-			job: [number, TileData, TileQuant];
+			job: DecodeJob;
 		}
 	>();
 	private nextId = 1;
@@ -88,23 +110,41 @@ export class WorkerPool implements TilePool {
 		data: TileData,
 		quant: TileQuant,
 	): Promise<Uint8ClampedArray> {
+		return this.run({ kind: "rfx", mode, data, quant });
+	}
+
+	decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray> {
+		return this.run({ kind: "bitmap", rect });
+	}
+
+	private run(job: DecodeJob): Promise<Uint8ClampedArray> {
 		// いちばん空いている Worker へ。生きている Worker が無ければ、その場で復号
 		let slot: Slot | undefined;
 		for (const s of this.slots) if (!slot || s.busy < slot.busy) slot = s;
-		if (!slot) return this.fallback.decode(mode, data, quant);
+		if (!slot) return this.fallback.run(job);
 		const id = this.nextId++;
-		// data は PDU 全体の buffer の一部(subarray)なので、構造化複製だと全体が複製される。小さく切り出して渡す
-		const copy = data.map((d) => d.slice()) as TileData;
-		const job: [number, TileData, TileQuant] = [mode, data, quant];
+		// 入力は PDU 全体の buffer の一部(subarray)なので、構造化複製だと全体が複製される。小さく切り出して渡す
+		let req: WorkerRequest;
+		let transfer: ArrayBuffer[];
+		if (job.kind === "rfx") {
+			const copy = job.data.map((d) => d.slice()) as TileData;
+			req = { id, kind: "rfx", mode: job.mode, data: copy, quant: job.quant };
+			transfer = copy.map((d) => d.buffer as ArrayBuffer);
+		} else {
+			const data = job.rect.data.slice();
+			const { width, height, bpp, compressed } = job.rect;
+			req = {
+				id,
+				kind: "bitmap",
+				rect: { width, height, bpp, compressed, data },
+			};
+			transfer = [data.buffer as ArrayBuffer];
+		}
 		const target = slot;
 		return new Promise((resolve, reject) => {
 			this.waiting.set(id, { resolve, reject, slot: target, job });
 			target.busy++;
-			const req: WorkerRequest = { id, mode, data: copy, quant };
-			target.worker.postMessage(
-				req,
-				copy.map((d) => d.buffer),
-			);
+			target.worker.postMessage(req, transfer);
 		});
 	}
 
@@ -124,14 +164,14 @@ export class WorkerPool implements TilePool {
 			this.slots.splice(i, 1);
 			slot.worker.terminate();
 			console.warn(
-				"RemoteFX の Worker が使えない。その場で復号する:",
+				"画面の復号の Worker が使えない。その場で復号する:",
 				e.message,
 			);
 		}
 		for (const [id, w] of this.waiting) {
 			if (w.slot !== slot) continue;
 			this.waiting.delete(id);
-			this.fallback.decode(...w.job).then(w.resolve, w.reject);
+			this.fallback.run(w.job).then(w.resolve, w.reject);
 		}
 	}
 

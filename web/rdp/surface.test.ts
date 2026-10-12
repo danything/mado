@@ -1,10 +1,10 @@
 // Surface Commands の試験: コマンドの切り出し、RemoteFX の矩形の切り取り、生のビットマップ、不正な入力。
 
 import { describe, expect, test } from "bun:test";
+import type { BitmapJob, BitmapRect } from "./bitmap";
 import { concat, Writer } from "./bytes";
-import { decodeTile } from "./rfx";
 import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
-import type { TilePool } from "./rfxpool";
+import { type DecodeJob, decodeJob, type TilePool } from "./rfxpool";
 import {
 	handleSurfaceCommands,
 	parseRfxTiles,
@@ -476,7 +476,7 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 
 describe("SurfaceRenderer(非同期のプール)", () => {
 	type Job = {
-		args: Parameters<TilePool["decode"]>;
+		job: DecodeJob;
 		resolve(v: Uint8ClampedArray): void;
 		reject(e: Error): void;
 	};
@@ -485,16 +485,22 @@ describe("SurfaceRenderer(非同期のプール)", () => {
 	class ManualPool implements TilePool {
 		readonly async = true;
 		jobs: Job[] = [];
-		decode(
-			...args: Parameters<TilePool["decode"]>
-		): Promise<Uint8ClampedArray> {
+		private run(job: DecodeJob): Promise<Uint8ClampedArray> {
 			return new Promise((resolve, reject) =>
-				this.jobs.push({ args, resolve, reject }),
+				this.jobs.push({ job, resolve, reject }),
 			);
+		}
+		decode(
+			...[mode, data, quant]: Parameters<TilePool["decode"]>
+		): Promise<Uint8ClampedArray> {
+			return this.run({ kind: "rfx", mode, data, quant });
+		}
+		decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray> {
+			return this.run({ kind: "bitmap", rect });
 		}
 		finish(i: number): void {
 			const j = this.jobs[i] as Job;
-			j.resolve(decodeTile(...j.args));
+			j.resolve(decodeJob(j.job));
 		}
 		fail(i: number): void {
 			(this.jobs[i] as Job).reject(new Error("worker"));
@@ -596,5 +602,100 @@ describe("SurfaceRenderer(非同期のプール)", () => {
 		const { r, log } = setup();
 		r.ordered(() => log.push("now"));
 		expect(log).toEqual(["now"]);
+	});
+	/** 16bpp の生の 1 色の矩形 */
+	const bmp = (
+		left: number,
+		top: number,
+		w: number,
+		h: number,
+		color = 0xf800,
+	): BitmapRect => {
+		const data = new Uint8Array(w * h * 2);
+		for (let i = 0; i < w * h; i++) {
+			data[i * 2] = color & 0xff;
+			data[i * 2 + 1] = color >> 8;
+		}
+		return {
+			left,
+			top,
+			right: left + w - 1,
+			bottom: top + h - 1,
+			width: w,
+			height: h,
+			bpp: 16,
+			compressed: false,
+			data,
+		};
+	};
+	const screen = { width: 1280, height: 720 };
+
+	test("旧ビットマップと RemoteFX のタイルが混ざって、逆順に終わっても、受けた順に描く", async () => {
+		const { r, pool, log, feed } = setup();
+		r.bitmaps([bmp(200, 0, 8, 8)], screen);
+		feed(frameMarker(0, 1), cmd(0, 0), frameMarker(1, 1));
+		r.bitmaps([bmp(300, 0, 8, 8)], screen);
+		r.flush();
+		expect(pool.jobs.length).toBe(3);
+		pool.finish(2);
+		pool.finish(1);
+		await tick();
+		expect(log).toEqual([]);
+		pool.finish(0);
+		await tick();
+		expect(log).toEqual([
+			"draw 200,0 8x8",
+			"draw 0,0 64x64",
+			"draw 300,0 8x8",
+			"ack 1",
+		]);
+	});
+
+	test("後の旧ビットマップがすっぽり覆うなら、古いものは復号しない。一部だけ覆うなら捨てない", async () => {
+		const { r, pool, log } = setup();
+		r.bitmaps([bmp(0, 0, 64, 64, 0x001f)], screen);
+		r.bitmaps([bmp(0, 0, 64, 64)], screen); // 同じ位置・同じ大きさ: 前を捨てる
+		r.bitmaps([bmp(100, 0, 64, 64)], screen);
+		r.bitmaps([bmp(100, 0, 32, 64)], screen); // 左半分だけ: 前は捨てない
+		r.flush();
+		expect(r.coalesced).toBe(1);
+		expect(pool.jobs.length).toBe(3);
+		for (let i = 2; i >= 0; i--) pool.finish(i);
+		await tick();
+		expect(log).toEqual([
+			"draw 0,0 64x64",
+			"draw 100,0 64x64",
+			"draw 100,0 32x64",
+		]);
+	});
+
+	test("旧ビットマップが同じ位置の RemoteFX のタイルをすっぽり覆うなら、タイルは復号しない(逆に覆わないなら残す)", async () => {
+		const { r, pool, log, feed } = setup();
+		feed(cmd(0, 0));
+		r.bitmaps([bmp(0, 0, 64, 64)], screen);
+		feed(cmd(64, 0));
+		r.bitmaps([bmp(64, 0, 16, 16)], screen);
+		r.flush();
+		expect(r.coalesced).toBe(1);
+		expect(pool.jobs.length).toBe(3);
+		for (let i = 0; i < 3; i++) pool.finish(i);
+		await tick();
+		expect(log).toEqual([
+			"draw 0,0 64x64",
+			"draw 64,0 64x64",
+			"draw 64,0 16x16",
+		]);
+	});
+
+	test("幅が 4 の倍数に揃えられた矩形は、右の余りを切って描く。画面の外は描かない", async () => {
+		const { r, pool, log } = setup();
+		const wide = bmp(10, 10, 8, 2);
+		r.bitmaps([{ ...wide, right: 15 }], screen); // 描くのは 6 列
+		r.bitmaps([bmp(2000, 0, 8, 8)], screen);
+		r.flush();
+		expect(pool.jobs.length).toBe(1);
+		pool.finish(0);
+		await tick();
+		expect(log).toEqual(["draw 10,10 6x2"]);
 	});
 });
