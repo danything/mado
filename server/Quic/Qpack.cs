@@ -2,7 +2,7 @@
 // 相手は動的表を参照できない。参照してきたら QPACK_DECOMPRESSION_FAILED にする。
 using System.Text;
 
-namespace Mado.WebTransport;
+namespace Mado.Quic;
 
 internal sealed class QpackException(string message) : Exception(message);
 

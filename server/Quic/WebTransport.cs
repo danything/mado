@@ -11,24 +11,25 @@
 // - 単方向の stream は stream の型 0x54 とセッション ID を置く
 // - datagram は「CONNECT の stream ID / 4」を可変長整数で置き、その後に中身
 // - CONNECT の stream の本体は capsule(RFC 9297)。CLOSE_WEBTRANSPORT_SESSION(0x2843)で閉じる
-using System.Collections.Concurrent;
+// このファイルのコールバックは、どれも接続の Gate を持った状態で呼ばれる。
 using System.Text;
 
-namespace Mado.WebTransport;
+namespace Mado.Quic;
 
-/// <summary>受け入れたセッションの扱い手。mado では RDCleanPath の中継がここに入る。</summary>
+/// <summary>受け入れたセッションの扱い手。mado では RDCleanPath の中継</summary>
 internal interface IWebTransportHandler
 {
-    /// <summary>CONNECT を受けたとき。false で断る(404)。</summary>
-    bool Accept(WebTransportSession session);
-    /// <summary>相手が開いた双方向 stream。先頭の 0x41 とセッション ID を読んだ後に呼ぶ。</summary>
+    /// <summary>CONNECT を受けたとき。200 で受け入れる。ほかの値はその状態で断る</summary>
+    int Accept(WebTransportSession session);
+    /// <summary>相手が開いた双方向 stream。先頭の 0x41 とセッション ID を読んだ後に呼ぶ</summary>
     void OnBidiStream(WebTransportSession session, WebTransportStream stream);
-    void OnUniStream(WebTransportSession session, WebTransportStream stream) { }
+    /// <summary>相手が開いた単方向 stream。既定では受け取りを断る</summary>
+    void OnUniStream(WebTransportSession session, WebTransportStream stream) => stream.Abort(H3.NoError);
     void OnDatagram(WebTransportSession session, ReadOnlySpan<byte> data) { }
     void OnClosed(WebTransportSession session, uint code, string reason) { }
 }
 
-/// <summary>HTTP/3 の 1 接続。QUIC の接続ごとに 1 つ作る。コールバックは msquic の同じスレッドから順に来る。</summary>
+/// <summary>HTTP/3 の 1 接続。QUIC の接続ごとに 1 つ作る</summary>
 internal sealed class Http3Connection
 {
     // サーバーが送る SETTINGS。動的表は使わない
@@ -38,46 +39,39 @@ internal sealed class Http3Connection
         (H3.SettingQpackBlockedStreams, 0),
         (H3.SettingEnableConnectProtocol, 1),
         (H3.SettingH3Datagram, 1),
-        // Chrome 141 は draft-02 だけを宣言してくる(0x2b603742=1)。draft-07 の宣言も並べ、両方が話せる版を選ばせる
+        // Chrome 141 は draft-02 だけを宣言してくる。draft-07 の宣言も並べ、両方が話せる版を選ばせる
         (H3.SettingEnableWebTransportDraft02, 1),
-        (H3.SettingWebTransportMaxSessionsDraft07, 16),
+        (H3.SettingWebTransportMaxSessionsDraft07, 1),
     ];
 
     readonly QuicConnection _quic;
     readonly IWebTransportHandler _handler;
-    readonly string _name;
+    readonly Action<string> _log;
     readonly Dictionary<ulong, WebTransportSession> _sessions = [];
     // セッションより先に着いた stream。CONNECT の処理の後に渡す
     readonly Dictionary<ulong, List<WebTransportStream>> _early = [];
-    QuicStream? _control;
     bool _peerSettingsSeen;
     public Dictionary<ulong, ulong> PeerSettings { get; private set; } = [];
 
-    public Http3Connection(QuicConnection quic, IWebTransportHandler handler, string name)
+    public Http3Connection(QuicConnection quic, IWebTransportHandler handler, Action<string> log)
     {
         _quic = quic;
         _handler = handler;
-        _name = name;
+        _log = log;
         quic.OnConnected = _ => Connected();
         quic.OnPeerStream = (_, s, uni) => { if (uni) AcceptUni(s); else AcceptBidi(s); };
         quic.OnDatagram = (_, d) => Datagram(d);
-        quic.OnShutdown = (_, why) => Log($"接続を閉じる: {why}");
         quic.OnClosed = _ => Closed();
     }
 
     public QuicConnection Quic => _quic;
 
-    void Log(string s) => Program.Log($"[{_name}] {s}");
-
     void Connected()
     {
-        var st = _quic.ReadSettings();
-        Log($"QUIC 接続。輻輳制御={(st.CongestionControlAlgorithm == MsQuic.CongestionBbr ? "BBR" : "CUBIC")} datagram受信={(st.Bits & QuicSettings.BitDatagramReceive) != 0}");
         // 制御 stream(型 0x00)。先頭のフレームは SETTINGS でなければならない
-        _control = _quic.OpenStream(unidirectional: true);
         var w = new ByteWriter();
         w.VarInt(H3.StreamControl).Bytes(H3.Settings(ServerSettings));
-        _control.Send(w.Span);
+        _quic.OpenStream(unidirectional: true).Send(w.Span);
         // QPACK の encoder / decoder stream。動的表を使わないので型だけ送る
         _quic.OpenStream(unidirectional: true).Send([(byte)H3.StreamQpackEncoder]);
         _quic.OpenStream(unidirectional: true).Send([(byte)H3.StreamQpackDecoder]);
@@ -85,15 +79,17 @@ internal sealed class Http3Connection
 
     void Closed()
     {
-        foreach (var s in _sessions.Values) s.Terminate(0, "接続が閉じた");
+        foreach (var s in _sessions.Values.ToArray()) s.Terminate(0, "接続が閉じた");
         _sessions.Clear();
-        Log("接続が終わった");
+        foreach (var list in _early.Values)
+            foreach (var ws in list) ws.Abort(WebTransportSession.ErrorSessionGone);
+        _early.Clear();
     }
 
-    /// <summary>接続ごと閉じる(HTTP/3 の誤り)。</summary>
+    /// <summary>接続ごと閉じる(HTTP/3 の誤り)</summary>
     void Fail(ulong code, string why)
     {
-        Log($"接続の誤り 0x{code:x}: {why}");
+        _log($"webtransport: 接続の誤り 0x{code:x}: {why}");
         _quic.Shutdown(code);
     }
 
@@ -107,7 +103,7 @@ internal sealed class Http3Connection
             buf.Append(data);
             if (!VarInt.TryRead(buf.Data, out var type, out var n))
             {
-                if (fin) st.Abort(H3.NoError);
+                if (fin || buf.Count > 8) st.Abort(H3.NoError);
                 return;
             }
             buf.Consume(n);
@@ -149,12 +145,10 @@ internal sealed class Http3Connection
                     if (settings == null) { Fail(H3.SettingsError, "SETTINGS が読めない"); return; }
                     PeerSettings = settings;
                     _peerSettingsSeen = true;
-                    Log("相手の SETTINGS: " + string.Join(", ", settings.Select(kv => $"0x{kv.Key:x}={kv.Value}")));
                 }
                 else if (type == H3.FrameSettings) { Fail(H3.FrameUnexpected, "SETTINGS が 2 度来た"); return; }
-                else if (type == H3.FrameGoAway) Log("GOAWAY を受けた");
                 else if (type is H3.FrameData or H3.FrameHeaders || H3.IsHttp2Only(type)) { Fail(H3.FrameUnexpected, $"制御 stream に型 0x{type:x}"); return; }
-                // MAX_PUSH_ID、CANCEL_PUSH、GREASE、知らない型は読み飛ばす
+                // GOAWAY、MAX_PUSH_ID、CANCEL_PUSH、GREASE、知らない型は読み飛ばす
                 buf.Consume(hl + pl);
             }
             if (f) Fail(H3.ClosedCriticalStream, "制御 stream が閉じた");
@@ -169,7 +163,7 @@ internal sealed class Http3Connection
             buf.Append(data);
             if (!VarInt.TryRead(buf.Data, out var sessionId, out var n))
             {
-                if (f) st.Abort(H3.NoError);
+                if (f || buf.Count > 8) st.Abort(H3.NoError);
                 return;
             }
             buf.Consume(n);
@@ -212,62 +206,60 @@ internal sealed class Http3Connection
         };
     }
 
-    /// <summary>WebTransport の stream をセッションに結ぶ。セッションがまだ無ければ待たせる。</summary>
+    /// <summary>WebTransport の stream をセッションに結ぶ。セッションがまだ無ければ待たせる</summary>
     void Attach(WebTransportStream ws)
     {
         if (_sessions.TryGetValue(ws.SessionId, out var session))
         {
-            session.Add(ws);
-            if (ws.Bidirectional) _handler.OnBidiStream(session, ws);
-            else _handler.OnUniStream(session, ws);
+            Hand(session, ws);
             return;
         }
+        // 知らないセッションの stream は少しだけ待たせる。CONNECT の応答より先に着くことがある
         if (!_early.TryGetValue(ws.SessionId, out var list))
         {
-            // 待たせすぎない。知らないセッションの stream は 16 本まで
-            if (_early.Count >= 4) { ws.Stream.Abort(WebTransportSession.ErrorBufferedStreamRejected); return; }
+            if (_early.Count >= 4) { ws.Abort(WebTransportSession.ErrorBufferedStreamRejected); return; }
             _early[ws.SessionId] = list = [];
         }
-        if (list.Count >= 16) { ws.Stream.Abort(WebTransportSession.ErrorBufferedStreamRejected); return; }
+        if (list.Count >= 16) { ws.Abort(WebTransportSession.ErrorBufferedStreamRejected); return; }
         ws.Buffering = true;
         list.Add(ws);
     }
 
-    /// <summary>拡張 CONNECT を受けた。</summary>
-    internal void OnConnect(RequestStream req, List<(string Name, string Value)> headers)
+    void Hand(WebTransportSession session, WebTransportStream ws)
     {
-        string? Get(string name) => headers.FirstOrDefault(h => h.Name == name).Value;
-        var method = Get(":method");
-        var protocol = Get(":protocol");
-        Log($"要求 stream {req.Stream.Id}: " + string.Join(" ", headers.Select(h => $"{h.Name}={h.Value}")));
+        session.Add(ws);
+        if (ws.Bidirectional) _handler.OnBidiStream(session, ws);
+        else _handler.OnUniStream(session, ws);
+    }
 
-        if (method != "CONNECT" || protocol != "webtransport")
+    /// <summary>要求 stream の HEADERS を受けた</summary>
+    internal void OnRequest(RequestStream req, List<(string Name, string Value)> headers)
+    {
+        // WebTransport の CONNECT 以外は扱わない
+        int check = ConnectRequest.Parse(headers, out var connect);
+        if (check != 200)
         {
-            // WebTransport 以外は扱わない
-            req.Respond(method == "CONNECT" ? "501" : "404", fin: true);
+            req.Respond(check.ToString(System.Globalization.CultureInfo.InvariantCulture), fin: true);
             return;
         }
-        if (!PeerSettings.TryGetValue(H3.SettingH3Datagram, out var dg) || dg != 1)
-            Log("相手が H3_DATAGRAM を宣言していない");
 
-        var session = new WebTransportSession(this, req, Get(":authority") ?? "", Get(":path") ?? "", Get("origin") ?? "");
-        if (!_handler.Accept(session))
+        var session = new WebTransportSession(this, req, connect);
+        int status = _handler.Accept(session);
+        if (status != 200)
         {
-            req.Respond("404", fin: true);
+            req.Session = null;
+            req.Respond(status.ToString(System.Globalization.CultureInfo.InvariantCulture), fin: true);
             return;
         }
         _sessions[session.Id] = session;
         // draft-02 の頃の Chrome はこのヘッダーを確かめていた。今は見ないが、付けても害は無い
         req.Respond("200", fin: false, extra: [("sec-webtransport-http3-draft", "draft02")]);
-        Log($"セッション {session.Id} を始めた path={session.Path} origin={session.Origin}");
 
         if (_early.Remove(session.Id, out var waiting))
             foreach (var ws in waiting)
             {
                 ws.Buffering = false;
-                session.Add(ws);
-                if (ws.Bidirectional) _handler.OnBidiStream(session, ws);
-                else _handler.OnUniStream(session, ws);
+                Hand(session, ws);
                 ws.Flush();
             }
     }
@@ -275,7 +267,6 @@ internal sealed class Http3Connection
     internal void OnSessionClosed(WebTransportSession session, uint code, string reason)
     {
         if (!_sessions.Remove(session.Id)) return;
-        Log($"セッション {session.Id} を閉じた code={code} reason={reason}");
         _handler.OnClosed(session, code, reason);
     }
 
@@ -284,7 +275,7 @@ internal sealed class Http3Connection
         // 先頭は Quarter Stream ID(CONNECT の stream ID / 4)
         if (!VarInt.TryRead(d, out var q, out var n)) { Fail(H3.DatagramError, "datagram が短い"); return; }
         if (_sessions.TryGetValue(q * 4, out var session)) _handler.OnDatagram(session, d[n..]);
-        // セッションが無ければ捨てる(閉じた直後に届くことがある)
+        // セッションが無ければ捨てる。閉じた直後に届くことがある
     }
 
     internal void SendDatagram(ulong sessionId, ReadOnlySpan<byte> payload)
@@ -297,15 +288,41 @@ internal sealed class Http3Connection
     internal QuicStream OpenStream(bool unidirectional) => _quic.OpenStream(unidirectional);
 }
 
-/// <summary>HTTP の要求 stream。WebTransport では CONNECT の stream がセッションそのものになる。</summary>
+/// <summary>拡張 CONNECT(RFC 9220)の要求。WebTransport のときだけ受ける</summary>
+internal readonly record struct ConnectRequest(string Authority, string Path, string Origin)
+{
+    /// <summary>ヘッダーを確かめる。200 なら request に中身が入る。CONNECT 以外は 404、形が違えば 400</summary>
+    public static int Parse(List<(string Name, string Value)> headers, out ConnectRequest request)
+    {
+        request = default;
+        var seen = new Dictionary<string, string>();
+        foreach (var (name, value) in headers)
+        {
+            // 疑似ヘッダーが 2 つあるのは誤り(RFC 9114 4.3)
+            if (name.StartsWith(':') && seen.ContainsKey(name)) return 400;
+            seen.TryAdd(name, value);
+        }
+        string? Get(string name) => seen.GetValueOrDefault(name);
+        if (Get(":method") != "CONNECT") return 404;
+        var authority = Get(":authority");
+        var path = Get(":path");
+        if (Get(":protocol") != "webtransport" || Get(":scheme") != "https"
+            || string.IsNullOrEmpty(authority) || string.IsNullOrEmpty(path) || !path.StartsWith('/'))
+            return 400;
+        request = new ConnectRequest(authority, path, Get("origin") ?? "");
+        return 200;
+    }
+}
+
+/// <summary>HTTP の要求 stream。WebTransport では CONNECT の stream がセッションそのものになる</summary>
 internal sealed class RequestStream
 {
     readonly Http3Connection _conn;
     readonly RecvBuffer _buf;
+    readonly RecvBuffer _capsules = new();
     bool _headersSeen;
     public QuicStream Stream { get; }
     public WebTransportSession? Session;
-    readonly RecvBuffer _capsules = new();
 
     public RequestStream(Http3Connection conn, QuicStream stream, RecvBuffer buf)
     {
@@ -314,7 +331,7 @@ internal sealed class RequestStream
         _buf = buf;
         stream.OnReceive = (_, data, fin) => Receive(data, fin);
         stream.OnPeerAbort = (_, code) => Session?.Terminate(0, $"CONNECT の stream が打ち切られた 0x{code:x}");
-        stream.OnClosed = _ => Session?.Terminate(0, "CONNECT の stream が閉じた");
+        stream.OnClosed += _ => Session?.Terminate(0, "CONNECT の stream が閉じた");
     }
 
     public void Receive(ReadOnlySpan<byte> data, bool fin)
@@ -339,14 +356,14 @@ internal sealed class RequestStream
                 _headersSeen = true;
                 List<(string, string)> headers;
                 try { headers = Qpack.Decode(payload); }
-                catch (QpackException e)
+                catch (QpackException)
                 {
-                    Program.Log($"QPACK の誤り: {e.Message}");
                     _conn.Quic.Shutdown(H3.QpackDecompressionFailed);
                     return;
                 }
                 _buf.Consume(hl + pl);
-                _conn.OnConnect(this, headers);
+                _conn.OnRequest(this, headers);
+                if (Session is null) return; // 断った
                 continue;
             }
             if (type == H3.FrameData)
@@ -354,7 +371,7 @@ internal sealed class RequestStream
                 if (!_headersSeen) { Stream.Abort(H3.FrameUnexpected); return; }
                 _capsules.Append(payload);
                 _buf.Consume(hl + pl);
-                ReadCapsules();
+                if (!ReadCapsules()) return;
                 continue;
             }
             if (type is H3.FrameSettings or H3.FrameGoAway or H3.FrameMaxPushId or H3.FrameCancelPush or H3.FramePushPromise || H3.IsHttp2Only(type))
@@ -373,18 +390,17 @@ internal sealed class RequestStream
         }
     }
 
-    /// <summary>capsule(型、長さ、中身)を読む。</summary>
-    void ReadCapsules()
+    /// <summary>capsule(型、長さ、中身)を読む。誤りで打ち切ったら false</summary>
+    bool ReadCapsules()
     {
         while (true)
         {
             var d = _capsules.Data;
-            if (!VarInt.TryRead(d, out var type, out var n1)) return;
-            if (!VarInt.TryRead(d[n1..], out var len, out var n2)) return;
-            if (len > 65536) { Stream.Abort(H3.MessageError); return; }
-            if (d.Length < n1 + n2 + (int)len) return;
-            var payload = d.Slice(n1 + n2, (int)len);
-            Session?.OnCapsule(type, payload);
+            if (!VarInt.TryRead(d, out var type, out var n1)) return true;
+            if (!VarInt.TryRead(d[n1..], out var len, out var n2)) return true;
+            if (len > 65536) { Stream.Abort(H3.MessageError); return false; }
+            if (d.Length < n1 + n2 + (int)len) return true;
+            Session?.OnCapsule(type, d.Slice(n1 + n2, (int)len));
             _capsules.Consume(n1 + n2 + (int)len);
         }
     }
@@ -393,11 +409,10 @@ internal sealed class RequestStream
     {
         var fields = new List<(string, string)> { (":status", status) };
         if (extra != null) fields.AddRange(extra);
-        var frame = H3.Frame(H3.FrameHeaders, Qpack.Encode(fields));
-        Stream.Send(frame, fin);
+        Stream.Send(H3.Frame(H3.FrameHeaders, Qpack.Encode(fields)), fin);
     }
 
-    /// <summary>capsule を DATA フレームに入れて送る。</summary>
+    /// <summary>capsule を DATA フレームに入れて送る</summary>
     public void SendCapsule(ulong type, ReadOnlySpan<byte> payload, bool fin)
     {
         var c = new ByteWriter();
@@ -406,7 +421,7 @@ internal sealed class RequestStream
     }
 }
 
-/// <summary>WebTransport の 1 セッション。ID は CONNECT の stream ID。</summary>
+/// <summary>WebTransport の 1 セッション。ID は CONNECT の stream ID</summary>
 internal sealed class WebTransportSession
 {
     public const ulong CapsuleCloseSession = 0x2843;
@@ -425,68 +440,45 @@ internal sealed class WebTransportSession
     public string Authority { get; }
     public string Path { get; }
     public string Origin { get; }
-    public object? State; // 扱い手が好きに使う
+    /// <summary>扱い手が好きに使う</summary>
+    public object? State;
 
-    public WebTransportSession(Http3Connection conn, RequestStream connect, string authority, string path, string origin)
+    public WebTransportSession(Http3Connection conn, RequestStream connect, ConnectRequest request)
     {
         _conn = conn;
         _connect = connect;
         connect.Session = this;
         Id = connect.Stream.Id;
-        Authority = authority;
-        Path = path;
-        Origin = origin;
+        Authority = request.Authority;
+        Path = request.Path;
+        Origin = request.Origin;
     }
 
     public bool IsClosed => _closed;
+    public Lock Gate => _conn.Quic.Gate;
 
     internal void Add(WebTransportStream s)
     {
         s.Session = this;
         _streams.Add(s);
-        s.Stream.OnClosed = _ => _streams.Remove(s);
+        s.Stream.OnClosed += _ => _streams.Remove(s);
     }
 
-    /// <summary>サーバーから双方向 stream を開く。</summary>
-    public WebTransportStream OpenBidi()
-    {
-        var q = _conn.OpenStream(unidirectional: false);
-        var ws = new WebTransportStream(q, Id, bidirectional: true);
-        Add(ws);
-        var w = new ByteWriter();
-        w.VarInt(H3.WebTransportBidiSignal).VarInt(Id);
-        q.Send(w.Span);
-        return ws;
-    }
-
-    /// <summary>サーバーから単方向 stream を開く。</summary>
-    public WebTransportStream OpenUni()
-    {
-        var q = _conn.OpenStream(unidirectional: true);
-        var ws = new WebTransportStream(q, Id, bidirectional: false);
-        Add(ws);
-        var w = new ByteWriter();
-        w.VarInt(H3.StreamWebTransportUni).VarInt(Id);
-        q.Send(w.Span);
-        return ws;
-    }
-
-    public void SendDatagram(ReadOnlySpan<byte> payload)
-    {
-        if (!_closed) _conn.SendDatagram(Id, payload);
-    }
-
-    /// <summary>こちらから閉じる。CLOSE_WEBTRANSPORT_SESSION を送って CONNECT の stream に FIN を付ける。</summary>
+    /// <summary>こちらから閉じる。CLOSE_WEBTRANSPORT_SESSION を送って CONNECT の stream に FIN を付ける。どのスレッドからでも呼べる</summary>
     public void Close(uint code, string reason)
     {
-        if (_closed) return;
-        var p = new ByteWriter();
-        p.UInt32BE(code);
-        var r = Encoding.UTF8.GetBytes(reason);
-        p.Bytes(r.AsSpan(0, Math.Min(r.Length, 1024)));
-        _connect.SendCapsule(CapsuleCloseSession, p.Span, fin: true);
-        _finSent = true;
-        Terminate(code, reason);
+        lock (Gate)
+        {
+            if (_closed) return;
+            var p = new ByteWriter();
+            p.UInt32BE(code);
+            var r = Encoding.UTF8.GetBytes(reason);
+            p.Bytes(r.AsSpan(0, Math.Min(r.Length, 1024)));
+            try { _connect.SendCapsule(CapsuleCloseSession, p.Span, fin: true); }
+            catch (QuicNativeException) { }
+            _finSent = true;
+            Terminate(code, reason);
+        }
     }
 
     internal void OnCapsule(ulong type, ReadOnlySpan<byte> payload)
@@ -495,15 +487,10 @@ internal sealed class WebTransportSession
         {
             uint code = payload.Length >= 4 ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(payload) : 0;
             string reason = payload.Length > 4 ? Encoding.UTF8.GetString(payload[4..]) : "";
-            Program.Log($"セッション {Id}: CLOSE_WEBTRANSPORT_SESSION code={code} reason={reason}");
             Terminate(code, reason);
             FinConnect();
         }
-        else if (type == CapsuleDrainSession)
-        {
-            Program.Log($"セッション {Id}: DRAIN");
-        }
-        // 他の capsule は読み飛ばす
+        // DRAIN とほかの capsule は読み飛ばす
     }
 
     internal void OnPeerFin()
@@ -516,21 +503,21 @@ internal sealed class WebTransportSession
     {
         if (_finSent) return;
         _finSent = true;
-        try { _connect.Stream.Finish(); } catch (QuicNativeException) { }
+        _connect.Stream.Finish();
     }
 
-    /// <summary>セッションを終える。残った stream は WT_SESSION_GONE で打ち切る。</summary>
+    /// <summary>セッションを終える。残った stream は WT_SESSION_GONE で打ち切る</summary>
     internal void Terminate(uint code, string reason)
     {
         if (_closed) return;
         _closed = true;
-        foreach (var s in _streams.ToArray()) s.Stream.Abort(ErrorSessionGone);
+        foreach (var s in _streams.ToArray()) s.Abort(ErrorSessionGone);
         _streams.Clear();
         _conn.OnSessionClosed(this, code, reason);
     }
 }
 
-/// <summary>WebTransport の stream。先頭の印(0x41 / 0x54 とセッション ID)を読んだ後の生のバイトを運ぶ。</summary>
+/// <summary>WebTransport の stream。先頭の印(0x41 / 0x54 とセッション ID)を読んだ後の生のバイトを運ぶ</summary>
 internal sealed class WebTransportStream
 {
     public QuicStream Stream { get; }
@@ -539,7 +526,7 @@ internal sealed class WebTransportStream
     public WebTransportSession? Session { get; internal set; }
 
     public delegate void DataHandler(WebTransportStream s, ReadOnlySpan<byte> data, bool fin);
-    /// <summary>届いたバイト。fin は相手が送り終えた印。</summary>
+    /// <summary>届いたバイト。fin は相手が送り終えた印</summary>
     public DataHandler? OnData;
 
     // セッションが決まるまで溜めておく
@@ -560,13 +547,12 @@ internal sealed class WebTransportStream
         if (Buffering)
         {
             _pending ??= new RecvBuffer();
-            if (_pending.Count + data.Length > 1 << 20) { Stream.Abort(WebTransportSession.ErrorBufferedStreamRejected); return; }
+            if (_pending.Count + data.Length > 64 * 1024) { Abort(WebTransportSession.ErrorBufferedStreamRejected); return; }
             _pending.Append(data);
             _pendingFin |= fin;
             return;
         }
-        if (OnData == null) return;
-        OnData(this, data, fin);
+        OnData?.Invoke(this, data, fin);
     }
 
     internal void Flush()
@@ -577,45 +563,155 @@ internal sealed class WebTransportStream
         if (p.Count > 0 || _pendingFin) OnData?.Invoke(this, p.Data, _pendingFin);
     }
 
-    public void Send(ReadOnlySpan<byte> data, bool fin = false) => Stream.Send(data, fin);
-    public void Finish() => Stream.Finish();
     public void Abort(ulong code) => Stream.Abort(code);
 }
 
-/// <summary>試作の扱い手。stream と datagram をそのまま返す。</summary>
-internal sealed class EchoHandler : IWebTransportHandler
+/// <summary>
+/// WebTransport の双方向 stream を System.IO.Stream として読み書きする。中継(Relay)が使う。
+/// 受信は溜める。HighWater を超えたら msquic の受信を止め、読まれて LowWater を切ったら戻す。
+/// 送信は msquic がバッファを返すまで待つ。どちらも溜め込みは一定の量で止まる
+/// </summary>
+internal sealed class WebTransportByteStream : Stream
 {
-    public bool Accept(WebTransportSession session) => session.Path.StartsWith("/wt", StringComparison.Ordinal);
+    const int HighWater = 1 << 20;
+    const int LowWater = 256 << 10;
 
-    public void OnBidiStream(WebTransportSession session, WebTransportStream stream)
+    readonly WebTransportStream _ws;
+    readonly Lock _lock = new();
+    readonly Queue<byte[]> _chunks = new();
+    int _offset; // 先頭のかたまりの読んだところ
+    int _queued;
+    bool _fin;
+    bool _paused;
+    Exception? _error;
+    TaskCompletionSource? _waiter;
+    bool _disposed;
+
+    public WebTransportByteStream(WebTransportStream ws)
     {
-        long total = 0;
-        stream.OnData = (s, data, fin) =>
+        _ws = ws;
+        ws.OnData = (_, data, fin) => Push(data, fin);
+        ws.Stream.OnPeerAbort = (_, code) => Fail(new IOException($"相手が stream を打ち切った (0x{code:x})"));
+        ws.Stream.OnClosed += _ => Fail(new IOException("stream が閉じた"));
+    }
+
+    void Push(ReadOnlySpan<byte> data, bool fin)
+    {
+        bool pause = false;
+        TaskCompletionSource? w;
+        lock (_lock)
         {
-            total += data.Length;
-            if (!data.IsEmpty) s.Send(data);
-            if (fin)
+            if (!data.IsEmpty)
             {
-                Program.Log($"セッション {session.Id} stream {s.Stream.Id}: {total} バイトを返した");
-                s.Finish();
+                _chunks.Enqueue(data.ToArray());
+                _queued += data.Length;
             }
-        };
+            _fin |= fin;
+            if (_queued > HighWater && !_paused) { _paused = true; pause = true; }
+            w = _waiter;
+            _waiter = null;
+        }
+        if (pause) _ws.Stream.SetReceiveEnabled(false);
+        w?.TrySetResult();
     }
 
-    public void OnUniStream(WebTransportSession session, WebTransportStream stream)
+    void Fail(Exception e)
     {
-        // 単方向は全部受けてから、こちらの単方向 stream で返す
-        var all = new RecvBuffer();
-        stream.OnData = (s, data, fin) =>
+        TaskCompletionSource? w;
+        lock (_lock)
         {
-            all.Append(data);
-            if (!fin) return;
-            Program.Log($"セッション {session.Id} 単方向 stream {s.Stream.Id}: {all.Count} バイト");
-            if (session.IsClosed) return;
-            var back = session.OpenUni();
-            back.Send(all.Data, fin: true);
-        };
+            _error ??= e;
+            w = _waiter;
+            _waiter = null;
+        }
+        w?.TrySetResult();
     }
 
-    public void OnDatagram(WebTransportSession session, ReadOnlySpan<byte> data) => session.SendDatagram(data);
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+    {
+        if (buffer.IsEmpty) return 0;
+        while (true)
+        {
+            Task wait;
+            int n = 0;
+            bool resume = false;
+            lock (_lock)
+            {
+                if (_queued > 0)
+                {
+                    while (n < buffer.Length && _chunks.Count > 0)
+                    {
+                        var c = _chunks.Peek();
+                        int k = Math.Min(c.Length - _offset, buffer.Length - n);
+                        c.AsSpan(_offset, k).CopyTo(buffer.Span[n..]);
+                        n += k;
+                        _offset += k;
+                        if (_offset == c.Length) { _chunks.Dequeue(); _offset = 0; }
+                    }
+                    _queued -= n;
+                    if (_paused && _queued < LowWater) { _paused = false; resume = true; }
+                    wait = Task.CompletedTask;
+                }
+                else if (_fin) return 0;
+                else if (_error is not null) throw _error;
+                else
+                {
+                    _waiter ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    wait = _waiter.Task;
+                }
+            }
+            if (n > 0)
+            {
+                // msquic の API は Gate を取る。_lock を放してから呼ぶ(コールバックは Gate → _lock の順で取る)
+                if (resume) _ws.Stream.SetReceiveEnabled(true);
+                return n;
+            }
+            await wait.WaitAsync(ct);
+        }
+    }
+    public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+    {
+        if (buffer.IsEmpty) return;
+        await _ws.Stream.SendAsync(buffer.Span).WaitAsync(ct);
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+    public override void Write(byte[] buffer, int offset, int count) => WriteAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => WriteAsync(buffer.AsMemory(offset, count), ct).AsTask();
+    public override void Flush() { }
+    public override bool CanRead => true;
+    public override bool CanWrite => true;
+    public override bool CanSeek => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    /// <summary>
+    /// 閉じる。送信側に FIN を付け、相手が最後まで受け取るのを待つ(長くて 5 秒)。
+    /// 待たずにセッションを閉じると、相手は stream を打ち切り、まだ読んでいない最後のデータ(RDCleanPath の誤りなど)が消える
+    /// </summary>
+    public override async ValueTask DisposeAsync()
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _ws.Stream.Finish();
+            try { await _ws.Stream.SendDone.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { }
+        }
+        await base.DisposeAsync();
+    }
+
+    /// <summary>閉じる。送信側に FIN を付ける</summary>
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_disposed)
+        {
+            _disposed = true;
+            _ws.Stream.Finish();
+        }
+        base.Dispose(disposing);
+    }
 }

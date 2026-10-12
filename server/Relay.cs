@@ -6,12 +6,15 @@ using System.Security.Cryptography.X509Certificates;
 namespace Mado;
 
 /// <summary>
-/// ブラウザの RDP クライアントとつながった WebSocket と、RDP サーバーのあいだを中継する。
+/// ブラウザの RDP クライアントとつながった WebSocket(または WebTransport の stream)と、RDP サーバーのあいだを中継する。
 ///
 /// 1. 最初に RDCleanPath の要求を受け取る。複数のメッセージに分かれて来てもよい
 /// 2. RDP サーバーに TCP でつなぎ、要求に入っていた X.224 の接続要求を送り、接続確認を受け取る
 /// 3. 同じソケットの上で TLS を張り、サーバーの証明書の連なりを取る
 /// 4. 接続確認と証明書を RDCleanPath の応答で返す。あとは WebSocket と TLS のあいだをそのまま流す
+///
+/// ブラウザ側の口は IRelayChannel で包む。WebSocket はメッセージ、WebTransport はバイトの流れだが、
+/// RDCleanPath の要求は DER で長さが分かるので、どちらも「届いた分を溜めて、揃ったら読む」で同じに扱える。
 ///
 /// つなぐ先は、proxy_auth のトークンに入っている設定の targets のどれか。どこへでも行ける中継にはしたくないので、
 /// ブラウザが送ってくる destination は見ない。RDP との TLS は SslStream で張る。Windows では SChannel になり、
@@ -22,21 +25,19 @@ internal static class Relay
     const int MaxRequest = 64 * 1024;
 
     /// <summary>authorize は proxy_auth の使い捨てのトークンを確かめて、つなぐ先を返す。通らなければ null</summary>
-    public static async Task Run(WebSocket ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct)
+    public static Task Run(WebSocket ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct) =>
+        Run(new WebSocketChannel(ws), authorize, log, ct);
+
+    public static async Task Run(IRelayChannel ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct)
     {
         var buf = new byte[64 * 1024];
         var pending = new MemoryStream();
         (RdCleanPath.Request Request, ReadOnlyMemory<byte> Remaining)? parsed = null;
         while (parsed is null)
         {
-            var r = await ws.ReceiveAsync(buf, ct);
-            if (r.MessageType == WebSocketMessageType.Close) return;
-            if (r.MessageType != WebSocketMessageType.Binary)
-            {
-                await ws.CloseAsync(WebSocketCloseStatus.InvalidMessageType, "binary only", ct);
-                return;
-            }
-            pending.Write(buf, 0, r.Count);
+            var n = await ws.ReceiveAsync(buf, ct);
+            if (n == 0) return;
+            pending.Write(buf, 0, n);
             // RDCleanPath の要求は 1 KB ほど。いつまでも揃わないものを溜め込まない
             if (pending.Length > MaxRequest)
             {
@@ -81,8 +82,8 @@ internal static class Relay
             // RDP_NEG_FAILURE (0x03) なら TLS には進まず、そのまま返す。理由はブラウザが表示する
             if (cc.Length >= 12 && cc[11] == 0x03)
             {
-                await Send(ws, RdCleanPath.Error(RdCleanPath.NegotiationError, x224: cc), ct);
-                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "negotiation failure", ct);
+                await ws.SendAsync(RdCleanPath.Error(RdCleanPath.NegotiationError, x224: cc), ct);
+                await ws.CloseAsync("negotiation failure", ct);
                 return;
             }
             var chain = new List<byte[]>();
@@ -100,7 +101,7 @@ internal static class Relay
                 },
             }, ct);
             if (chain.Count == 0) throw new IOException("RDP server sent no certificate");
-            await Send(ws, RdCleanPath.Response(cc, chain, $"{target.Host}:{target.Port}"), ct);
+            await ws.SendAsync(RdCleanPath.Response(cc, chain, $"{target.Host}:{target.Port}"), ct);
             log($"relay up: {ssl.SslProtocol} {ssl.NegotiatedCipherSuite}");
         }
         catch (Exception e) when (e is IOException or SocketException or System.Security.Authentication.AuthenticationException)
@@ -118,8 +119,8 @@ internal static class Relay
                 while (true)
                 {
                     var r = await ws.ReceiveAsync(buf, stop.Token);
-                    if (r.MessageType == WebSocketMessageType.Close) return;
-                    await ssl.WriteAsync(buf.AsMemory(0, r.Count), stop.Token);
+                    if (r == 0) return;
+                    await ssl.WriteAsync(buf.AsMemory(0, r), stop.Token);
                 }
             });
             var down = Pump(async () =>
@@ -129,15 +130,14 @@ internal static class Relay
                 {
                     var n = await ssl.ReadAsync(b, stop.Token);
                     if (n == 0) return;
-                    await ws.SendAsync(b.AsMemory(0, n), WebSocketMessageType.Binary, true, stop.Token);
+                    await ws.SendAsync(b.AsMemory(0, n), stop.Token);
                 }
             });
             await Task.WhenAny(up, down);
             await stop.CancelAsync();
             await Task.WhenAll(up, down);
         }
-        if (ws.State == WebSocketState.Open)
-            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        await ws.CloseAsync("", CancellationToken.None);
     }
 
     /// <summary>片方向の流し込み。相手が切れたら黙って終わる</summary>
@@ -147,15 +147,15 @@ internal static class Relay
         catch (Exception e) when (e is IOException or WebSocketException or OperationCanceledException or ObjectDisposedException) { }
     }
 
-    static Task Send(WebSocket ws, byte[] data, CancellationToken ct) =>
-        ws.SendAsync(data.AsMemory(), WebSocketMessageType.Binary, true, ct).AsTask();
-
-    static async Task Fail(WebSocket ws, ulong httpStatus, string msg, Action<string> log, CancellationToken ct)
+    static async Task Fail(IRelayChannel ws, ulong httpStatus, string msg, Action<string> log, CancellationToken ct)
     {
         log($"relay failed: {msg}");
-        if (ws.State != WebSocketState.Open) return;
-        await Send(ws, RdCleanPath.Error(RdCleanPath.GeneralError, httpStatus), ct);
-        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "relay failed", ct);
+        try
+        {
+            await ws.SendAsync(RdCleanPath.Error(RdCleanPath.GeneralError, httpStatus), ct);
+            await ws.CloseAsync("relay failed", ct);
+        }
+        catch (Exception e) when (e is IOException or WebSocketException or ObjectDisposedException or InvalidOperationException or OperationCanceledException) { }
     }
 
     /// <summary>TPKT (RFC 1006) を 1 つ読む。ヘッダーの 3〜4 バイト目が全体の長さ</summary>
@@ -171,4 +171,46 @@ internal static class Relay
         await s.ReadExactlyAsync(all.AsMemory(4), ct);
         return all;
     }
+}
+
+/// <summary>ブラウザ側の口。メッセージの切れ目は意味を持たない</summary>
+internal interface IRelayChannel
+{
+    /// <summary>届いたバイトを読む。0 は相手が閉じた</summary>
+    ValueTask<int> ReceiveAsync(Memory<byte> buf, CancellationToken ct);
+    ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct);
+    /// <summary>こちらから閉じる。もう閉じていれば何もしない</summary>
+    Task CloseAsync(string reason, CancellationToken ct);
+}
+
+/// <summary>WebSocket。バイナリのメッセージだけを受ける。テキストが来たら閉じて終わる</summary>
+internal sealed class WebSocketChannel(WebSocket ws) : IRelayChannel
+{
+    public async ValueTask<int> ReceiveAsync(Memory<byte> buf, CancellationToken ct)
+    {
+        var r = await ws.ReceiveAsync(buf, ct);
+        if (r.MessageType == WebSocketMessageType.Close) return 0;
+        if (r.MessageType != WebSocketMessageType.Binary)
+        {
+            await ws.CloseAsync(WebSocketCloseStatus.InvalidMessageType, "binary only", ct);
+            return 0;
+        }
+        // 空のバイナリのメッセージは閉じた印と区別できないので、次を待つ
+        return r.Count == 0 ? await ReceiveAsync(buf, ct) : r.Count;
+    }
+
+    public ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct) =>
+        ws.SendAsync(data, WebSocketMessageType.Binary, true, ct);
+
+    public Task CloseAsync(string reason, CancellationToken ct) =>
+        ws.State == WebSocketState.Open ? ws.CloseAsync(WebSocketCloseStatus.NormalClosure, reason, ct) : Task.CompletedTask;
+}
+
+/// <summary>バイトの流れ(WebTransport の双方向 stream)。閉じると送信側に FIN が付く</summary>
+internal sealed class StreamChannel(Stream s) : IRelayChannel
+{
+    public ValueTask<int> ReceiveAsync(Memory<byte> buf, CancellationToken ct) => s.ReadAsync(buf, ct);
+    public ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct) => s.WriteAsync(data, ct);
+
+    public Task CloseAsync(string reason, CancellationToken ct) => s.DisposeAsync().AsTask();
 }

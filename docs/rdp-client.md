@@ -7,7 +7,7 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 
 | 層 | 内容 | ファイル |
 | --- | --- | --- |
-| 接続 | RDCleanPath(X.224 の接続要求を送り、接続確認と証明書チェーンを受け取る)、TPKT / Fast-Path の切り出し | `rdcleanpath.ts` `x224.ts` `stream.ts` |
+| 接続 | RDCleanPath(X.224 の接続要求を送り、接続確認と証明書チェーンを受け取る)、WebTransport / WebSocket の道、TPKT / Fast-Path の切り出し | `rdcleanpath.ts` `x224.ts` `stream.ts` |
 | 認証 | CredSSP と NTLMv2。MD4 / MD5 / RC4 / HMAC-MD5 は自前。Kerberos は未対応 | `credssp.ts` `ntlm.ts` `crypto.ts` `der.ts` |
 | 接続シーケンス | MCS / GCC、Client Info、ライセンス、Demand / Confirm Active、同期、Deactivate-Reactivate、回線の自動検出 | `connect.ts` `mcs.ts` `pdu.ts` `autodetect.ts` |
 | 画面(旧来) | 旧ビットマップ(planar 32bpp、Interleaved RLE)、RemoteFX(Surface Commands)、Frame Acknowledge、古い更新の間引き、Web Worker での復号 | `bitmap.ts` `rfx.ts` `surface.ts` `rfxpool.ts` `rfx.worker.ts` |
@@ -15,6 +15,18 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 | 入力とポインタ | スキャンコード(JIS / US は OS の配列から判定)、Unicode、マウス、ホイール、ポインタの形 | `input.ts` `pointer.ts` `display.ts` |
 | チャネル | 静的チャネルの分割、drdynvc、DisplayControl(窓の大きさへの追従)、cliprdr(テキストのみ) | `vchannel.ts` `dvc.ts` `cliprdr.ts` `channels.ts` |
 | 全体 | 受信ループ、画面への振り分け、診断用の統計 | `client.ts` |
+
+## 中継の道(WebTransport と WebSocket)
+
+RDCleanPath と、その後の RDP のバイトは、mado との 1 本の道に流す(`stream.ts`、`connect.ts` の `openTransport`)。
+
+- `/api/session` に `wt` があり、ブラウザに `WebTransport` があれば、先に WebTransport(HTTP/3、UDP)で `/wt` を開く。`ready` を 1.5 秒待ち、双方向の stream を 1 本開いてそこに流す
+- 開けなければ、黙って WebSocket(`/ws`)にする。トークンは RDCleanPath の要求で送るので、WebTransport で失敗しても減らない
+- どちらも、届いたかたまりを溜めて要る分だけ切り出す(`ChunkStream`)。RDCleanPath の形も同じ
+- 診断の 1 行目に、使っている道(WebTransport / WebSocket)が出る
+
+サーバーは msquic を直接呼んで HTTP/3 と WebTransport を話す(`server/Quic/`)。Chrome は WebTransport の draft-02 を宣言してくるので、サーバーは draft-02 と draft-07 の両方を宣言する。輻輳制御は BBR。
+WebTransport の CONNECT には Cookie が付かないので、Origin と使い捨てのトークンで確かめる(`server/WebTransportRelay.cs`)。
 
 ## 転送方式の選択
 

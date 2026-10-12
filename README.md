@@ -14,10 +14,12 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 ```
 ブラウザ ──https──> mado ──OIDC──> Entra ID などの IdP
    │  RDP クライアント(TS)
-   └──wss /ws(RDCleanPath)──> mado ──TCP + TLS──> RDP(既定 127.0.0.1:3389)
+   ├──WebTransport /wt(UDP 443、RDCleanPath)──┐
+   └──wss /ws(TCP 443、RDCleanPath)──────────┴─> mado ──TCP + TLS──> RDP(既定 127.0.0.1:3389)
 ```
 
-- 外に開けるのは 443 と 80。80 は Let's Encrypt の確認と https への転送に使う。3389 は開けない
+- 外に開けるのは TCP 443 と 80、UDP 443。80 は Let's Encrypt の確認と https への転送に使う。3389 は開けない
+- 中継はまず WebTransport(HTTP/3、UDP)で試し、1.5 秒で開かなければ WebSocket(TCP)に移る。UDP 443 を開けない(ルーターで UDP 443 を転送しない)ときも、WebSocket で使える。WebTransport は輻輳制御に BBR を使い、損失のある回線で TCP より速度を保ちやすい
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
@@ -26,10 +28,11 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 
 | ディレクトリ | 内容 |
 | --- | --- |
-| `server/` | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` だけ |
+| `server/` | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ |
 | `web/` | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))。bun でビルドして exe に埋め込む |
 | `tray/` | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する |
-| `installer/` | MSI(WiX v5)。サービスの登録、トレイの自動起動、ファイアウォール(TCP 80 / 443)、`C:\ProgramData\mado` の権限 |
+| `installer/` | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限 |
+| `tools/wt-e2e/` | WebTransport の試験。Linux のコンテナで mado と xrdp を動かし、headless の Chromium でつなぐ |
 
 RDP サーバーとの TLS は `SslStream`(SChannel)なので、RDP の自己署名証明書でもつながる。
 
@@ -70,6 +73,7 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
 | `status.port` | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う |
 | `update` | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }` |
 | `tls` | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用 |
+| `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く |
 
 IdP には戻り先として `https://<host>/callback` を登録する。Entra ID ならアプリロールを作ってユーザーに割り当て、その値を `required_role` に書く。
 

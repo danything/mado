@@ -7,3 +7,5 @@ data/
 bin/
 obj/
 logs/
+# WebTransport の試験(tools/wt-e2e/run.sh)が書く
+tools/wt-e2e/.ca.crt

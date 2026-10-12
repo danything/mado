@@ -1,6 +1,6 @@
 // HTTP/3(RFC 9114)の部品。可変長整数、フレーム、SETTINGS、受信の溜め置き。
 // QUIC の上の HTTP/3 は stream ごとにフレームを並べる。フレームは「型、長さ、中身」で、型と長さは可変長整数。
-namespace Mado.WebTransport;
+namespace Mado.Quic;
 
 /// <summary>QUIC の可変長整数(RFC 9000 16 節)。先頭 2 bit が長さ(1, 2, 4, 8 バイト)。</summary>
 internal static class VarInt
@@ -46,7 +46,7 @@ internal sealed class ByteWriter
     public ByteWriter VarInt(ulong v)
     {
         Ensure(8);
-        Length += WebTransport.VarInt.Write(_buf.AsSpan(Length), v);
+        Length += Quic.VarInt.Write(_buf.AsSpan(Length), v);
         return this;
     }
 

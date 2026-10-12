@@ -1,23 +1,25 @@
 // msquic を P/Invoke で直接呼ぶ層。
 // System.Net.Quic は QUIC の datagram を宣言できず、輻輳制御も選べない。そのため msquic の API 表を自分で引く。
-// 構造体の並びは msquic 2.6 の msquic.h に合わせる(x64 / arm64 の 64 bit だけを考える)。
-// msquic はコールバックを自分のスレッドから呼ぶ。1 つの接続とその stream のコールバックは同じスレッドで順に呼ばれる。
+// 構造体の並びは msquic 2.6 の msquic.h に合わせる。64 bit(x64 / arm64)だけを考える。
+// msquic はコールバックを自分のスレッドから呼ぶ。1 つの接続とその stream のコールバックは、同じスレッドで順に呼ばれる。
+// ほかのスレッド(中継)からも触るので、接続ごとの Gate で包む。コールバックの中から呼ぶ msquic の API は、
+// その場で別のコールバックを呼ぶことがある。Lock は同じスレッドなら入り直せるので、それで止まりはしない。
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace Mado.WebTransport;
+namespace Mado.Quic;
 
-/// <summary>msquic の関数表と定数。</summary>
+/// <summary>msquic の関数表と定数</summary>
 internal static unsafe class MsQuic
 {
     public const int StatusSuccess = 0;
 
-    // 型の値は msquic.h の enum の順。
+    public const uint ParamGlobalLibraryVersion = 0x01000004;
     public const uint ParamConfigurationSettings = 0x03000000;
     public const uint ParamConnSettings = 0x05000004;
-    public const uint ParamConnStatisticsV2 = 0x05000016;
     public const uint ParamStreamId = 0x08000000;
-    public const uint ParamGlobalLibraryVersion = 0x01000004;
 
     public const ushort CongestionCubic = 0;
     public const ushort CongestionBbr = 1;
@@ -27,36 +29,36 @@ internal static unsafe class MsQuic
     public const int StreamOpenUnidirectional = 1;
     public const int StreamStartImmediate = 1;
     public const int StreamShutdownGraceful = 1;
-    public const int StreamShutdownAbortSend = 2;
     public const int StreamShutdownAbortReceive = 4;
     public const int StreamShutdownAbort = 6;
     public const int SendFlagFin = 4;
 
-    public static QuicApiTable* Api;
+    static QuicApiTable* _api;
     static nint _lib;
+    static readonly Lock OpenLock = new();
 
-    /// <summary>Windows では msquic.dll、Linux では libmsquic.so.2 を読む。</summary>
+    public static QuicApiTable* Api => _api;
+
+    /// <summary>Windows では msquic.dll、Linux では libmsquic.so.2 を読む。読めなければ例外</summary>
     public static void Open()
     {
-        if (Api != null) return;
-        string[] names = OperatingSystem.IsWindows()
-            ? [Path.Combine(AppContext.BaseDirectory, "msquic.dll"),
-               Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "msquic.dll"),
-               "msquic.dll"]
-            : OperatingSystem.IsMacOS()
-                ? ["libmsquic.dylib"]
-                : ["libmsquic.so.2", "libmsquic.so"];
-        foreach (var n in names)
-            if (NativeLibrary.TryLoad(n, out _lib)) break;
-        if (_lib == 0) throw new DllNotFoundException("msquic が見つからない: " + string.Join(", ", names));
-
-        var open = (delegate* unmanaged[Cdecl]<uint, QuicApiTable**, int>)NativeLibrary.GetExport(_lib, "MsQuicOpenVersion");
-        QuicApiTable* api;
-        Check(open(2, &api), "MsQuicOpenVersion");
-        Api = api;
+        lock (OpenLock)
+        {
+            if (_api != null) return;
+            string[] names = OperatingSystem.IsWindows()
+                ? [Path.Combine(AppContext.BaseDirectory, "msquic.dll"), "msquic.dll"]
+                : OperatingSystem.IsMacOS() ? ["libmsquic.dylib"] : ["libmsquic.so.2", "libmsquic.so"];
+            foreach (var n in names)
+                if (NativeLibrary.TryLoad(n, out _lib)) break;
+            if (_lib == 0) throw new DllNotFoundException("msquic が見つからない: " + string.Join(", ", names));
+            var open = (delegate* unmanaged[Cdecl]<uint, QuicApiTable**, int>)NativeLibrary.GetExport(_lib, "MsQuicOpenVersion");
+            QuicApiTable* api;
+            Check(open(2, &api), "MsQuicOpenVersion");
+            _api = api;
+        }
     }
 
-    /// <summary>msquic の版。2.2 より前は BBR が無い。</summary>
+    /// <summary>msquic の版。2.2 より前は BBR が無い</summary>
     public static string Version()
     {
         uint* v = stackalloc uint[4];
@@ -65,7 +67,7 @@ internal static unsafe class MsQuic
         return $"{v[0]}.{v[1]}.{v[2]}";
     }
 
-    /// <summary>失敗の判定。Windows は HRESULT(負が失敗)、Linux は errno(正が失敗)。</summary>
+    /// <summary>失敗の判定。Windows は HRESULT で負が失敗、Linux は errno で正が失敗</summary>
     public static bool Failed(int status) => OperatingSystem.IsWindows() ? status < 0 : status > 0;
 
     public static void Check(int status, string what)
@@ -73,17 +75,31 @@ internal static unsafe class MsQuic
         if (Failed(status)) throw new QuicNativeException(what, status);
     }
 
-    /// <summary>stream の ID。QUIC の stream ID そのもの。</summary>
-    public static ulong StreamId(nint stream)
+    /// <summary>
+    /// QUIC_ADDR を作る。中身は sockaddr_in / sockaddr_in6。null は全アドレス(AF_UNSPEC で IPv4 と IPv6 の両方)。
+    /// AF_INET6 の値は OS で違う(Windows 23、Linux 10)
+    /// </summary>
+    public static void WriteAddress(byte* addr, IPAddress? ip, ushort port)
     {
-        ulong id;
-        uint len = 8;
-        Check(Api->GetParam(stream, ParamStreamId, &len, &id), "GetParam(STREAM_ID)");
-        return id;
+        new Span<byte>(addr, 32).Clear();
+        addr[2] = (byte)(port >> 8);
+        addr[3] = (byte)port;
+        if (ip is null) return;
+        if (ip.AddressFamily == AddressFamily.InterNetwork)
+        {
+            *(ushort*)addr = 2;
+            ip.TryWriteBytes(new Span<byte>(addr + 4, 4), out _);
+        }
+        else
+        {
+            *(ushort*)addr = (ushort)(OperatingSystem.IsWindows() ? 23 : OperatingSystem.IsMacOS() ? 30 : 10);
+            ip.TryWriteBytes(new Span<byte>(addr + 8, 16), out _);
+            *(uint*)(addr + 24) = (uint)ip.ScopeId;
+        }
     }
 }
 
-public sealed class QuicNativeException(string what, int status)
+internal sealed class QuicNativeException(string what, int status)
     : Exception($"{what} が失敗した (status 0x{status:x})")
 {
     public int Status { get; } = status;
@@ -91,7 +107,7 @@ public sealed class QuicNativeException(string what, int status)
 
 // ===== msquic.h の構造体 =====
 
-/// <summary>QUIC_API_TABLE。使う関数だけでなく並びを保つためにすべて置く。</summary>
+/// <summary>QUIC_API_TABLE。並びを保つため、使わない関数も置く</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct QuicApiTable
 {
@@ -124,8 +140,6 @@ internal unsafe struct QuicApiTable
     public delegate* unmanaged[Cdecl]<nint, ulong, void> StreamReceiveComplete;
     public delegate* unmanaged[Cdecl]<nint, byte, int> StreamReceiveSetEnabled;
     public delegate* unmanaged[Cdecl]<nint, QuicBuffer*, uint, int, void*, int> DatagramSend;
-    public delegate* unmanaged[Cdecl]<nint, byte, int> ConnectionResumptionTicketValidationComplete;
-    public delegate* unmanaged[Cdecl]<nint, byte, int, int> ConnectionCertificateValidationComplete;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -163,7 +177,7 @@ internal unsafe struct QuicCredentialConfig
     public byte* CaCertificateFile;
 }
 
-/// <summary>QUIC_SETTINGS。IsSetFlags の bit 位置は msquic.h の並び。</summary>
+/// <summary>QUIC_SETTINGS。IsSetFlags の bit の位置は msquic.h の並び</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct QuicSettings
 {
@@ -210,13 +224,14 @@ internal struct QuicSettings
     public const int IsSetDatagramReceiveEnabled = 27;
 
     public const byte BitDatagramReceive = 1 << 3;
+
+    public void Set(int bit) => IsSetFlags |= 1UL << bit;
 }
 
 [StructLayout(LayoutKind.Explicit)]
 internal unsafe struct QuicListenerEvent
 {
     public const int NewConnection = 0;
-    public const int StopComplete = 1;
 
     [FieldOffset(0)] public int Type;
     [FieldOffset(8)] public void* NewConnectionInfo;
@@ -231,16 +246,11 @@ internal unsafe struct QuicConnectionEvent
     public const int ShutdownInitiatedByPeer = 2;
     public const int ShutdownComplete = 3;
     public const int PeerStreamStarted = 6;
-    public const int DatagramStateChanged = 10;
     public const int DatagramReceived = 11;
     public const int DatagramSendStateChanged = 12;
 
     [FieldOffset(0)] public int Type;
-    // CONNECTED
-    [FieldOffset(8)] public byte SessionResumed;
-    [FieldOffset(9)] public byte NegotiatedAlpnLength;
-    [FieldOffset(16)] public byte* NegotiatedAlpn;
-    // SHUTDOWN_INITIATED_BY_TRANSPORT: Status, ErrorCode
+    // SHUTDOWN_INITIATED_BY_TRANSPORT
     [FieldOffset(8)] public int TransportStatus;
     [FieldOffset(16)] public ulong TransportErrorCode;
     // SHUTDOWN_INITIATED_BY_PEER
@@ -250,9 +260,6 @@ internal unsafe struct QuicConnectionEvent
     // PEER_STREAM_STARTED
     [FieldOffset(8)] public nint PeerStream;
     [FieldOffset(16)] public int PeerStreamFlags;
-    // DATAGRAM_STATE_CHANGED
-    [FieldOffset(8)] public byte DatagramSendEnabled;
-    [FieldOffset(10)] public ushort DatagramMaxSendLength;
     // DATAGRAM_RECEIVED
     [FieldOffset(8)] public QuicBuffer* DatagramBuffer;
     // DATAGRAM_SEND_STATE_CHANGED
@@ -276,75 +283,50 @@ internal unsafe struct QuicStreamEvent
     // START_COMPLETE
     [FieldOffset(8)] public int StartStatus;
     // RECEIVE
-    [FieldOffset(8)] public ulong AbsoluteOffset;
     [FieldOffset(16)] public ulong TotalBufferLength;
     [FieldOffset(24)] public QuicBuffer* Buffers;
     [FieldOffset(32)] public uint BufferCount;
-    [FieldOffset(36)] public int ReceiveFlags;
     // SEND_COMPLETE
     [FieldOffset(8)] public byte Canceled;
     [FieldOffset(16)] public void* SendClientContext;
     // PEER_SEND_ABORTED / PEER_RECEIVE_ABORTED
     [FieldOffset(8)] public ulong AbortErrorCode;
-    // SHUTDOWN_COMPLETE
-    [FieldOffset(8)] public byte ConnectionShutdown;
-    [FieldOffset(9)] public byte ShutdownCompleteBits; // AppCloseInProgress:1 ...
+    // SHUTDOWN_COMPLETE: ConnectionShutdown(BOOLEAN)、その次のバイトに AppCloseInProgress:1 ...
+    [FieldOffset(9)] public byte ShutdownCompleteBits;
 }
 
 // ===== 扱いやすい包み =====
 
-/// <summary>サーバーの設定と証明書。ALPN は 1 つだけ持つ。</summary>
-internal sealed unsafe class QuicServerConfig : IDisposable
+/// <summary>msquic の registration。プロセスに 1 つ</summary>
+internal sealed unsafe class QuicRegistration : IDisposable
 {
-    public nint Registration { get; private set; }
-    public nint Configuration { get; private set; }
+    public nint Handle { get; private set; }
 
-    public QuicServerConfig(string appName, string alpn, in QuicSettings settings, byte[] pkcs12, string password)
+    public QuicRegistration(string appName)
     {
         MsQuic.Open();
         var name = Utf8z(appName);
-        fixed (byte* pName = name)
+        fixed (byte* p = name)
         {
-            var reg = new QuicRegistrationConfig { AppName = pName, ExecutionProfile = 0 };
+            var reg = new QuicRegistrationConfig { AppName = p, ExecutionProfile = 0 };
             nint h;
             MsQuic.Check(MsQuic.Api->RegistrationOpen(&reg, &h), "RegistrationOpen");
-            Registration = h;
-        }
-
-        var alpnBytes = System.Text.Encoding.ASCII.GetBytes(alpn);
-        var s = settings;
-        fixed (byte* pAlpn = alpnBytes)
-        {
-            var buf = new QuicBuffer { Length = (uint)alpnBytes.Length, Buffer = pAlpn };
-            nint h;
-            MsQuic.Check(MsQuic.Api->ConfigurationOpen(Registration, &buf, 1, &s, (uint)sizeof(QuicSettings), null, &h), "ConfigurationOpen");
-            Configuration = h;
-        }
-
-        var pw = Utf8z(password);
-        fixed (byte* pBlob = pkcs12)
-        fixed (byte* pPw = pw)
-        {
-            var p12 = new QuicCertificatePkcs12 { Asn1Blob = pBlob, Asn1BlobLength = (uint)pkcs12.Length, PrivateKeyPassword = pPw };
-            var cred = new QuicCredentialConfig { Type = MsQuic.CredentialTypePkcs12, Flags = 0, Certificate = &p12 };
-            MsQuic.Check(MsQuic.Api->ConfigurationLoadCredential(Configuration, &cred), "ConfigurationLoadCredential");
+            Handle = h;
         }
     }
 
-    /// <summary>msquic が受け入れた設定を読み戻す。BBR が効いたかの確認に使う。</summary>
-    public QuicSettings ReadBack()
+    /// <summary>全部の接続を閉じ始める。待たない</summary>
+    public void Shutdown()
     {
-        QuicSettings s;
-        uint len = (uint)sizeof(QuicSettings);
-        MsQuic.Check(MsQuic.Api->GetParam(Configuration, MsQuic.ParamConfigurationSettings, &len, &s), "GetParam(CONFIGURATION_SETTINGS)");
-        return s;
+        if (Handle != 0) MsQuic.Api->RegistrationShutdown(Handle, 0, 0);
     }
 
+    /// <summary>子の接続がすべて閉じるまで待つ。コールバックの中から呼ぶと止まる</summary>
     public void Dispose()
     {
-        if (Configuration != 0) { MsQuic.Api->ConfigurationClose(Configuration); Configuration = 0; }
-        // 子の接続がすべて閉じるまで待つ。コールバックの中から呼ぶと止まる
-        if (Registration != 0) { MsQuic.Api->RegistrationClose(Registration); Registration = 0; }
+        if (Handle == 0) return;
+        MsQuic.Api->RegistrationClose(Handle);
+        Handle = 0;
     }
 
     internal static byte[] Utf8z(string s)
@@ -355,32 +337,84 @@ internal sealed unsafe class QuicServerConfig : IDisposable
     }
 }
 
-/// <summary>UDP の口で接続を待つ。新しい接続は OnConnection に渡す。</summary>
+/// <summary>
+/// 設定と証明書の組(msquic の configuration)。証明書を取り直したら新しく作って差し替える。
+/// msquic の中で参照を数えているので、古いものを閉じても、それを使っている接続は続く
+/// </summary>
+internal sealed unsafe class QuicServerConfig : IDisposable
+{
+    public nint Handle { get; private set; }
+
+    public QuicServerConfig(QuicRegistration reg, string alpn, in QuicSettings settings, byte[] pkcs12, string? password)
+    {
+        var alpnBytes = System.Text.Encoding.ASCII.GetBytes(alpn);
+        var s = settings;
+        fixed (byte* pAlpn = alpnBytes)
+        {
+            var buf = new QuicBuffer { Length = (uint)alpnBytes.Length, Buffer = pAlpn };
+            nint h;
+            MsQuic.Check(MsQuic.Api->ConfigurationOpen(reg.Handle, &buf, 1, &s, (uint)sizeof(QuicSettings), null, &h), "ConfigurationOpen");
+            Handle = h;
+        }
+        try
+        {
+            var pw = password is null ? null : QuicRegistration.Utf8z(password);
+            fixed (byte* pBlob = pkcs12)
+            fixed (byte* pPw = pw)
+            {
+                var p12 = new QuicCertificatePkcs12 { Asn1Blob = pBlob, Asn1BlobLength = (uint)pkcs12.Length, PrivateKeyPassword = pPw };
+                var cred = new QuicCredentialConfig { Type = MsQuic.CredentialTypePkcs12, Flags = 0, Certificate = &p12 };
+                MsQuic.Check(MsQuic.Api->ConfigurationLoadCredential(Handle, &cred), "ConfigurationLoadCredential");
+            }
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>msquic が受け入れた設定を読み戻す。BBR が効いたかの確認に使う</summary>
+    public QuicSettings ReadBack()
+    {
+        QuicSettings s;
+        uint len = (uint)sizeof(QuicSettings);
+        MsQuic.Check(MsQuic.Api->GetParam(Handle, MsQuic.ParamConfigurationSettings, &len, &s), "GetParam(CONFIGURATION_SETTINGS)");
+        return s;
+    }
+
+    public void Dispose()
+    {
+        if (Handle == 0) return;
+        MsQuic.Api->ConfigurationClose(Handle);
+        Handle = 0;
+    }
+}
+
+/// <summary>UDP の口で接続を待つ。新しい接続は onConnection に渡し、configure で設定と証明書を付ける</summary>
 internal sealed unsafe class QuicListener : IDisposable
 {
-    readonly QuicServerConfig _config;
+    readonly Func<QuicConnection, int> _configure;
     readonly Func<QuicConnection, bool> _onConnection;
     GCHandle _self;
     nint _handle;
 
-    public QuicListener(QuicServerConfig config, Func<QuicConnection, bool> onConnection)
+    public QuicListener(QuicRegistration reg, Func<QuicConnection, int> configure, Func<QuicConnection, bool> onConnection)
     {
-        _config = config;
+        _configure = configure;
         _onConnection = onConnection;
         _self = GCHandle.Alloc(this);
         nint h;
-        MsQuic.Check(MsQuic.Api->ListenerOpen(config.Registration, &Callback, (void*)GCHandle.ToIntPtr(_self), &h), "ListenerOpen");
+        int st = MsQuic.Api->ListenerOpen(reg.Handle, &Callback, (void*)GCHandle.ToIntPtr(_self), &h);
+        if (MsQuic.Failed(st)) { _self.Free(); throw new QuicNativeException("ListenerOpen", st); }
         _handle = h;
     }
 
-    /// <summary>全アドレスの port で待つ。IPv4 と IPv6 の両方を受ける。</summary>
-    public void Start(string alpn, ushort port)
+    /// <summary>ip が null なら全アドレス(IPv4 と IPv6)で待つ</summary>
+    public void Start(string alpn, IPAddress? ip, ushort port)
     {
-        // QUIC_ADDR は sockaddr_in6 と同じ 28 バイト。family 0 は AF_UNSPEC で、両方を待つ
         byte* addr = stackalloc byte[32];
-        new Span<byte>(addr, 32).Clear();
-        addr[2] = (byte)(port >> 8);
-        addr[3] = (byte)port;
+        MsQuic.WriteAddress(addr, ip, port);
         var alpnBytes = System.Text.Encoding.ASCII.GetBytes(alpn);
         fixed (byte* pAlpn = alpnBytes)
         {
@@ -392,24 +426,21 @@ internal sealed unsafe class QuicListener : IDisposable
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     static int Callback(nint listener, void* ctx, QuicListenerEvent* ev)
     {
-        var self = (QuicListener)GCHandle.FromIntPtr((nint)ctx).Target!;
+        // 断るときの値。Windows は E_ABORT、Linux は EOPNOTSUPP
+        int refuse = OperatingSystem.IsWindows() ? unchecked((int)0x80004004) : 95;
         if (ev->Type != QuicListenerEvent.NewConnection) return MsQuic.StatusSuccess;
         try
         {
+            var self = (QuicListener)GCHandle.FromIntPtr((nint)ctx).Target!;
             var conn = new QuicConnection(ev->NewConnectionHandle);
-            if (!self._onConnection(conn))
-            {
-                conn.Release();
-                return OperatingSystem.IsWindows() ? unchecked((int)0x80004004) : 95; // 断る
-            }
-            int st = MsQuic.Api->ConnectionSetConfiguration(conn.Handle, self._config.Configuration);
-            if (MsQuic.Failed(st)) { conn.Release(); return st; }
+            if (!self._onConnection(conn)) { conn.Release(); return refuse; }
+            int st = self._configure(conn);
+            if (st == -1 || MsQuic.Failed(st)) { conn.Release(); return refuse; }
             return MsQuic.StatusSuccess;
         }
-        catch (Exception e)
+        catch (Exception)
         {
-            Console.Error.WriteLine($"listener: {e}");
-            return OperatingSystem.IsWindows() ? unchecked((int)0x80004005) : 5;
+            return refuse;
         }
     }
 
@@ -417,7 +448,7 @@ internal sealed unsafe class QuicListener : IDisposable
     {
         if (_handle != 0)
         {
-            // ListenerClose は止まるまで待つ
+            // 止まるまで待つ
             MsQuic.Api->ListenerClose(_handle);
             _handle = 0;
         }
@@ -425,11 +456,14 @@ internal sealed unsafe class QuicListener : IDisposable
     }
 }
 
-/// <summary>1 本の QUIC 接続。イベントは上の層(HTTP/3)が受け取る。</summary>
+/// <summary>1 本の QUIC 接続。イベントは上の層(HTTP/3)が受け取る</summary>
 internal sealed unsafe class QuicConnection
 {
+    /// <summary>この接続とその stream の状態を守る。コールバックはこれを持って呼ばれる</summary>
+    public readonly Lock Gate = new();
     public nint Handle { get; private set; }
     GCHandle _self;
+    bool _closed;
 
     public Action<QuicConnection>? OnConnected;
     public Action<QuicConnection, QuicStream, bool>? OnPeerStream; // bool は単方向か
@@ -439,9 +473,6 @@ internal sealed unsafe class QuicConnection
 
     public delegate void DatagramHandler(QuicConnection c, ReadOnlySpan<byte> data);
 
-    public bool DatagramSendEnabled { get; private set; }
-    public int DatagramMaxSendLength { get; private set; }
-
     internal QuicConnection(nint handle)
     {
         Handle = handle;
@@ -449,53 +480,84 @@ internal sealed unsafe class QuicConnection
         MsQuic.Api->SetCallbackHandler(handle, (void*)(delegate* unmanaged[Cdecl]<nint, void*, QuicConnectionEvent*, int>)&Callback, (void*)GCHandle.ToIntPtr(_self));
     }
 
-    /// <summary>受け入れずに手放す。listener のコールバックの中だけで使う。</summary>
+    /// <summary>受け入れずに手放す。listener のコールバックの中だけで使う。handle は msquic が閉じる</summary>
     internal void Release()
     {
         if (_self.IsAllocated) _self.Free();
         Handle = 0;
+        _closed = true;
     }
+
+    /// <summary>受けた接続に設定と証明書を付ける。listener のコールバックの中で呼ぶ</summary>
+    internal int SetConfiguration(nint configuration) => MsQuic.Api->ConnectionSetConfiguration(Handle, configuration);
 
     public QuicSettings ReadSettings()
     {
         QuicSettings s;
         uint len = (uint)sizeof(QuicSettings);
-        MsQuic.Check(MsQuic.Api->GetParam(Handle, MsQuic.ParamConnSettings, &len, &s), "GetParam(CONN_SETTINGS)");
+        lock (Gate)
+        {
+            if (_closed) return default;
+            MsQuic.Check(MsQuic.Api->GetParam(Handle, MsQuic.ParamConnSettings, &len, &s), "GetParam(CONN_SETTINGS)");
+        }
         return s;
     }
 
-    /// <summary>自分から stream を開く。</summary>
+    /// <summary>自分から stream を開く</summary>
     public QuicStream OpenStream(bool unidirectional)
     {
-        var s = new QuicStream(this);
-        nint h;
-        int st = MsQuic.Api->StreamOpen(Handle, unidirectional ? MsQuic.StreamOpenUnidirectional : 0, &QuicStream.Callback, (void*)s.Context, &h);
-        if (MsQuic.Failed(st)) { s.FreeHandle(); throw new QuicNativeException("StreamOpen", st); }
-        s.Attach(h);
-        MsQuic.Check(MsQuic.Api->StreamStart(h, MsQuic.StreamStartImmediate), "StreamStart");
-        return s;
+        lock (Gate)
+        {
+            if (_closed) throw new ObjectDisposedException(nameof(QuicConnection));
+            var s = new QuicStream(this);
+            nint h;
+            int st = MsQuic.Api->StreamOpen(Handle, unidirectional ? MsQuic.StreamOpenUnidirectional : 0, &QuicStream.Callback, (void*)s.Context, &h);
+            if (MsQuic.Failed(st)) { s.FreeHandle(); throw new QuicNativeException("StreamOpen", st); }
+            s.Attach(h);
+            st = MsQuic.Api->StreamStart(h, MsQuic.StreamStartImmediate);
+            if (MsQuic.Failed(st))
+            {
+                MsQuic.Api->StreamClose(h);
+                s.FreeHandle();
+                throw new QuicNativeException("StreamStart", st);
+            }
+            return s;
+        }
     }
 
-    /// <summary>QUIC の datagram を送る。送り終わるまでバッファを保つ。</summary>
+    /// <summary>QUIC の datagram を送る。送り終わるまでバッファを保つ</summary>
     public void SendDatagram(ReadOnlySpan<byte> data)
     {
-        var block = SendBlock.Create(data);
-        int st = MsQuic.Api->DatagramSend(Handle, (QuicBuffer*)block, 1, 0, (void*)block);
-        if (MsQuic.Failed(st)) { SendBlock.Free(block); throw new QuicNativeException("DatagramSend", st); }
+        lock (Gate)
+        {
+            if (_closed) return;
+            var block = SendBlock.Create(data, null);
+            int st = MsQuic.Api->DatagramSend(Handle, SendBlock.Buffer(block), 1, 0, (void*)block);
+            if (MsQuic.Failed(st)) SendBlock.Complete(block, canceled: true);
+        }
     }
 
-    public void Shutdown(ulong errorCode) => MsQuic.Api->ConnectionShutdown(Handle, 0, errorCode);
+    public void Shutdown(ulong errorCode)
+    {
+        lock (Gate)
+        {
+            if (!_closed) MsQuic.Api->ConnectionShutdown(Handle, 0, errorCode);
+        }
+    }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     static int Callback(nint handle, void* ctx, QuicConnectionEvent* ev)
     {
         var self = (QuicConnection)GCHandle.FromIntPtr((nint)ctx).Target!;
-        try { self.Handle_(ev); }
-        catch (Exception e) { Console.Error.WriteLine($"connection: {e}"); }
+        lock (self.Gate)
+        {
+            try { self.Dispatch(ev); }
+            catch (Exception e) { self.OnShutdown?.Invoke(self, $"コールバックで例外: {e.Message}"); }
+        }
         return MsQuic.StatusSuccess;
     }
 
-    void Handle_(QuicConnectionEvent* ev)
+    void Dispatch(QuicConnectionEvent* ev)
     {
         switch (ev->Type)
         {
@@ -519,30 +581,30 @@ internal sealed unsafe class QuicConnection
                 else s.Abort(0x100);
                 break;
             }
-            case QuicConnectionEvent.DatagramStateChanged:
-                DatagramSendEnabled = ev->DatagramSendEnabled != 0;
-                DatagramMaxSendLength = ev->DatagramMaxSendLength;
-                break;
             case QuicConnectionEvent.DatagramReceived:
                 OnDatagram?.Invoke(this, new ReadOnlySpan<byte>(ev->DatagramBuffer->Buffer, (int)ev->DatagramBuffer->Length));
                 break;
             case QuicConnectionEvent.DatagramSendStateChanged:
-                // 3 以上(LOST_DISCARDED, ACKNOWLEDGED, ..., CANCELED)で終わり
-                if (ev->DatagramSendState >= 3) SendBlock.Free((nint)ev->DatagramClientContext);
+                // 3 以上(LOST_DISCARDED、ACKNOWLEDGED、ACKNOWLEDGED_SPURIOUS、CANCELED)で終わり
+                if (ev->DatagramSendState >= 3) SendBlock.Complete((nint)ev->DatagramClientContext, canceled: false);
                 break;
             case QuicConnectionEvent.ShutdownComplete:
             {
                 bool appClose = (ev->ShutdownCompleteBits & 4) != 0;
-                OnClosed?.Invoke(this);
-                if (!appClose) MsQuic.Api->ConnectionClose(Handle);
-                if (_self.IsAllocated) _self.Free();
+                _closed = true;
+                try { OnClosed?.Invoke(this); }
+                finally
+                {
+                    if (!appClose) MsQuic.Api->ConnectionClose(Handle);
+                    if (_self.IsAllocated) _self.Free();
+                }
                 break;
             }
         }
     }
 }
 
-/// <summary>1 本の QUIC stream。受信はコールバックの中で写して返す(受信を保留しない)。</summary>
+/// <summary>1 本の QUIC stream。受信はコールバックの中で写して返す。溜まりすぎたら受信を止める(SetReceiveEnabled)</summary>
 internal sealed unsafe class QuicStream
 {
     public QuicConnection Connection { get; }
@@ -553,10 +615,16 @@ internal sealed unsafe class QuicStream
     bool _idKnown;
 
     public delegate void ReceiveHandler(QuicStream s, ReadOnlySpan<byte> data, bool fin);
+    /// <summary>届いたバイト。fin は相手が送り終えた印(中身は空)</summary>
     public ReceiveHandler? OnReceive;
-    public Action<QuicStream, ulong>? OnPeerAbort; // 相手が送信を止めた(RESET_STREAM)
-    public Action<QuicStream, ulong>? OnPeerStopSending;
+    /// <summary>相手が送信を打ち切った(RESET_STREAM)</summary>
+    public Action<QuicStream, ulong>? OnPeerAbort;
+    /// <summary>stream が終わった。このあと handle は使えない</summary>
     public Action<QuicStream>? OnClosed;
+
+    readonly TaskCompletionSource _sendDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    /// <summary>送信側が終わった。FIN まで相手が受け取ったか、打ち切った</summary>
+    public Task SendDone => _sendDone.Task;
 
     internal QuicStream(QuicConnection c)
     {
@@ -565,57 +633,104 @@ internal sealed unsafe class QuicStream
     }
 
     internal nint Context => GCHandle.ToIntPtr(_self);
+    public bool IsClosed => _closed;
 
-    internal void Attach(nint handle)
-    {
-        Handle = handle;
-    }
+    internal void Attach(nint handle) => Handle = handle;
 
     internal void FreeHandle()
     {
         if (_self.IsAllocated) _self.Free();
+        _closed = true;
+        _sendDone.TrySetResult();
     }
 
-    /// <summary>送る。fin で送信側を閉じる。空で fin だけも送れる。</summary>
+    /// <summary>送る。送り終わりを待たない。fin で送信側を閉じる</summary>
     public void Send(ReadOnlySpan<byte> data, bool fin = false)
     {
-        if (_closed) return;
-        var block = SendBlock.Create(data);
-        int st = MsQuic.Api->StreamSend(Handle, (QuicBuffer*)block, 1, fin ? MsQuic.SendFlagFin : 0, (void*)block);
-        if (MsQuic.Failed(st)) { SendBlock.Free(block); throw new QuicNativeException("StreamSend", st); }
+        lock (Connection.Gate)
+        {
+            if (_closed) return;
+            var block = SendBlock.Create(data, null);
+            int st = MsQuic.Api->StreamSend(Handle, SendBlock.Buffer(block), 1, fin ? MsQuic.SendFlagFin : 0, (void*)block);
+            if (MsQuic.Failed(st)) { SendBlock.Complete(block, canceled: true); throw new QuicNativeException("StreamSend", st); }
+        }
     }
 
-    /// <summary>送信側を正しく閉じる(FIN)。</summary>
+    /// <summary>
+    /// 送って、msquic がバッファを返すまで待つ。msquic は送り先の窓が空くまでバッファを抱えるので、
+    /// これを待てば送る側が溜め込みすぎない
+    /// </summary>
+    public Task SendAsync(ReadOnlySpan<byte> data, bool fin = false)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (Connection.Gate)
+        {
+            if (_closed) return Task.FromException(new IOException("stream が閉じている"));
+            var block = SendBlock.Create(data, tcs);
+            int st = MsQuic.Api->StreamSend(Handle, SendBlock.Buffer(block), 1, fin ? MsQuic.SendFlagFin : 0, (void*)block);
+            if (MsQuic.Failed(st))
+            {
+                SendBlock.Complete(block, canceled: true);
+                return Task.FromException(new QuicNativeException("StreamSend", st));
+            }
+        }
+        return tcs.Task;
+    }
+
+    /// <summary>送信側を正しく閉じる(FIN)</summary>
     public void Finish()
     {
-        if (_closed) return;
-        MsQuic.Api->StreamShutdown(Handle, MsQuic.StreamShutdownGraceful, 0);
+        lock (Connection.Gate)
+        {
+            if (!_closed) MsQuic.Api->StreamShutdown(Handle, MsQuic.StreamShutdownGraceful, 0);
+        }
     }
 
-    /// <summary>両方向を打ち切る(RESET_STREAM と STOP_SENDING)。</summary>
+    /// <summary>両方向を打ち切る(RESET_STREAM と STOP_SENDING)</summary>
     public void Abort(ulong errorCode)
     {
-        if (_closed) return;
-        MsQuic.Api->StreamShutdown(Handle, MsQuic.StreamShutdownAbort, errorCode);
+        lock (Connection.Gate)
+        {
+            if (!_closed) MsQuic.Api->StreamShutdown(Handle, MsQuic.StreamShutdownAbort, errorCode);
+        }
     }
 
-    /// <summary>受信側だけ打ち切る(STOP_SENDING)。</summary>
+    /// <summary>受信側だけ打ち切る(STOP_SENDING)</summary>
     public void StopReceiving(ulong errorCode)
     {
-        if (_closed) return;
-        MsQuic.Api->StreamShutdown(Handle, MsQuic.StreamShutdownAbortReceive, errorCode);
+        lock (Connection.Gate)
+        {
+            if (!_closed) MsQuic.Api->StreamShutdown(Handle, MsQuic.StreamShutdownAbortReceive, errorCode);
+        }
+    }
+
+    /// <summary>受信を止める・戻す。止めているあいだ msquic は窓を広げないので、相手が送れなくなる</summary>
+    public void SetReceiveEnabled(bool enabled)
+    {
+        lock (Connection.Gate)
+        {
+            if (!_closed) MsQuic.Api->StreamReceiveSetEnabled(Handle, enabled ? (byte)1 : (byte)0);
+        }
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static int Callback(nint handle, void* ctx, QuicStreamEvent* ev)
     {
         var self = (QuicStream)GCHandle.FromIntPtr((nint)ctx).Target!;
-        try { self.Handle_(ev); }
-        catch (Exception e) { Console.Error.WriteLine($"stream {self.Id}: {e}"); }
+        lock (self.Connection.Gate)
+        {
+            try { self.Dispatch(ev); }
+            catch (Exception)
+            {
+                // 上の層の誤り。stream を打ち切って続ける(H3_INTERNAL_ERROR)
+                if (ev->Type != QuicStreamEvent.ShutdownComplete && !self._closed)
+                    MsQuic.Api->StreamShutdown(self.Handle, MsQuic.StreamShutdownAbort, 0x102);
+            }
+        }
         return MsQuic.StatusSuccess;
     }
 
-    void Handle_(QuicStreamEvent* ev)
+    void Dispatch(QuicStreamEvent* ev)
     {
         switch (ev->Type)
         {
@@ -644,7 +759,7 @@ internal sealed unsafe class QuicStream
                 break;
             }
             case QuicStreamEvent.SendComplete:
-                SendBlock.Free((nint)ev->SendClientContext);
+                SendBlock.Complete((nint)ev->SendClientContext, ev->Canceled != 0);
                 break;
             case QuicStreamEvent.PeerSendShutdown:
                 OnReceive?.Invoke(this, default, true);
@@ -652,45 +767,68 @@ internal sealed unsafe class QuicStream
             case QuicStreamEvent.PeerSendAborted:
                 OnPeerAbort?.Invoke(this, ev->AbortErrorCode);
                 break;
-            case QuicStreamEvent.PeerReceiveAborted:
-                OnPeerStopSending?.Invoke(this, ev->AbortErrorCode);
+            case QuicStreamEvent.SendShutdownComplete:
+                _sendDone.TrySetResult();
                 break;
             case QuicStreamEvent.ShutdownComplete:
             {
                 _closed = true;
-                OnClosed?.Invoke(this);
+                _sendDone.TrySetResult();
                 bool appClose = (ev->ShutdownCompleteBits & 1) != 0;
-                if (!appClose) MsQuic.Api->StreamClose(Handle);
-                if (_self.IsAllocated) _self.Free();
+                try { OnClosed?.Invoke(this); }
+                finally
+                {
+                    if (!appClose) MsQuic.Api->StreamClose(Handle);
+                    if (_self.IsAllocated) _self.Free();
+                }
                 break;
             }
         }
     }
 
-    /// <summary>ID を読む。自分で開いた stream は始まるまで ID が決まらない。</summary>
+    /// <summary>ID を読む。自分で開いた stream は始まるまで ID が決まらない</summary>
     internal void LoadId()
     {
         if (_idKnown || Handle == 0) return;
-        Id = MsQuic.StreamId(Handle);
+        ulong id;
+        uint len = 8;
+        if (MsQuic.Failed(MsQuic.Api->GetParam(Handle, MsQuic.ParamStreamId, &len, &id))) return;
+        Id = id;
         _idKnown = true;
     }
 }
 
-/// <summary>送信中のバッファ。QUIC_BUFFER の後ろにデータを置いた 1 つの塊にする。</summary>
+/// <summary>
+/// 送信中のバッファ。[QUIC_BUFFER][待ち手の GCHandle][データ] を 1 つの塊にして、ClientSendContext に渡す。
+/// msquic が SEND_COMPLETE で返してきたら、待ち手に知らせて解放する
+/// </summary>
 internal static unsafe class SendBlock
 {
-    public static nint Create(ReadOnlySpan<byte> data)
+    static readonly int Header = sizeof(QuicBuffer) + sizeof(nint);
+
+    public static nint Create(ReadOnlySpan<byte> data, TaskCompletionSource? waiter)
     {
-        var p = (byte*)NativeMemory.Alloc((nuint)(sizeof(QuicBuffer) + data.Length));
+        var p = (byte*)NativeMemory.Alloc((nuint)(Header + data.Length));
         var b = (QuicBuffer*)p;
         b->Length = (uint)data.Length;
-        b->Buffer = p + sizeof(QuicBuffer);
+        b->Buffer = p + Header;
+        *(nint*)(p + sizeof(QuicBuffer)) = waiter is null ? 0 : GCHandle.ToIntPtr(GCHandle.Alloc(waiter));
         data.CopyTo(new Span<byte>(b->Buffer, data.Length));
         return (nint)p;
     }
 
-    public static void Free(nint p)
+    public static QuicBuffer* Buffer(nint block) => (QuicBuffer*)block;
+
+    public static void Complete(nint block, bool canceled)
     {
-        if (p != 0) NativeMemory.Free((void*)p);
+        if (block == 0) return;
+        var h = *(nint*)((byte*)block + sizeof(QuicBuffer));
+        NativeMemory.Free((void*)block);
+        if (h == 0) return;
+        var handle = GCHandle.FromIntPtr(h);
+        var tcs = (TaskCompletionSource)handle.Target!;
+        handle.Free();
+        if (canceled) tcs.TrySetException(new IOException("送信が取り消された"));
+        else tcs.TrySetResult();
     }
 }

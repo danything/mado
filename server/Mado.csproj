@@ -12,6 +12,8 @@
     <StripSymbols>true</StripSymbols>
     <OptimizationPreference>Size</OptimizationPreference>
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <!-- msquic を関数ポインタで直接呼ぶ(Quic/MsQuic.cs) -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <!-- Windows のサービスとして動く(UseWindowsService)。Microsoft 自身のパッケージ -->
@@ -21,6 +23,24 @@
     <!-- 画面(web/ を bun build したもの)を exe に埋め込む。先に `bun run build:web` で dist/web を作る -->
     <EmbeddedResource Include="../dist/web/**" LogicalName="web/%(Filename)%(Extension)" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- WebTransport に使う msquic(Windows の SChannel 版)。Microsoft 自身のパッケージ。BBR は 2.2 から。
+         C++ 向けのパッケージで .NET の出力には自動で入らないので、下の CopyMsQuicBuild / CopyMsQuicPublish で exe の隣に置く。
+         .NET の runtime pack の msquic.dll は System.Net.Quic のためのもので、版も出力に入るかも .NET 次第なので頼らない -->
+    <PackageReference Include="Microsoft.Native.Quic.MsQuic.Schannel" Version="2.6.2" GeneratePathProperty="true" ExcludeAssets="all" />
+  </ItemGroup>
+  <PropertyGroup>
+    <MsQuicDll>$(PkgMicrosoft_Native_Quic_MsQuic_Schannel)/build/native/bin/x64/msquic.dll</MsQuicDll>
+    <MsQuicDll Condition="$(RuntimeIdentifier.EndsWith('-arm64'))">$(PkgMicrosoft_Native_Quic_MsQuic_Schannel)/build/native/bin/arm64/msquic.dll</MsQuicDll>
+    <!-- Windows 向けのときだけ。Linux では libmsquic(パッケージの libmsquic)を使う -->
+    <WithMsQuic Condition="$(RuntimeIdentifier.StartsWith('win')) or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))">true</WithMsQuic>
+  </PropertyGroup>
+  <Target Name="CopyMsQuicBuild" AfterTargets="Build" Condition="'$(WithMsQuic)' == 'true'">
+    <Copy SourceFiles="$(MsQuicDll)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyMsQuicPublish" AfterTargets="Publish" Condition="'$(WithMsQuic)' == 'true'">
+    <Copy SourceFiles="$(MsQuicDll)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="false" />
+  </Target>
   <ItemGroup>
     <InternalsVisibleTo Include="Mado.Tests" />
   </ItemGroup>
