@@ -189,6 +189,7 @@ async function runSession(
 				: new GfxClient(
 						new CanvasGfxOps(display),
 						mode === "avc" ? new WebCodecsAvc(hardware) : undefined,
+						pool,
 					);
 		/** 壊れて、一つ下の方式でつなぎ直すとき */
 		let fallback: SessionEnd | undefined;
@@ -308,7 +309,7 @@ function diagText(
 	if (gfx?.active)
 		lines.push(
 			`GFX: 版=${gfx.confirmedVersion ?? "-"} ${Object.entries(gfx.stats)
-				.map(([k, v]) => `${k}=${v}`)
+				.map(([k, v]) => `${k}=${Math.round(v)}`)
 				.join(" ")} clear未対応=${gfx.clearUnsupported}`,
 		);
 	if (recentErrors.length) lines.push("エラー:", ...recentErrors);

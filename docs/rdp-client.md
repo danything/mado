@@ -33,6 +33,7 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 - 画面の canvas は `desynchronized` にして、ブラウザの合成を待たずに表示する。GFX の present は描画の周期に 1 回にまとめる(周期の最初のフレームはすぐ出す)
 - 面のコピー、キャッシュ、塗りつぶしは drawImage と fillRect で行う。getImageData は GPU から読み戻すので遅い
 - H.264 は GPU で復号できれば `prefer-hardware` を指定する。GPU での復号が失敗したら CPU の復号で作り直す
+- Progressive のタイルは Web Worker で並列に復号する。タイルは前の段の係数を覚えているので、同じ位置のタイルはいつも同じ Worker に送る(`rfxpool.ts` の `runOn`)。データが届いた時点で Worker に渡し、描くのは届いた順にする。そのため前のフレームを描いている間に次のフレームの復号が進む。メインスレッドで復号していたときは、スクロール中に 1 PDU あたり約 10ms かかっていた
 
 ## Windows の挙動(実機で確認したこと)
 

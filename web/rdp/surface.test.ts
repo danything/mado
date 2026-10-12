@@ -485,6 +485,10 @@ describe("SurfaceRenderer(非同期のプール)", () => {
 	class ManualPool implements TilePool {
 		readonly async = true;
 		jobs: Job[] = [];
+		readonly lanes = 1;
+		runOn(_lane: number, job: DecodeJob): Promise<Uint8ClampedArray> {
+			return this.run(job);
+		}
 		run(job: DecodeJob): Promise<Uint8ClampedArray> {
 			return new Promise((resolve, reject) =>
 				this.jobs.push({ job, resolve, reject }),

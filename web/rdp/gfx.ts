@@ -8,8 +8,15 @@ import { decodePlanar } from "./bitmap";
 import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
-import { ProgressiveDecoder } from "./progressive";
+import {
+	clipTile,
+	ProgressiveDecoder,
+	type ProgressivePart,
+	type ProgressiveTile,
+	parseProgressive,
+} from "./progressive";
 import { decodeStream } from "./rfx";
+import type { TilePool } from "./rfxpool";
 import { clampRects, type Yuv420, Yuv444 } from "./yuv444";
 import { Zgfx } from "./zgfx";
 
@@ -241,6 +248,11 @@ export function frameAcknowledge(
 
 type GfxPdu = { cmd: number; body: Uint8Array };
 
+/** Worker に先に頼んだ Progressive の復号 */
+type Prefetched =
+	| { tiles: ProgressiveTile[]; rgba: Uint8ClampedArray[] }
+	| { error: unknown };
+
 /** 伸長したデータに並ぶ PDU を切り出す */
 export function splitPdus(data: Uint8Array): GfxPdu[] {
 	const r = new Reader(data);
@@ -382,6 +394,10 @@ export class GfxClient implements DynamicHandler {
 		/** AVC444 の復号を待った時間と、YUV444 を組み立てて RGBA にした時間の合計(ms) */
 		avc444DecodeMs: 0,
 		avc444ConvertMs: 0,
+		/** ClearCodec・Progressive・Planar の復号にかかった時間の合計(ms。メインスレッド) */
+		clearMs: 0,
+		progressiveMs: 0,
+		planarMs: 0,
 		clear: 0,
 		planar: 0,
 		uncompressed: 0,
@@ -406,11 +422,17 @@ export class GfxClient implements DynamicHandler {
 	/** H.264 の復号が続けて失敗した(復号器が使えない)。H.264 なしでつなぎ直すとよい。1 度だけ呼ぶ */
 	onAvcBroken?: () => void;
 
-	/** avc を渡したときだけ H.264 を使えると伝える */
+	/** Progressive のタイルを復号する Worker(無ければ、その場で復号する) */
+	private pool?: TilePool;
+
+	/** avc を渡したときだけ H.264 を使えると伝える。pool を渡すと、Progressive は Worker で並列に復号する */
 	constructor(
 		private ops: GfxOps,
 		private avc?: AvcDecoder,
-	) {}
+		pool?: TilePool,
+	) {
+		if (pool?.async) this.pool = pool;
+	}
 
 	/** サーバーが GFX のチャネルを開いた(開かなければ旧来の描画のまま) */
 	get active(): boolean {
@@ -462,8 +484,10 @@ export class GfxClient implements DynamicHandler {
 		}
 		for (const p of pdus) {
 			if (p.cmd === CMD.ENDFRAME) this.queuedFrames++;
+			// Progressive は届いた順にすぐ Worker へ渡す(前のフレームを描いている間に復号が進む)。描くのは順番どおり
+			const pre = this.pool && this.prefetch(this.pool, p);
 			this.chain = this.chain
-				.then(() => this.handle(p))
+				.then(() => this.handle(p, pre))
 				.catch((e) => {
 					this.stats.skipped++;
 					this.onError?.(e);
@@ -476,7 +500,46 @@ export class GfxClient implements DynamicHandler {
 		return this.chain;
 	}
 
-	private async handle(p: GfxPdu): Promise<void> {
+	/**
+	 * Worker で復号するものを先に頼む。面を作る・消すときは、タイルの状態を捨てるよう全部の Worker へ(後のタイルより先に届く)。
+	 * 面の大きさはまだ分からない(CreateSurface を処理する前のこともある)ので、面で切るのは描くとき
+	 */
+	private prefetch(pool: TilePool, p: GfxPdu): Promise<Prefetched> | undefined {
+		const r = new Reader(p.body);
+		if (p.cmd === CMD.CREATESURFACE || p.cmd === CMD.DELETESURFACE) {
+			const surface = r.u16();
+			for (let i = 0; i < pool.lanes; i++)
+				void pool
+					.runOn(i, { kind: "progressiveReset", surface })
+					.catch(() => {});
+			return undefined;
+		}
+		if (p.cmd !== CMD.WIRETOSURFACE_2) return undefined;
+		try {
+			const surface = r.u16();
+			if (r.u16() !== CODEC.CAPROGRESSIVE) return undefined;
+			r.u32(); // codecContextId
+			r.u8(); // pixelFormat
+			const tiles = parseProgressive(
+				surface,
+				r.bytes(r.u32()),
+				MAX_SURFACE_SIDE,
+				MAX_SURFACE_SIDE,
+			);
+			return Promise.all(
+				tiles.map((t) =>
+					pool.runOn((t.x + t.y) / 64, { kind: "progressive", tile: t.job }),
+				),
+			).then(
+				(rgba) => ({ tiles, rgba }),
+				(error: unknown) => ({ error }),
+			);
+		} catch (error) {
+			return Promise.resolve({ error });
+		}
+	}
+
+	private async handle(p: GfxPdu, pre?: Promise<Prefetched>): Promise<void> {
 		const r = new Reader(p.body);
 		switch (p.cmd) {
 			case CMD.CAPSCONFIRM:
@@ -636,7 +699,7 @@ export class GfxClient implements DynamicHandler {
 				await this.wireToSurface(r);
 				break;
 			case CMD.WIRETOSURFACE_2:
-				this.wireToSurface2(r);
+				await this.wireToSurface2(r, pre);
 				break;
 		}
 	}
@@ -649,7 +712,10 @@ export class GfxClient implements DynamicHandler {
 	}
 
 	/** WireToSurface2: 宣言しなくても、版 8 以上の Windows は Progressive で送ってくる(写真・新しく見えた部分など) */
-	private wireToSurface2(r: Reader): void {
+	private async wireToSurface2(
+		r: Reader,
+		pre?: Promise<Prefetched>,
+	): Promise<void> {
 		const id = r.u16();
 		const codec = r.u16();
 		r.u32(); // codecContextId
@@ -662,13 +728,27 @@ export class GfxClient implements DynamicHandler {
 			return;
 		}
 		this.stats.progressive++;
-		for (const p of this.progressive.decode(
-			id,
-			data,
-			surface.width,
-			surface.height,
-		))
-			this.ops.putRgba(id, p.x, p.y, p.w, p.h, p.rgba);
+		// progressiveMs: その場で復号するときは復号の時間、Worker のときは描く順番が来てから待った時間
+		const t0 = performance.now();
+		const parts: ProgressivePart[] = [];
+		if (pre) {
+			const done = await pre;
+			if ("error" in done) throw done.error;
+			for (const [i, t] of done.tiles.entries())
+				parts.push(
+					...clipTile(
+						t,
+						done.rgba[i] as Uint8ClampedArray,
+						surface.width,
+						surface.height,
+					),
+				);
+		} else
+			parts.push(
+				...this.progressive.decode(id, data, surface.width, surface.height),
+			);
+		this.stats.progressiveMs += performance.now() - t0;
+		for (const p of parts) this.ops.putRgba(id, p.x, p.y, p.w, p.h, p.rgba);
 	}
 
 	private async wireToSurface(r: Reader): Promise<void> {
@@ -697,29 +777,23 @@ export class GfxClient implements DynamicHandler {
 				this.ops.putRgba(id, dest.left, dest.top, w, h, rgba);
 				break;
 			}
-			case CODEC.PLANAR:
+			case CODEC.PLANAR: {
 				// GFX の Planar は上の行から(旧ビットマップは下から)
 				this.stats.planar++;
-				this.ops.putRgba(
-					id,
-					dest.left,
-					dest.top,
-					w,
-					h,
-					decodePlanar(data, w, h, true),
-				);
+				const t0 = performance.now();
+				const rgba = decodePlanar(data, w, h, true);
+				this.stats.planarMs += performance.now() - t0;
+				this.ops.putRgba(id, dest.left, dest.top, w, h, rgba);
 				break;
-			case CODEC.CLEARCODEC:
+			}
+			case CODEC.CLEARCODEC: {
 				this.stats.clear++;
-				this.ops.putRgba(
-					id,
-					dest.left,
-					dest.top,
-					w,
-					h,
-					this.clear.decode(data, w, h),
-				);
+				const t0 = performance.now();
+				const rgba = this.clear.decode(data, w, h);
+				this.stats.clearMs += performance.now() - t0;
+				this.ops.putRgba(id, dest.left, dest.top, w, h, rgba);
 				break;
+			}
 			case CODEC.CAVIDEO: {
 				// RemoteFX: タイルの位置と領域は destRect からの相対
 				this.stats.rfx++;
