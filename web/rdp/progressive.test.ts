@@ -305,6 +305,16 @@ describe("Progressive", () => {
 		expect(new Set(whole?.rgba).size).toBeGreaterThan(2);
 	});
 
+	test("面の外のタイルは飛ばし、ほかのタイルは描く", () => {
+		const out = new ProgressiveDecoder().decode(
+			1,
+			stream(region([simple(1, 0, 0, EMPTY), simple(0, 0, 0, EMPTY)])),
+			64,
+			64,
+		);
+		expect(out.length).toBeGreaterThan(0);
+	});
+
 	test("不正な入力は例外", () => {
 		const d = new ProgressiveDecoder();
 		expect(() => d.decode(1, block(0xccc9, EMPTY), 64, 64)).toThrow(
@@ -313,9 +323,6 @@ describe("Progressive", () => {
 		expect(() =>
 			d.decode(1, block(0xccc0, new Writer().u32(1).u16(0x100).done()), 64, 64),
 		).toThrow("署名");
-		expect(() =>
-			d.decode(1, stream(region([simple(1, 0, 0, EMPTY)])), 64, 64),
-		).toThrow("面の外");
 		expect(() =>
 			d.decode(1, stream(region([first(0, 0, 3, EMPTY)])), 64, 64),
 		).toThrow("quality");

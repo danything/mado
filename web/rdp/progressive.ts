@@ -200,8 +200,8 @@ function region(
 		const yIdx = t.u16();
 		if (quant.some((q) => !q))
 			throw new Error("Progressive: 量子化の番号が範囲外");
-		if (xIdx * TILE >= width || yIdx * TILE >= height)
-			throw new Error("Progressive: タイルが面の外");
+		// 面の外のタイルは描けないので飛ばす(PDU 全体は捨てない。ほかのタイルは描く)
+		if (xIdx * TILE >= width || yIdx * TILE >= height) continue;
 		const key = yIdx * 65536 + xIdx;
 		let tile = tiles.get(key);
 		if (!tile) {
