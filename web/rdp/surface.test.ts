@@ -3,11 +3,11 @@
 import { describe, expect, test } from "bun:test";
 import type { BitmapJob, BitmapRect } from "./bitmap";
 import { concat, Writer } from "./bytes";
+import { parseTiles } from "./rfx";
 import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
 import { type DecodeJob, decodeJob, type TilePool } from "./rfxpool";
 import {
 	handleSurfaceCommands,
-	parseRfxTiles,
 	type SurfaceDraw,
 	SurfaceRenderer,
 } from "./surface";
@@ -461,8 +461,8 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 		expect(r.pending).toBe(0);
 	});
 
-	test("parseRfxTiles は復号せずに位置と圧縮データを取り出す", () => {
-		const tiles = parseRfxTiles(
+	test("parseTiles は復号せずに位置と圧縮データを取り出す", () => {
+		const tiles = parseTiles(
 			rfxStream([{ x: 0, y: 0, w: 128, h: 64 }], [tile(64, 0), tile(0, 64)]),
 		);
 		expect(tiles.map((t) => [t.x, t.y])).toEqual([

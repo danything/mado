@@ -31,7 +31,7 @@ export interface Screen {
 }
 
 /** 静的チャネルに届いたメッセージ(断片は組み立て済み。drdynvc / cliprdr)を受け取る */
-export type ChannelHandler = (name: string, data: Uint8Array) => void;
+type ChannelHandler = (name: string, data: Uint8Array) => void;
 
 export class RdpClient {
 	private fast = new Reassembler();

@@ -8,8 +8,8 @@ import type { WorkerReply, WorkerRequest } from "./rfx.worker";
 /** ビルド(tools/build-web.ts)が差し込む、束ねた Worker の URL。ビルドしていない環境(試験など)では未定義 */
 declare const __RFX_WORKER__: string | undefined;
 
-export type TileData = [Uint8Array, Uint8Array, Uint8Array];
-export type TileQuant = [number[], number[], number[]];
+type TileData = [Uint8Array, Uint8Array, Uint8Array];
+type TileQuant = [number[], number[], number[]];
 
 /** 復号の 1 つの仕事 */
 export type DecodeJob =
@@ -67,11 +67,11 @@ type Slot = {
 };
 
 /** Worker の数: コアの数 - 1(メインスレッドの分)、1〜4 */
-export function poolSize(cores: number): number {
+function poolSize(cores: number): number {
 	return Math.max(1, Math.min(4, (Number.isFinite(cores) ? cores : 2) - 1));
 }
 
-export class WorkerPool implements TilePool {
+class WorkerPool implements TilePool {
 	readonly async = true;
 	private slots: Slot[] = [];
 	private waiting = new Map<

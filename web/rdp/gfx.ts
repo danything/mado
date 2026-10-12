@@ -51,8 +51,8 @@ export const CODEC = {
 } as const;
 
 /** 版 8.1 で AVC420 を使う。版 10 以上は AVC444 も使えることになるので宣言しない */
-export const CAPVERSION_8 = 0x00080004;
-export const CAPVERSION_81 = 0x00080105;
+const CAPVERSION_8 = 0x00080004;
+const CAPVERSION_81 = 0x00080105;
 const CAPS_FLAG_AVC420_ENABLED = 0x10;
 
 const PIXEL_FORMAT_ARGB = 0x21;
@@ -162,7 +162,7 @@ export function frameAcknowledge(
 	);
 }
 
-export type GfxPdu = { cmd: number; body: Uint8Array };
+type GfxPdu = { cmd: number; body: Uint8Array };
 
 /** 伸長したデータに並ぶ PDU を切り出す */
 export function splitPdus(data: Uint8Array): GfxPdu[] {
@@ -183,7 +183,7 @@ function readRect(r: Reader): Rect {
 	return { left: r.u16(), top: r.u16(), right: r.u16(), bottom: r.u16() };
 }
 
-export type Avc420 = {
+type Avc420 = {
 	regions: Rect[];
 	quality: { qp: number; quality: number }[];
 	stream: Uint8Array;
@@ -205,7 +205,7 @@ export function parseAvc420(data: Uint8Array): Avc420 {
 }
 
 /** Annex B の NAL を順に(開始符号 00 00 01 / 00 00 00 01 の後ろ) */
-export function* nalUnits(stream: Uint8Array): Generator<Uint8Array> {
+function* nalUnits(stream: Uint8Array): Generator<Uint8Array> {
 	let i = 0;
 	let start = -1;
 	while (i + 2 < stream.length) {
