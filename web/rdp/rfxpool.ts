@@ -71,6 +71,8 @@ type Slot = {
 	worker: Worker;
 	/** 復号を頼んで、まだ返っていない仕事の数 */
 	busy: number;
+	/** 読めなかった・落ちた。lane の割り当てを変えないよう、配列からは外さずに印を付ける */
+	dead?: boolean;
 };
 
 /** Worker の数: コアの数 - 1(メインスレッドの分)、1〜4 */
@@ -119,12 +121,15 @@ class WorkerPool implements TilePool {
 	run(job: DecodeJob): Promise<Uint8ClampedArray> {
 		// いちばん空いている Worker へ
 		let slot: Slot | undefined;
-		for (const s of this.slots) if (!slot || s.busy < slot.busy) slot = s;
+		for (const s of this.slots)
+			if (!s.dead && (!slot || s.busy < slot.busy)) slot = s;
 		return this.send(slot, job);
 	}
 
 	runOn(lane: number, job: DecodeJob): Promise<Uint8ClampedArray> {
-		return this.send(this.slots[lane % this.slots.length], job);
+		// 落ちた Worker の lane は、その場で復号する(ほかの lane の割り当ては変えない)
+		const slot = this.slots[lane % this.slots.length];
+		return this.send(slot?.dead ? undefined : slot, job);
 	}
 
 	/** slot の Worker へ頼む。生きている Worker が無ければ、その場で復号 */
@@ -177,9 +182,8 @@ class WorkerPool implements TilePool {
 
 	/** Worker が読めなかった・落ちた: その Worker は使わず、頼んであったものはその場で復号し直す */
 	private fail(slot: Slot, e: Error): void {
-		const i = this.slots.indexOf(slot);
-		if (i >= 0) {
-			this.slots.splice(i, 1);
+		if (!slot.dead) {
+			slot.dead = true;
 			slot.worker.terminate();
 			console.warn(
 				"画面の復号の Worker が使えない。その場で復号する:",
