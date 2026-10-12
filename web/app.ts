@@ -11,6 +11,12 @@ import { avcSupport, GfxClient } from "./rdp/gfx";
 import { CanvasGfxOps, WebCodecsAvc } from "./rdp/gfx-canvas";
 import * as input from "./rdp/input";
 import { createPool } from "./rdp/rfxpool";
+import {
+	parseRemembered,
+	type Remembered,
+	remember,
+	usernameFor,
+} from "./remember";
 
 type SessionInfo = {
 	name: string;
@@ -31,7 +37,7 @@ const screen = $<HTMLElement>("#screen");
 const field = (name: string) =>
 	form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-/** 前回のつなぐ先とユーザー名。パスワードは覚えない */
+/** 前回のつなぐ先と、つなぐ先ごとのユーザー名(remember.ts)。パスワードは覚えない */
 const REMEMBER = "mado:last";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -51,15 +57,19 @@ const select = field("target") as HTMLSelectElement;
 for (const name of session.targets) select.add(new Option(name, name));
 // つなぐ先が 1 つなら選ぶ欄は出さない
 $<HTMLElement>("#target-field").hidden = session.targets.length < 2;
+let remembered: Remembered = { usernames: {} };
 try {
-	const last = JSON.parse(localStorage.getItem(REMEMBER) ?? "{}") as {
-		target?: string;
-		username?: string;
-	};
-	if (last.target && session.targets.includes(last.target))
-		select.value = last.target;
-	if (last.username) field("username").value = last.username;
+	remembered = parseRemembered(localStorage.getItem(REMEMBER));
 } catch {}
+if (remembered.target && session.targets.includes(remembered.target))
+	select.value = remembered.target;
+// つなぐ先を選び直したら、その先で前に使ったユーザー名にする
+const fillUsername = () => {
+	const u = usernameFor(remembered, select.value);
+	if (u !== undefined) field("username").value = u;
+};
+fillUsername();
+select.addEventListener("change", fillUsername);
 home.hidden = false;
 
 const display = new Display(screen);
@@ -114,9 +124,9 @@ form.addEventListener("submit", async (e) => {
 		username: field("username").value,
 		password: field("password").value,
 	};
+	remembered = remember(remembered, login.target, login.username);
 	try {
-		const { target, username } = login;
-		localStorage.setItem(REMEMBER, JSON.stringify({ target, username }));
+		localStorage.setItem(REMEMBER, JSON.stringify(remembered));
 	} catch {}
 	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
 	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
