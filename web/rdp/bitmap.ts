@@ -458,9 +458,10 @@ export function decodePlanar(
 				out[d + 1] = b;
 				out[d + 2] = c;
 			} else {
-				// YCoCg: Co と Cg は (cll - 1) ビット左へ戻した符号付き 8 ビット
-				const co = ((b << 24) >> 24) << (cll - 1);
-				const cg = ((c << 24) >> 24) << (cll - 1);
+				// YCoCg: Co と Cg は、8 ビットのまま (cll - 1) ビット左へずらしてから、符号付き 8 ビットとして読む(ずらしたあふれは捨てる)。
+				// FreeRDP の YCoCgToRGB と同じ順。符号付きにしてからずらすと、濃い色で符号が逆になり、赤と青が入れ替わって見えた
+				const co = (((b << (cll - 1)) & 0xff) << 24) >> 24;
+				const cg = (((c << (cll - 1)) & 0xff) << 24) >> 24;
 				out[d] = clamp8(a + co - cg);
 				out[d + 1] = clamp8(a + cg);
 				out[d + 2] = clamp8(a - co - cg);

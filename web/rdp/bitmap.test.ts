@@ -434,3 +434,36 @@ describe("Planar (RDP 6.0、32bpp の圧縮)", () => {
 		);
 	});
 });
+
+describe("Planar の実データ(Windows 11 LTSC から取った 64x64、ヘッダー 0x13 = YCoCg・色の削減 3・RLE・アルファあり)", () => {
+	test("選択の帯の画素が Windows の青になる(色差は 8 ビットのままずらしてから符号付きに読む)", () => {
+		const data = Uint8Array.from(
+			atob(
+				"E/IR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIRH//SA/IR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIRH+nSAx9N0gPyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIRH1zSAx8L0gPyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEfIR8hHyEQ==",
+			),
+			(c) => c.charCodeAt(0),
+		);
+		expect(data[0]).toBe(0x13);
+		const rgba = decodeBitmap({
+			left: 0,
+			top: 0,
+			right: 63,
+			bottom: 63,
+			width: 64,
+			height: 64,
+			bpp: 32,
+			compressed: true,
+			data,
+		});
+		const p = (2 * 64 + 48) * 4;
+		const [r, g, b] = [
+			rgba[p] as number,
+			rgba[p + 1] as number,
+			rgba[p + 2] as number,
+		];
+		// Windows の既定のアクセントの青(0, 103, 192)の近く
+		expect(Math.abs(r - 0)).toBeLessThan(12);
+		expect(Math.abs(g - 103)).toBeLessThan(12);
+		expect(Math.abs(b - 192)).toBeLessThan(12);
+	});
+});
