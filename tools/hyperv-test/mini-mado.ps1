@@ -25,8 +25,13 @@ namespace Mado
     public static class MiniRelay
     {
         public static Task Run(System.Net.WebSockets.WebSocket ws, string host, int port) =>
-            Relay.Run(ws, _ => new Target("vm", host, port), m => Console.WriteLine($"{DateTime.Now:HH:mm:ss} relay: {m}"), CancellationToken.None);
+            Relay.Run(new WebSocketChannel(ws), _ => new Target("vm", host, port), m => Console.WriteLine($"{DateTime.Now:HH:mm:ss} relay: {m}"), CancellationToken.None);
     }
+}
+// Relay.cs が QUIC の例外を名前で見るので、同じ名前のものを置く(mini-mado は QUIC を使わない)
+namespace Mado.Quic
+{
+    internal sealed class QuicNativeException : Exception { }
 }
 '@ | Set-Content (Join-Path $tmp 'mini.cs') -Encoding utf8
 $files = @((Join-Path $tmp 'mini.cs')) + ('Der.cs', 'RdCleanPath.cs', 'Relay.cs' | ForEach-Object { Join-Path $repo "server/$_" })

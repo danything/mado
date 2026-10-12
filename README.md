@@ -70,13 +70,14 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
 | `acme.email` | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う |
 | `oidc` | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない |
 | `targets` | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら選択欄は出ない。省略するとこのマシン(127.0.0.1:3389) |
-| `listen` | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける) |
-| `status.port` | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う |
+| `listen` | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける)。MSI が開けるファイアウォールは TCP 80 / 443 と UDP 443 だけなので、port を変えたら自分で開ける |
+| `status.port` | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、外向きの origin、起動した時刻、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う |
 | `update` | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }` |
 | `tls` | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用 |
 | `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く |
 
 IdP には戻り先として `https://<host>/callback` を登録する。Entra ID ならアプリロールを作ってユーザーに割り当て、その値を `required_role` に書く。
+`/logout` は mado のセッションの Cookie を消すだけで、IdP からはログアウトしない。
 
 ログは `C:\ProgramData\mado\logs\mado.log`。10 MB を超えると `.1` に移す。
 
@@ -104,7 +105,7 @@ IdP には戻り先として `https://<host>/callback` を登録する。Entra I
   秘密鍵は GitHub の secret `MADO_SIGNING_KEY`、公開鍵は exe に入っている(`server/Updater.cs` の `PublicKey`)。
   タグも署名に含むので、古い版を最新と偽って入れさせることはできない。今より新しい版しか受け付けない
 - 誰もつないでいないときに入れる。`msiexec` でメジャー アップグレードし、サービスを止めて入れ替え、起動し直す。
-  MSI は `C:\ProgramData\mado\data\updates\`、ログは `logs\msi-<タグ>.log` に置く
+  MSI は `C:\ProgramData\mado\data\updates\`、ログは mado.log と同じ `logs` に `msi-<タグ>.log` として置く
 - 署名の鍵を作り直したときは、新しい公開鍵を `PublicKey` に入れてリリースし、その版だけは手で入れる。古い mado は新しい鍵の署名を受け付けない
 
 ## 開発

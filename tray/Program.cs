@@ -494,6 +494,8 @@ internal static class Net
             if (error is not null) return ("mado の更新", error, true);
             if (st.TryGetProperty("available", out var a) && a.GetBoolean())
                 return ("mado の更新", $"{latest} があるが、つないでいる人がいるので後で入れる", false);
+            // 自動更新が止まっているときは確かめないので、最新の版が空のまま返る
+            if (string.IsNullOrEmpty(latest)) return ("mado の更新", "更新を確かめていない。自動更新が止まっているかもしれない", false);
             return ("mado の更新", $"新しい版は無い(最新は {latest})", false);
         }
         catch (Exception ex)
