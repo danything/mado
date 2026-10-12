@@ -3,6 +3,7 @@
 // サーバーからの PDU は ZGFX で包まれて来る。こちらからの PDU(Caps・Frame Acknowledge)は包まない。
 // 描画は GfxOps(ブラウザでは canvas、試験では偽物)に任せ、H.264 の復号は AvcDecoder(ブラウザでは VideoDecoder)に任せる。
 
+import { FrameLatency, gfxTimestampMs } from "./autoscale";
 import { decodePlanar } from "./bitmap";
 import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
@@ -120,20 +121,29 @@ export interface AvcDecoder {
 
 export type VideoFrameLike = { close(): void };
 
-/** H.264 を使えるか(VideoDecoder が無い・H.264 を復号できないブラウザでは使わない) */
-export async function avcSupported(): Promise<boolean> {
+/**
+ * H.264 を使えるか(VideoDecoder が無い・H.264 を復号できないブラウザでは undefined)。
+ * hardware は GPU で復号できるとき(待ち時間と CPU の負荷が小さい)
+ */
+export async function avcSupport(): Promise<{ hardware: boolean } | undefined> {
 	const VD = (globalThis as { VideoDecoder?: typeof VideoDecoder })
 		.VideoDecoder;
-	if (!VD) return false;
-	try {
-		const r = await VD.isConfigSupported({
-			codec: "avc1.42E01F",
-			optimizeForLatency: true,
-		});
-		return r.supported === true;
-	} catch {
-		return false;
-	}
+	if (!VD) return undefined;
+	const supported = async (hardwareAcceleration: HardwareAcceleration) => {
+		try {
+			const r = await VD.isConfigSupported({
+				codec: "avc1.42E01F",
+				optimizeForLatency: true,
+				hardwareAcceleration,
+			});
+			return r.supported === true;
+		} catch {
+			return false;
+		}
+	};
+	if (await supported("prefer-hardware")) return { hardware: true };
+	if (await supported("no-preference")) return { hardware: false };
+	return undefined;
 }
 
 // ---- PDU ----
@@ -273,6 +283,10 @@ export class GfxClient implements DynamicHandler {
 	private totalFrames = 0;
 	/** 受け取って、まだ描き終えていないフレーム(EndFrame)の数 */
 	private queuedFrames = 0;
+	/** いま描いているフレームの、サーバーの時刻(StartFrame) */
+	private frameTimestamp?: number;
+	/** フレームが作られてから描き終えるまでの遅れのうち、溜まった分(回線・端末の混み具合) */
+	readonly latency = new FrameLatency();
 	/** H.264 の復号が続けて失敗した数(1 枚でも出れば 0 に戻す) */
 	private avcFailures = 0;
 	/** 診断用 */
@@ -312,6 +326,11 @@ export class GfxClient implements DynamicHandler {
 	/** サーバーが GFX のチャネルを開いた(開かなければ旧来の描画のまま) */
 	get active(): boolean {
 		return this.channel !== undefined;
+	}
+
+	/** 受け取って、まだ描き終えていないフレームの数 */
+	get backlog(): number {
+		return this.queuedFrames;
 	}
 
 	/** H.264 を使えると伝えたか */
@@ -418,12 +437,20 @@ export class GfxClient implements DynamicHandler {
 				break;
 			}
 			case CMD.STARTFRAME:
+				this.frameTimestamp = r.u32();
 				break;
 			case CMD.ENDFRAME: {
 				// 先に数を戻す(下で例外になっても、溜まった数がずれないように)
 				this.queuedFrames = Math.max(0, this.queuedFrames - 1);
 				const frameId = r.u32();
 				this.ops.present();
+				if (this.frameTimestamp !== undefined)
+					this.latency.add(
+						gfxTimestampMs(this.frameTimestamp),
+						Date.now(),
+						performance.now(),
+					);
+				this.frameTimestamp = undefined;
 				this.totalFrames++;
 				this.stats.frames++;
 				this.channel?.send(

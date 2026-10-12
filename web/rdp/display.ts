@@ -46,7 +46,12 @@ export class Display implements Screen {
 		this.canvas.style.outline = "none";
 		this.canvas.style.display = "block";
 		this.canvas.style.margin = "auto";
-		const ctx = this.canvas.getContext("2d");
+		// desynchronized: 描いた絵を、ブラウザの合成(次の描画の周期)を待たずに出す(Chromium。1 フレームほど早く見える)。
+		// alpha: false: 画面は不透明なので、下と混ぜる処理を省く
+		const ctx = this.canvas.getContext("2d", {
+			desynchronized: true,
+			alpha: false,
+		});
 		if (!ctx) throw new Error("canvas が使えない");
 		this.ctx = ctx;
 		parent.append(this.canvas);
