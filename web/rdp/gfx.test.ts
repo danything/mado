@@ -457,7 +457,7 @@ describe("ClearCodec", () => {
 		expect([px(out2, 0), px(out2, 1)]).toEqual(["ffffffff", "ff0000ff"]);
 	});
 
-	test("サブコーデック: 生と RLEX、NSCodec は描かずに数える", () => {
+	test("サブコーデック: 生と RLEX、知らないもの(3)は描かずに数える", () => {
 		const d = new ClearDecoder();
 		const raw = fromHex("0000ff");
 		const sub = concat(
@@ -470,7 +470,7 @@ describe("ClearCodec", () => {
 				.u8(0)
 				.bytes(raw)
 				.done(),
-			new Writer().u16(1).u16(0).u16(1).u16(1).u32(1).u8(1).u8(0).done(),
+			new Writer().u16(1).u16(0).u16(1).u16(1).u32(1).u8(3).u8(0).done(),
 		);
 		const out = d.decode(
 			clearMsg(0, undefined, new Uint8Array(), new Uint8Array(), sub),
