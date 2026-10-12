@@ -1,5 +1,5 @@
-/* 土台は Blades CSS(Pico CSS の後継。https://blades.ninja/)。ここで色・角丸・影を今風(灰色の濃淡と細い枠線)に寄せ、
- * 並べ方を決める。色は Pico の変数を上書きする(同じ詳細度のセレクタで、後に書いたほうが勝つ) */
+/* 土台は Blades CSS(Pico CSS の後継。https://blades.ninja/)。ここでは色、角丸、影と並べ方を決める。
+ * 色は Pico の変数を上書きする。同じ詳細度のセレクタなので、後に書いたほうが勝つ */
 @import "@anyblades/blades";
 
 :root:not([data-theme="dark"]) {

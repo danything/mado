@@ -21,7 +21,7 @@ export type ClientCore = {
 	keyboardLayout?: number;
 	/** SUPPORT_DYNVC_GFX_PROTOCOL を立てて、GFX(Graphics Pipeline)を使えると伝える */
 	gfx?: boolean;
-	/** 回線の自動検出を頼む。既定は true。頼まないときは LAN と伝える */
+	/** 回線の自動検出を頼む。既定は true。connectionType は頼んでも頼まなくても LAN */
 	autodetect?: boolean;
 };
 
@@ -214,7 +214,7 @@ export type ServerData = {
 	ioChannelId: number;
 	/** 要求した静的チャネルに割り当てられた ID。要求した順に並ぶ */
 	channelIds: number[];
-	/** SC_CORE の clientRequestedProtocols / earlyCapabilityFlags。無ければ 0 */
+	/** SC_CORE の earlyCapabilityFlags。無ければ 0 */
 	earlyCapabilityFlags: number;
 	/** 回線の自動検出に使うメッセージ チャネルの ID。頼まなかったときや、サーバーが使わないときは無い */
 	messageChannelId?: number;

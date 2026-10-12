@@ -105,7 +105,7 @@ type Login = {
 	password: string;
 };
 
-/** 1 回つないで切れるまで。fallback があれば、その方式でつなぎ直す */
+/** 1 回のつなぎの終わり方。fallback があれば、その方式でつなぎ直す */
 type SessionEnd = { message: string; fallback?: Mode };
 
 /** 方式を切り替えた記録(診断用) */
@@ -166,15 +166,21 @@ async function runSession(
 	const stops: (() => void)[] = [];
 	try {
 		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入っていて、サーバーが決める
-		const { token } = await getJson<{ token: string }>(
-			`/api/token?target=${encodeURIComponent(login.target)}`,
-		);
-		// 画面の場所を表示してから大きさを測る。clientHeight を読んだ時点でレイアウトが決まる
+		const newToken = async () =>
+			(
+				await getJson<{ token: string }>(
+					`/api/token?target=${encodeURIComponent(login.target)}`,
+				)
+			).token;
+		const token = await newToken();
+		// 画面の場所を表示してから大きさを測る。clientHeight を読んだ時点でレイアウトが決まる。
+		// RDP の解像度は窓の大きさそのまま。混んでいたら、つないだあとで下げる
 		home.hidden = true;
 		toolbar.hidden = false;
 		$<HTMLElement>("#current").textContent = login.target;
 		screen.classList.remove("idle");
-		const { width, height } = desktopSize();
+		const width = screen.clientWidth || innerWidth;
+		const height = screen.clientHeight || innerHeight;
 		const abort = new AbortController();
 		connecting = abort;
 		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
@@ -182,12 +188,7 @@ async function runSession(
 			url: session.ws,
 			wt: session.wt,
 			token,
-			newToken: async () =>
-				(
-					await getJson<{ token: string }>(
-						`/api/token?target=${encodeURIComponent(login.target)}`,
-					)
-				).token,
+			newToken,
 			destination: login.target,
 			username: login.username,
 			password: login.password,
@@ -328,9 +329,6 @@ function diagText(
 		lines.push(
 			`負荷: 遅延+${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}  解像度 ${Math.round(currentScale() * 100)}%`,
 			...scaleSwitches,
-		);
-	if (gfx?.active)
-		lines.push(
 			`GFX: 版=${gfx.confirmedVersion ?? "-"} ${Object.entries(gfx.stats)
 				.map(([k, v]) => `${k}=${Math.round(v)}`)
 				.join(" ")} clear未対応=${gfx.clearUnsupported}`,
@@ -430,14 +428,6 @@ function watchClipboard(canvas: HTMLElement, channels: Channels): () => void {
 
 /** 幅は偶数でないと DisplayControl に断られる */
 const even = (n: number) => n - (n % 2);
-
-/** つなぐときの RDP の解像度。窓の大きさそのまま。混んでいたら、つないだあとで下げる */
-function desktopSize(): { width: number; height: number } {
-	return {
-		width: screen.clientWidth || innerWidth,
-		height: screen.clientHeight || innerHeight,
-	};
-}
 
 /**
  * キーボード配列。OS の配列がはっきり US の形なら米国(0x0409)、それ以外は日本語(0x0411)。

@@ -1,5 +1,5 @@
 // RemoteFX のタイルを復号する速さを計る。xrdp から取った実際のタイルを何度も復号して、1 タイルあたりの時間と内訳を出す。
-//   wslc run --rm -v "D:\danything\mado:/app" -w /app oven/bun:1 bun tools/rfx-bench.ts
+//   wslc run --rm -v "<repo>:/app" -w /app oven/bun:1 bun tools/rfx-bench.ts
 
 import { decodeTile, parseQuant, reconstruct, rlgrDecode, yccToRgba } from "../web/rdp/rfx";
 import { REAL_TILE, rlgrEncode } from "../web/rdp/rfx.fixture";

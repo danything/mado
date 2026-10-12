@@ -7,7 +7,6 @@ export const PROTOCOL = {
 	RDP: 0,
 	SSL: 1,
 	HYBRID: 2,
-	HYBRID_EX: 8,
 } as const;
 
 /** RDP_NEG_REQ 付きの X.224 Connection Request。TPKT ヘッダーも含め、RDCleanPath の x224_pdu にそのまま入れる */

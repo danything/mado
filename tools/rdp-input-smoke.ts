@@ -1,7 +1,8 @@
 // xrdp を相手にする実機試験。docs/rdp-client.md の「試験」を参照。wslc の node:lts コンテナで動かす。
 // つないで画面を PNG に保存したあと、Use default config のボタンを押す、ドックの端末を開いて echo mado と打つ、
 // こちらでコピーした文字列を貼り付ける、を順に試す。
-// 環境変数は HOST、PORT、RDPUSER、RDPPASS、OUT。クリック前の画面は OUT の名前に .before.png を付けて保存する
+// 環境変数は HOST、PORT、RDPUSER、RDPPASS、OUT、COMPRESS。COMPRESS=0 ならバルク圧縮を頼まない。
+// クリック前の画面は OUT の名前に .before.png を付けて保存する
 
 import * as fs from "node:fs";
 import * as net from "node:net";

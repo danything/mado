@@ -98,12 +98,11 @@ function tsCredentials(
 	user: string,
 	password: string,
 ): Uint8Array {
-	const u16 = utf16le;
 	const creds = der.tlv(
 		der.SEQUENCE,
-		der.field(0, der.octets(u16(domain))),
-		der.field(1, der.octets(u16(user))),
-		der.field(2, der.octets(u16(password))),
+		der.field(0, der.octets(utf16le(domain))),
+		der.field(1, der.octets(utf16le(user))),
+		der.field(2, der.octets(utf16le(password))),
 	);
 	return der.tlv(
 		der.SEQUENCE,
