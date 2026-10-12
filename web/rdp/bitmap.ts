@@ -58,8 +58,14 @@ export function parseBitmapUpdate(payload: Uint8Array): BitmapRect[] {
 	return out;
 }
 
+/** 復号に要るもの(位置は要らない)。Worker へはこれだけを渡す */
+export type BitmapJob = Pick<
+	BitmapRect,
+	"width" | "height" | "bpp" | "compressed" | "data"
+>;
+
 /** 矩形を RGBA(上の行から、width x height)にする */
-export function decodeBitmap(b: BitmapRect): Uint8ClampedArray {
+export function decodeBitmap(b: BitmapJob | BitmapRect): Uint8ClampedArray {
 	if (b.bpp === 8) throw new Error("8 ビット色の画面は使えない");
 	if (b.width * b.height > MAX_PIXELS)
 		throw new Error("ビットマップが大きすぎる");
@@ -355,8 +361,11 @@ const PLANAR_CS = 0x08;
 const PLANAR_RLE = 0x10;
 const PLANAR_NA = 0x20;
 
+/** 面を伸ばす作業用(使い回す。出力の RGBA だけは毎回新しく作る) */
+let scratch = new Uint8Array(0);
+
 /**
- * 1 つの面(w x h バイト)を、RLE で圧縮されたデータから読む。src の at から読み始め、終わりの位置も返す。
+ * RLE で圧縮された 1 つの面(w x h バイト)を plane[off .. off + w * h) に伸ばす。src の at から読み、読み終えた位置を返す。
  * 走査線ごとに、制御バイト(上位 4 ビット = 生バイト数、下位 4 ビット = 繰り返し)の列。
  * 最初の行は値そのもの、2 行目からは上の行との差分(符号付き)。繰り返しは直前の値(差分の行では直前の差分)
  */
@@ -365,30 +374,19 @@ function planeRle(
 	at: number,
 	w: number,
 	h: number,
-): { plane: Uint8Array; end: number } {
-	const plane = new Uint8Array(w * h);
+	plane: Uint8Array,
+	off: number,
+): number {
+	const n = src.length;
 	let s = at;
-	const next = (): number => {
-		if (s >= src.length) throw new Error("Planar: 入力が足りない");
-		return src[s++] as number;
-	};
 	for (let y = 0; y < h; y++) {
-		const row = y * w;
-		let x = 0;
-		let last = 0; // 直前の値(最初の行)/ 直前の差分(2 行目から)
-		const put = (v: number) => {
-			if (x >= w) throw new Error("Planar: 1 行があふれた");
-			if (y === 0) {
-				last = v;
-				plane[row + x] = v;
-			} else {
-				last = v & 1 ? -((v >> 1) + 1) : v >> 1;
-				plane[row + x] = ((plane[row - w + x] as number) + last) & 0xff;
-			}
-			x++;
-		};
-		while (x < w) {
-			const c = next();
+		const end = off + (y + 1) * w;
+		let d = end - w;
+		// 直前の値(最初の行)/ 直前の差分(2 行目から)
+		let last = 0;
+		while (d < end) {
+			if (s >= n) throw new Error("Planar: 入力が足りない");
+			const c = src[s++] as number;
 			let raw = c >> 4;
 			let run = c & 0x0f;
 			if (run === 1) {
@@ -398,19 +396,54 @@ function planeRle(
 				run = raw + 32;
 				raw = 0;
 			}
-			for (let i = 0; i < raw; i++) put(next());
-			if (x + run > w) throw new Error("Planar: 1 行があふれた");
-			for (let i = 0; i < run; i++) {
-				if (y === 0) plane[row + x] = last;
-				else plane[row + x] = ((plane[row - w + x] as number) + last) & 0xff;
-				x++;
+			if (d + raw > end) {
+				// 生の値が行からあふれる。前と同じく、あふれる手前まで読めなければ「足りない」
+				if (s + (end - d) + 1 > n) throw new Error("Planar: 入力が足りない");
+				throw new Error("Planar: 1 行があふれた");
+			}
+			if (s + raw > n) throw new Error("Planar: 入力が足りない");
+			if (y === 0) {
+				for (let i = 0; i < raw; i++) {
+					last = src[s++] as number;
+					plane[d++] = last;
+				}
+				if (d + run > end) throw new Error("Planar: 1 行があふれた");
+				if (run) {
+					plane.fill(last, d, d + run);
+					d += run;
+				}
+			} else {
+				for (let i = 0; i < raw; i++) {
+					const v = src[s++] as number;
+					last = v & 1 ? -((v >> 1) + 1) : v >> 1;
+					plane[d] = ((plane[d - w] as number) + last) & 0xff;
+					d++;
+				}
+				if (d + run > end) throw new Error("Planar: 1 行があふれた");
+				for (let i = 0; i < run; i++) {
+					plane[d] = ((plane[d - w] as number) + last) & 0xff;
+					d++;
+				}
 			}
 		}
 	}
-	return { plane, end: s };
+	return s;
 }
 
-const clamp8 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : v);
+/** 色差の 8 ビットの値 → 符号付きの色差(色の削減のレベルごと。表にして使い回す) */
+const chromaTables: Int16Array[] = [];
+function chromaTable(cll: number): Int16Array {
+	let t = chromaTables[cll];
+	if (!t) {
+		t = new Int16Array(256);
+		for (let v = 0; v < 256; v++)
+			t[v] = (((v << (cll - 1)) & 0xff) << 24) >> 24;
+		chromaTables[cll] = t;
+	}
+	return t;
+}
+
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
 /**
  * Planar の 32bpp を RGBA(上の行から)にする。面は [アルファ]、赤、緑、青(CLL が 0 でないときは Y、Co、Cg)の順。
@@ -430,43 +463,67 @@ export function decodePlanar(
 	if (header & PLANAR_CS) throw new Error("Planar: 色の間引き(CS)は未対応");
 	const rle = (header & PLANAR_RLE) !== 0;
 	const noAlpha = (header & PLANAR_NA) !== 0;
-	const planes: Uint8Array[] = [];
-	let at = 1;
-	for (let i = 0; i < (noAlpha ? 3 : 4); i++) {
-		if (rle) {
-			const r = planeRle(data, at, w, h);
-			planes.push(r.plane);
-			at = r.end;
-		} else {
-			if (at + w * h > data.length) throw new Error("Planar: 入力が足りない");
-			planes.push(data.subarray(at, at + w * h));
-			at += w * h;
-		}
+	const count = noAlpha ? 3 : 4;
+	const size = w * h;
+	// 色の面 3 つ(アルファは読むだけ。旧ビットマップの画面は不透明として描く)の、入力の中か作業用の中での位置
+	let src: Uint8Array;
+	const offs = [0, 0, 0];
+	if (rle) {
+		if (scratch.length < size * 4) scratch = new Uint8Array(size * 4);
+		let at = 1;
+		for (let i = 0; i < count; i++)
+			at = planeRle(data, at, w, h, scratch, i * size);
+		src = scratch;
+		const first = noAlpha ? 0 : 1;
+		for (let i = 0; i < 3; i++) offs[i] = (first + i) * size;
+	} else {
+		if (1 + count * size > data.length)
+			throw new Error("Planar: 入力が足りない");
+		src = data;
+		const first = 1 + (noAlpha ? 0 : size);
+		for (let i = 0; i < 3; i++) offs[i] = first + i * size;
 	}
-	// アルファを持つときは先頭の面なので外す(旧ビットマップの画面は不透明として描く)
-	const [c0, c1, c2] = noAlpha ? planes : planes.slice(1);
-	const out = new Uint8ClampedArray(w * h * 4);
+	const o0 = offs[0] as number;
+	const o1 = offs[1] as number;
+	const o2 = offs[2] as number;
+	const out = new Uint8ClampedArray(size * 4);
+	const out32 = LITTLE_ENDIAN ? new Uint32Array(out.buffer) : undefined;
+	// YCoCg: Co と Cg は、8 ビットのまま (cll - 1) ビット左へずらしてから、符号付き 8 ビットとして読む(ずらしたあふれは捨てる)。
+	// FreeRDP の YCoCgToRGB と同じ順。符号付きにしてからずらすと、濃い色で符号が逆になり、赤と青が入れ替わって見えた
+	const chroma = cll ? chromaTable(cll) : undefined;
 	for (let y = 0; y < h; y++) {
 		const row = (topDown ? y : h - 1 - y) * w;
-		for (let x = 0; x < w; x++) {
-			const d = (y * w + x) * 4;
-			const a = c0?.[row + x] as number;
-			const b = c1?.[row + x] as number;
-			const c = c2?.[row + x] as number;
+		let d = y * w;
+		for (let x = 0; x < w; x++, d++) {
+			const a = src[o0 + row + x] as number;
+			const b = src[o1 + row + x] as number;
+			const c = src[o2 + row + x] as number;
+			let r: number;
+			let g: number;
+			let bl: number;
 			if (cll === 0) {
-				out[d] = a;
-				out[d + 1] = b;
-				out[d + 2] = c;
+				r = a;
+				g = b;
+				bl = c;
 			} else {
-				// YCoCg: Co と Cg は、8 ビットのまま (cll - 1) ビット左へずらしてから、符号付き 8 ビットとして読む(ずらしたあふれは捨てる)。
-				// FreeRDP の YCoCgToRGB と同じ順。符号付きにしてからずらすと、濃い色で符号が逆になり、赤と青が入れ替わって見えた
-				const co = (((b << (cll - 1)) & 0xff) << 24) >> 24;
-				const cg = (((c << (cll - 1)) & 0xff) << 24) >> 24;
-				out[d] = clamp8(a + co - cg);
-				out[d + 1] = clamp8(a + cg);
-				out[d + 2] = clamp8(a - co - cg);
+				const co = (chroma as Int16Array)[b] as number;
+				const cg = (chroma as Int16Array)[c] as number;
+				const t = a - cg;
+				r = t + co;
+				g = a + cg;
+				bl = t - co;
+				r = r < 0 ? 0 : r > 255 ? 255 : r;
+				g = g < 0 ? 0 : g > 255 ? 255 : g;
+				bl = bl < 0 ? 0 : bl > 255 ? 255 : bl;
 			}
-			out[d + 3] = 255;
+			if (out32) out32[d] = (0xff000000 | (bl << 16) | (g << 8) | r) >>> 0;
+			else {
+				const p = d * 4;
+				out[p] = r;
+				out[p + 1] = g;
+				out[p + 2] = bl;
+				out[p + 3] = 255;
+			}
 		}
 	}
 	return out;
