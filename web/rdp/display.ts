@@ -199,8 +199,8 @@ export function bindInput(
 	display: Display,
 ): () => void {
 	const down = new Set<string>();
-	let pending: { x: number; y: number } | undefined;
-	let raf = 0;
+	/** 最後に送った位置(同じ位置へは送らない) */
+	let last = { x: -1, y: -1 };
 
 	const point = (e: MouseEvent) =>
 		toRdpPoint(
@@ -210,13 +210,6 @@ export function bindInput(
 			display.width,
 			display.height,
 		);
-
-	const flushMove = () => {
-		raf = 0;
-		if (!pending) return;
-		client.sendInput([input.mouseMove(pending.x, pending.y)]);
-		pending = undefined;
-	};
 
 	const key = (e: KeyboardEvent, isDown: boolean) => {
 		// 修飾キーの状態が、覚えている押下と食い違っていれば先に合わせる
@@ -243,16 +236,19 @@ export function bindInput(
 	};
 	const onKeyDown = (e: KeyboardEvent) => key(e, true);
 	const onKeyUp = (e: KeyboardEvent) => key(e, false);
+	// 移動はすぐ送る(描画のタイミングを待たない。ブラウザが mousemove をまとめる頻度で足りる)
 	const onMove = (e: MouseEvent) => {
-		pending = point(e);
-		if (!raf) raf = requestAnimationFrame(flushMove);
+		const p = point(e);
+		if (p.x === last.x && p.y === last.y) return;
+		last = p;
+		client.sendInput([input.mouseMove(p.x, p.y)]);
 	};
 	const button = (e: MouseEvent, isDown: boolean) => {
 		if (isDown) canvas.focus();
 		const p = point(e);
 		const ev = input.mouseButton(e.button, isDown, p.x, p.y);
 		if (!ev) return;
-		pending = undefined;
+		last = p;
 		client.sendInput([ev]);
 		e.preventDefault();
 	};
@@ -310,7 +306,6 @@ export function bindInput(
 		canvas.removeEventListener("wheel", onWheel);
 		canvas.removeEventListener("contextmenu", onMenu);
 		canvas.removeEventListener("blur", onBlur);
-		if (raf) cancelAnimationFrame(raf);
 	};
 }
 
