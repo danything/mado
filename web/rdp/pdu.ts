@@ -33,8 +33,11 @@ const INFO_LOGONNOTIFY = 0x40;
 const INFO_ENABLEWINDOWSKEY = 0x100;
 const INFO_LOGONERRORS = 0x10000;
 
-/** 重い描画を切る。壁紙、ドラッグ中のウィンドウの中身、メニューのアニメーションを止め、文字の縁は滑らかにする */
-const PERF_FLAGS = 0x1 | 0x2 | 0x4 | 0x80;
+/**
+ * 重い描画を切って、送る量を減らす。壁紙、ドラッグ中のウィンドウの中身、メニューのアニメーション、テーマ、カーソルの影を止める。
+ * 文字の縁は滑らかにする
+ */
+const PERF_FLAGS = 0x1 | 0x2 | 0x4 | 0x8 | 0x20 | 0x80;
 
 /** Client Info PDU の中身。Security Header は含まない。パスワードは CredSSP に渡したものと同じ */
 export function clientInfo(info: ClientInfo): Uint8Array {
