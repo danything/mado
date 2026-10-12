@@ -211,6 +211,7 @@ body {
 
 #home[hidden],
 #toolbar[hidden],
+#diag[hidden],
 #target-field[hidden] {
 	display: none;
 }
@@ -230,7 +231,8 @@ body {
 	position: fixed;
 	left: 8px;
 	bottom: 8px;
-	z-index: 10;
+	z-index: 1000;
+	display: block;
 	margin: 0;
 	padding: 8px 10px;
 	max-width: min(640px, calc(100vw - 16px));

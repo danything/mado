@@ -231,13 +231,20 @@ function diagText(
 	return lines.join("\n");
 }
 
+/** 診断を開いた瞬間に書くためのもの(つないでいる間だけ) */
+let diagNow: (() => void) | undefined;
+
 /** 開いている間だけ 1 秒ごとに書き直す */
 function watchDiag(text: () => string): () => void {
+	diagNow = () => {
+		diag.textContent = text();
+	};
 	const t = setInterval(() => {
 		if (!diag.hidden) diag.textContent = text();
 	}, 1000);
 	return () => {
 		clearInterval(t);
+		diagNow = undefined;
 		diag.hidden = true;
 	};
 }
@@ -260,8 +267,10 @@ toolbar.addEventListener("click", (e) => {
 	const action = (e.target as HTMLElement).closest("button")?.dataset.action;
 	if (action === "ctrl-alt-del") tap(["ControlLeft", "AltLeft", "Delete"]);
 	else if (action === "meta") tap(["MetaLeft"]);
-	else if (action === "diag") diag.hidden = !diag.hidden;
-	else if (action === "fullscreen") void screen.requestFullscreen();
+	else if (action === "diag") {
+		diag.hidden = !diag.hidden;
+		if (!diag.hidden) diagNow?.();
+	} else if (action === "fullscreen") void screen.requestFullscreen();
 	else if (action === "disconnect") {
 		current?.client.close();
 		connecting?.abort();
