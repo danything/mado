@@ -344,7 +344,7 @@ describe("RemoteFX の間引きと Frame Acknowledge", () => {
 		const client = new RdpClient(fakeSession(stream), screen);
 		await client.run();
 		expect(screen.events).toEqual(["resize 64x48", "draw 0,0 64x48"]);
-		expect(client.surfaceStats).toEqual({ coalesced: 2, skipped: 0 });
+		expect(client.decodeStats).toEqual({ coalesced: 2, skipped: 0 });
 		const acks = stream.written.map(ackId).filter((x) => x !== undefined);
 		expect(acks).toEqual([1, 2, 3]);
 	});

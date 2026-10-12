@@ -156,6 +156,42 @@ export class Display implements Screen {
 }
 
 /** canvas のキー・マウスを RDP の入力にする。戻り値で解除 */
+const MODIFIERS: {
+	flag: "shiftKey" | "ctrlKey" | "altKey";
+	codes: string[];
+}[] = [
+	{ flag: "shiftKey", codes: ["ShiftLeft", "ShiftRight"] },
+	{ flag: "ctrlKey", codes: ["ControlLeft", "ControlRight"] },
+	{ flag: "altKey", codes: ["AltLeft", "AltRight"] },
+];
+
+/**
+ * キーイベントの修飾の状態(e.shiftKey など)と、覚えている押下(down)が食い違うときに送るもの。down も合わせて書き換える。
+ * ブラウザの自動操作や、窓の外で修飾キーを離したときなどは、修飾キーの keydown / keyup が来ないことがある。
+ * そのキー自身が修飾キーなら、その種類は合わせない(自身の keydown / keyup で足りる)
+ */
+export function syncModifiers(
+	e: Pick<KeyboardEvent, "code" | "shiftKey" | "ctrlKey" | "altKey">,
+	down: Set<string>,
+): { code: string; down: boolean }[] {
+	const out: { code: string; down: boolean }[] = [];
+	for (const m of MODIFIERS) {
+		if (m.codes.includes(e.code)) continue;
+		const held = m.codes.filter((c) => down.has(c));
+		if (e[m.flag] && held.length === 0) {
+			const code = m.codes[0] as string;
+			down.add(code);
+			out.push({ code, down: true });
+		} else if (!e[m.flag]) {
+			for (const code of held) {
+				down.delete(code);
+				out.push({ code, down: false });
+			}
+		}
+	}
+	return out;
+}
+
 export function bindInput(
 	canvas: HTMLCanvasElement,
 	client: RdpClient,
@@ -182,14 +218,26 @@ export function bindInput(
 	};
 
 	const key = (e: KeyboardEvent, isDown: boolean) => {
+		// 修飾キーの状態が、覚えている押下と食い違っていれば先に合わせる
+		const events: Uint8Array[] = [];
+		for (const m of syncModifiers(e, down)) {
+			const ev = input.keyEvent(m.code, m.down);
+			if (ev) events.push(ev);
+		}
 		const ev = input.keyEvent(e.code, isDown);
 		if (ev) {
 			if (isDown) down.add(e.code);
 			else down.delete(e.code);
-			client.sendInput([ev]);
+			client.sendInput([...events, ev]);
 		} else if (e.key.length === 1) {
-			client.sendInput([input.unicodeEvent(e.key.charCodeAt(0), isDown)]);
-		} else return;
+			client.sendInput([
+				...events,
+				input.unicodeEvent(e.key.charCodeAt(0), isDown),
+			]);
+		} else {
+			if (events.length) client.sendInput(events);
+			return;
+		}
 		e.preventDefault();
 	};
 	const onKeyDown = (e: KeyboardEvent) => key(e, true);

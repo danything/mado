@@ -1,8 +1,8 @@
 // Surface Commands([MS-RDPBCGR] 2.2.9.2)。Fast-Path の SURFCMDS の更新に、複数のコマンドが並ぶ:
 // Set Surface Bits / Stream Surface Bits(コーデックで符号化されたビットマップ)と Frame Marker。
 //
-// RemoteFX のタイルは独立で、同じ位置の新しいタイルは古いものを完全に置き換える。サーバーが復号より速く送ってくると
-// 溜まった更新を順に全部復号して遅れが膨らむので、SurfaceRenderer は復号を後回しにして、同じ位置は最新だけを復号する。
+// サーバーが復号より速く送ってくると、溜まった更新を順に全部復号して遅れが膨らむ。SurfaceRenderer は復号を後回しにして、
+// 同じ左上の古いもの(RemoteFX のタイル・旧ビットマップ)は、新しいものの描く範囲にすっぽり入るときだけ復号しない。
 // 旧ビットマップ(Windows が RemoteFX を使わないときの planar など)も同じ列に載せて、受けた順に描く。
 
 import type { BitmapRect } from "./bitmap";

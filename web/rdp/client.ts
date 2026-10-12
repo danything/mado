@@ -44,7 +44,7 @@ export class RdpClient {
 	private closed = false;
 	/** Share Data に付ける shareId(再アクティベーションで変わる) */
 	private shareId: number;
-	/** RemoteFX のタイルを溜めて、同じ位置は最新だけを復号する */
+	/** RemoteFX のタイルと旧ビットマップを溜めて、覆われたものは復号せず、受けた順に描く */
 	private surface: SurfaceRenderer;
 	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
 	errorInfo = 0;
@@ -55,7 +55,7 @@ export class RdpClient {
 	constructor(
 		readonly session: Session,
 		private screen: Screen,
-		/** RemoteFX のタイルの復号の置き場。省略するとその場で復号する(ブラウザでは createPool() の Worker のプールを渡す) */
+		/** 画面の復号(RemoteFX・旧ビットマップ)の置き場。省略するとその場で復号する(ブラウザでは createPool() の Worker のプールを渡す) */
 		options: { pool?: TilePool } = {},
 	) {
 		this.width = session.width;
@@ -81,9 +81,14 @@ export class RdpClient {
 		);
 	}
 
-	/** 受けた RemoteFX の更新の統計(診断用): 後のタイルに置き換えられて復号しなかった数、捨てた数 */
-	get surfaceStats(): { coalesced: number; skipped: number } {
+	/** 画面の復号の統計(診断用。RemoteFX のタイルと旧ビットマップ): 後のものに覆われて復号しなかった数、壊れていて捨てた数 */
+	get decodeStats(): { coalesced: number; skipped: number } {
 		return { coalesced: this.surface.coalesced, skipped: this.surface.skipped };
+	}
+
+	/** @deprecated decodeStats の旧名(web/app.ts が移るまで) */
+	get surfaceStats(): { coalesced: number; skipped: number } {
+		return this.decodeStats;
 	}
 
 	/** 終わるまで読み続ける。正常な終わり(サーバーが切った・こちらが閉じた)は理由の文字列、通信の失敗は例外 */
