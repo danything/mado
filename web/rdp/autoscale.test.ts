@@ -52,11 +52,22 @@ describe("画素数の自動調整", () => {
 		const a = new AutoScale(1);
 		expect(a.sample(busy, 0)).toBeUndefined();
 		expect(a.sample(busy, 2000)).toBe(0.75);
+		// 変えてから 6 秒は、全面の送り直しなので見ない
 		expect(a.sample(busy, 4000)).toBeUndefined();
-		expect(a.sample(busy, 6000)).toBe(0.5);
-		a.sample(busy, 8000);
-		expect(a.sample(busy, 10_000)).toBeUndefined();
+		expect(a.sample(busy, 6000)).toBeUndefined();
+		expect(a.sample(busy, 8000)).toBeUndefined();
+		expect(a.sample(busy, 10_000)).toBe(0.5);
+		for (let t = 12_000; t < 30_000; t += 2000) a.sample(busy, t);
 		expect(a.scale).toBe(0.5);
+	});
+
+	test("pause の間は見ない", () => {
+		const a = new AutoScale(1);
+		a.pause(10_000);
+		for (let t = 0; t < 10_000; t += 2000)
+			expect(a.sample(busy, t)).toBeUndefined();
+		a.sample(busy, 10_000);
+		expect(a.sample(busy, 12_000)).toBe(0.75);
 	});
 
 	test("未描画のフレームが溜まっても混んでいるとみなす", () => {
@@ -69,11 +80,11 @@ describe("画素数の自動調整", () => {
 		const a = new AutoScale(0.75);
 		a.sample(busy, 0);
 		expect(a.sample(busy, 2000)).toBe(0.5);
-		// 下げてから 10 秒は上げない
-		for (let t = 4000; t < 12_000; t += 2000)
+		// 下げてから 6 秒は見ず、そのあと 5 回続けて空いていたら上げる(下げてから 10 秒は必ず待つ)
+		for (let t = 4000; t < 16_000; t += 2000)
 			expect(a.sample(calm, t)).toBeUndefined();
-		expect(a.sample(calm, 12_000)).toBe(0.75);
-		for (let t = 14_000; t < 40_000; t += 2000)
+		expect(a.sample(calm, 16_000)).toBe(0.75);
+		for (let t = 18_000; t < 40_000; t += 2000)
 			expect(a.sample(calm, t)).toBeUndefined();
 		expect(a.scale).toBe(0.75);
 	});
@@ -87,17 +98,17 @@ describe("画素数の自動調整", () => {
 			a.sample(calm, t);
 			t += 2000;
 		}
-		const up = t;
-		a.sample(busy, t);
-		expect(a.sample(busy, t + 2000)).toBe(0.75); // 上げてすぐ混んだ: 20 秒待つ
-		t += 4000;
+		const up = t - 2000;
+		// 上げてから 6 秒は見ない。そのあとすぐ混んだ: 次に上げるまで 20 秒待つ
+		a.sample(busy, up + 6000);
+		expect(a.sample(busy, up + 8000)).toBe(0.75);
 		let back = -1;
-		for (; t < up + 60_000; t += 2000)
+		for (t = up + 10_000; t < up + 80_000; t += 2000)
 			if (a.sample(calm, t) === 1) {
 				back = t;
 				break;
 			}
-		expect(back - (up + 2000)).toBeGreaterThanOrEqual(20_000);
+		expect(back - (up + 8000)).toBeGreaterThanOrEqual(20_000);
 	});
 
 	test("静か(最近のフレームが無い)なら空いているとみなす", () => {

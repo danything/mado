@@ -70,6 +70,8 @@ const UP_AFTER = 5;
 /** 上げたのにすぐまた混んだら、次に上げるまで待つ長さを倍にする(行ったり来たりしない) */
 const FIRST_HOLD_MS = 10_000;
 const MAX_HOLD_MS = 120_000;
+/** 解像度を変えたあと、様子を見ない長さ */
+const SETTLE_MS = 6000;
 /** 上げてからこれより早く混んだら、上げたのが早すぎた */
 const FAILED_UP_MS = 30_000;
 
@@ -84,6 +86,7 @@ export class AutoScale {
 	private holdUntil = 0;
 	private hold = FIRST_HOLD_MS;
 	private lastUp = Number.NEGATIVE_INFINITY;
+	private quietUntil = Number.NEGATIVE_INFINITY;
 	private readonly steps: number[];
 
 	constructor(max: number, steps: number[] = [1, 0.75, 0.5]) {
@@ -93,7 +96,15 @@ export class AutoScale {
 	}
 
 	/** 定期的に呼ぶ。割合を変えるべきなら新しい割合、変えないなら undefined */
+	/** until まで様子を見ない(つないだ直後の全面の送り直しを、混んでいるとみなさない) */
+	pause(until: number): void {
+		this.quietUntil = Math.max(this.quietUntil, until);
+		this.bad = 0;
+		this.good = 0;
+	}
+
 	sample(s: Sample, now: number): number | undefined {
+		if (now < this.quietUntil) return undefined;
 		const q = s.queued ?? 0;
 		const congested = q > CONGESTED_MS || s.backlog >= 3;
 		const calm = q < CALM_MS && s.backlog === 0;
@@ -108,18 +119,20 @@ export class AutoScale {
 					: FIRST_HOLD_MS;
 			this.holdUntil = now + this.hold;
 			this.bad = 0;
-			return this.set(this.steps[i + 1] as number);
+			return this.set(this.steps[i + 1] as number, now);
 		}
 		if (this.good >= UP_AFTER && i > 0 && now >= this.holdUntil) {
 			this.good = 0;
 			this.lastUp = now;
-			return this.set(this.steps[i - 1] as number);
+			return this.set(this.steps[i - 1] as number, now);
 		}
 		return undefined;
 	}
 
-	private set(scale: number): number {
+	private set(scale: number, now: number): number {
 		this.scale = scale;
+		// 解像度を変えると全面を送り直してくるので、その間は見ない
+		this.pause(now + SETTLE_MS);
 		return scale;
 	}
 }

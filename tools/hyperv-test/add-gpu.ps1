@@ -38,13 +38,13 @@ try {
 		if ((Get-VM -Name $Name).State -ne 'Off') { 'VM を止める'; Stop-VM -Name $Name -Force }
 		'GPU の分割を付ける'
 		Add-VMGpuPartitionAdapter -VMName $Name
-	Set-VMGpuPartitionAdapter -VMName $Name `
-		-MinPartitionVRAM 80000000 -MaxPartitionVRAM 100000000 -OptimalPartitionVRAM 100000000 `
-		-MinPartitionEncode 80000000 -MaxPartitionEncode 100000000 -OptimalPartitionEncode 100000000 `
-		-MinPartitionDecode 80000000 -MaxPartitionDecode 100000000 -OptimalPartitionDecode 100000000 `
-		-MinPartitionCompute 80000000 -MaxPartitionCompute 100000000 -OptimalPartitionCompute 100000000
-	# GPU-P の VM は保存(サスペンド)できない。メモリの割り当て窓も広げる
-	Set-VM -Name $Name -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB -AutomaticStopAction TurnOff
+		Set-VMGpuPartitionAdapter -VMName $Name `
+			-MinPartitionVRAM 80000000 -MaxPartitionVRAM 100000000 -OptimalPartitionVRAM 100000000 `
+			-MinPartitionEncode 80000000 -MaxPartitionEncode 100000000 -OptimalPartitionEncode 100000000 `
+			-MinPartitionDecode 80000000 -MaxPartitionDecode 100000000 -OptimalPartitionDecode 100000000 `
+			-MinPartitionCompute 80000000 -MaxPartitionCompute 100000000 -OptimalPartitionCompute 100000000
+		# GPU-P の VM は保存(サスペンド)できない。メモリの割り当て窓も広げる
+		Set-VM -Name $Name -GuestControlledCacheTypes $true -LowMemoryMappedIoSpace 1GB -HighMemoryMappedIoSpace 32GB -AutomaticStopAction TurnOff
 	}
 	if ((Get-VM -Name $Name).State -ne 'Running') { 'VM を起動する'; Start-VM -Name $Name }
 	$pw = ConvertTo-SecureString (Get-Content (Join-Path $State 'rdptest.txt') -Raw).Trim() -AsPlainText -Force

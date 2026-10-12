@@ -379,6 +379,9 @@ export class GfxClient implements DynamicHandler {
 		frames: 0,
 		avc: 0,
 		avc444: 0,
+		/** AVC444 の復号を待った時間と、YUV444 を組み立てて RGBA にした時間の合計(ms) */
+		avc444DecodeMs: 0,
+		avc444ConvertMs: 0,
 		clear: 0,
 		planar: 0,
 		uncompressed: 0,
@@ -797,12 +800,16 @@ export class GfxClient implements DynamicHandler {
 			this.yuv444.set(id, st);
 		}
 		// 片方が出なくても、もう片方は復号器に渡す(参照の鎖を切らない)
-		const luma =
-			m.luma &&
-			(await decodeYuv(m.luma.stream, isKeyFrame(m.luma.stream), w, h));
-		const chroma =
-			m.chroma &&
-			(await decodeYuv(m.chroma.stream, isKeyFrame(m.chroma.stream), w, h));
+		const t0 = performance.now();
+		// 2 つとも先に復号器へ渡してから待つ(1 つ目の出力を待ってから 2 つ目を渡すと、その分だけ遅れる)。渡す順は主・副のまま
+		const lumaP =
+			m.luma && decodeYuv(m.luma.stream, isKeyFrame(m.luma.stream), w, h);
+		const chromaP =
+			m.chroma && decodeYuv(m.chroma.stream, isKeyFrame(m.chroma.stream), w, h);
+		const luma = lumaP && (await lumaP);
+		const chroma = chromaP && (await chromaP);
+		const t1 = performance.now();
+		this.stats.avc444DecodeMs += Math.round(t1 - t0);
 		const drawn: Rect[] = [];
 		if (m.luma && luma) {
 			const rects = clampRects(m.luma.regions, w, h);
@@ -832,6 +839,7 @@ export class GfxClient implements DynamicHandler {
 				st.rgba(r),
 			);
 		}
+		this.stats.avc444ConvertMs += Math.round(performance.now() - t1);
 	}
 }
 

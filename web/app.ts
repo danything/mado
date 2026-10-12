@@ -226,15 +226,23 @@ async function runSession(
 		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える。
 		// 割合は選んだものを上限に、混んでいれば自動で下げる(GFX のときだけ。フレームの時刻で混み具合が分かる)
 		const auto = new AutoScale(autoScale(login.size));
-		const resize = (w: number, h: number) =>
-			channels.displayControl.resize(
-				even(Math.round(w * auto.scale)),
-				Math.round(h * auto.scale),
-			);
+		const resize = (w: number, h: number) => {
+			const width = even(Math.round(w * auto.scale));
+			const height = Math.round(h * auto.scale);
+			// いまの大きさと同じなら送らない。Windows は同じ大きさでも画面の作り直しをする(GPU があると数十秒、絵が来ない)
+			if (width === display.width && height === display.height) return;
+			channels.displayControl.resize(width, height);
+		};
 		stops.push(watchSize(screen, resize));
+		let started = false;
 		const sampler = setInterval(() => {
-			if (!gfxClient?.active) return;
+			if (!gfxClient?.active || gfxClient.stats.frames === 0) return;
 			const now = performance.now();
+			// 最初の絵が来てしばらくは、全面の送り直しで混んで見えるので待つ
+			if (!started) {
+				started = true;
+				auto.pause(now + 10_000);
+			}
 			const l = gfxClient.latency;
 			// 最近のフレームが無ければ(画面が静か)混んでいない
 			const queued = now - l.at < AUTO_SAMPLE_MS * 1.5 ? l.queued : undefined;
