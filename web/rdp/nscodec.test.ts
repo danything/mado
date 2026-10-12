@@ -1,10 +1,10 @@
-// NSCodec(ClearCodec のサブコーデック 1)の試験。試験側の符号化器での往復と、Windows の実データ。
+// NSCodec の試験。ClearCodec のサブコーデック 1 として来る。試験側の符号化器での往復と、Windows の実データを確かめる。
 
 import { describe, expect, test } from "bun:test";
 import { Writer } from "./bytes";
 import { nscodec, nscRle } from "./clearcodec";
 
-/** 試験用の面の RLE(復号器と対になる形。最後の 4 バイトはそのまま) */
+/** 試験用の面の RLE。復号器と対になる形で、最後の 4 バイトはそのまま置く */
 function rleEncode(plane: Uint8Array): Uint8Array {
 	const out: number[] = [];
 	let i = 0;

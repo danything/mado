@@ -1,5 +1,5 @@
 // MCS([T.125])と GCC([T.124])。Connect Initial / Response は BER、そのあとの PDU は PER。
-// 仕様は [MS-RDPBCGR] 2.2.1.3〜2.2.1.4(クライアント / サーバーのデータブロック)と 2.2.1.5〜2.2.1.16。
+// データブロックは [MS-RDPBCGR] 2.2.1.3〜2.2.1.4、そのあとの PDU は 2.2.1.5〜2.2.1.16 にある。
 
 import { Reader, Writer } from "./bytes";
 import * as der from "./der";
@@ -7,7 +7,7 @@ import * as der from "./der";
 /** MCS のユーザー ID とチャネル ID は、PER では 1001 を引いた値で運ぶ */
 const BASE = 1001;
 
-/** キーボード配列を言わないときの既定: 日本語(0x0411)。米国は 0x0409 */
+/** キーボード配列の既定は日本語(0x0411)。米国は 0x0409 */
 export const DEFAULT_KEYBOARD_LAYOUT = 0x0411;
 
 // ---- クライアントのデータブロック ----
@@ -19,19 +19,19 @@ export type ClientCore = {
 	selectedProtocol: number;
 	clientName: string;
 	keyboardLayout?: number;
-	/** GFX(Graphics Pipeline)を使えると伝える(SUPPORT_DYNVC_GFX_PROTOCOL) */
+	/** SUPPORT_DYNVC_GFX_PROTOCOL を立てて、GFX(Graphics Pipeline)を使えると伝える */
 	gfx?: boolean;
-	/** 回線の自動検出を頼む(既定で頼む)。頼まないときは LAN と言う */
+	/** 回線の自動検出を頼む。既定は true。頼まないときは LAN と伝える */
 	autodetect?: boolean;
 };
 
-/** 静的チャネル。名前は 7 文字まで(8 バイト、NUL 終わり) */
+/** 静的チャネル。名前は NUL を含めて 8 バイトなので、7 文字まで */
 export type StaticChannel = { name: string; options: number };
 
 export const DRDYNVC: StaticChannel = { name: "drdynvc", options: 0xc0800000 };
 export const CLIPRDR: StaticChannel = { name: "cliprdr", options: 0xc0a00000 };
 
-/** キーボードの種類: 日本語配列は 7(日本語キーボード)、ほかは 4(IBM enhanced 101/102 キー) */
+/** キーボードの種類。日本語配列は 7(日本語キーボード)、ほかは 4(IBM enhanced 101/102 キー) */
 export const keyboardType = (layout: number) =>
 	(layout & 0xffff) === 0x0411 ? 7 : 4;
 /** 日本語キーボードの副種類は 2(106/109 キー) */
@@ -60,7 +60,7 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u32(0x00080004) // RDP 5.0 以降
 			.u16(c.width)
 			.u16(c.height)
-			.u16(0xca01) // colorDepth: 8bpp(古い欄。下の highColorDepth が本当の値)
+			.u16(0xca01) // colorDepth: 8bpp。古い欄で、実際の値は下の highColorDepth
 			.u16(0xaa03) // SASSequence
 			.u32(layout)
 			.u32(0x0000_4a61) // clientBuild
@@ -72,10 +72,10 @@ function clientCore(c: ClientCore): Uint8Array {
 			.u16(0xca01) // postBeta2ColorDepth
 			.u16(1) // clientProductId
 			.u32(0) // serialNumber
-			.u16(24) // highColorDepth: 24(WANT_32BPP_SESSION で 32 を頼む)
+			.u16(24) // highColorDepth: 24。32 は WANT_32BPP_SESSION で頼む
 			.u16(0x0001 | 0x0002 | 0x0004 | 0x0008) // supportedColorDepths: 24 / 16 / 15 / 32
 			// earlyCapabilityFlags: ERRINFO_PDU | WANT_32BPP_SESSION | STATUSINFO_PDU | VALID_CONNECTION_TYPE
-			// (+ SUPPORT_NETCHAR_AUTODETECT: 回線を測ってもらうとき、SUPPORT_DYNVC_GFX_PROTOCOL: GFX を使うときだけ)
+			// 回線を測ってもらうときは SUPPORT_NETCHAR_AUTODETECT、GFX を使うときは SUPPORT_DYNVC_GFX_PROTOCOL も立てる
 			.u16(
 				0x0001 |
 					0x0002 |
@@ -85,8 +85,8 @@ function clientCore(c: ClientCore): Uint8Array {
 					(c.gfx ? 0x0100 : 0),
 			)
 			.zeros(64) // clientDigProductId
-			// connectionType: 測ってもらうなら AUTODETECT(サーバーが測った結果で画質を決める)。
-			// 測らないなら LAN(サーバーによっては、LAN でないとコーデックを使わない)
+			// connectionType。測ってもらうなら AUTODETECT にし、サーバーが測った結果で画質を決める。
+			// 測らないなら LAN にする。LAN でないとコーデックを使わないサーバーがある
 			.u8(autodetect ? CONNECTION_TYPE_AUTODETECT : CONNECTION_TYPE_LAN)
 			.u8(0) // pad
 			.u32(c.selectedProtocol)
@@ -94,7 +94,7 @@ function clientCore(c: ClientCore): Uint8Array {
 	);
 }
 
-/** TLS / CredSSP の上では RDP 自身の暗号は使わない(どちらも 0) */
+/** TLS / CredSSP の上では RDP 自身の暗号は使わないので、どちらも 0 */
 function clientSecurity(): Uint8Array {
 	return block(0xc002, new Writer(8).u32(0).u32(0).done());
 }
@@ -120,12 +120,12 @@ function clientCluster(): Uint8Array {
 	);
 }
 
-/** Client Message Channel Data: 回線の自動検出に使う MCS のメッセージ チャネルを頼む(flags は 0) */
+/** Client Message Channel Data。回線の自動検出に使う MCS のメッセージ チャネルを頼む。flags は 0 */
 function clientMessageChannel(): Uint8Array {
 	return block(0xc006, new Writer(4).u32(0).done());
 }
 
-/** PER の長さ(0x80 未満は 1 バイト、それ以上は 0x8000 | n の 2 バイト) */
+/** PER の長さ。0x80 未満は 1 バイト、それ以上は 0x8000 | n の 2 バイト */
 export function perLength(n: number): Uint8Array {
 	return n < 0x80 ? Uint8Array.of(n) : Uint8Array.of(0x80 | (n >> 8), n & 0xff);
 }
@@ -147,8 +147,8 @@ export function gccCreateRequest(
 		.bytes(clientNet(channels));
 	if (core.autodetect ?? true) w.bytes(clientMessageChannel());
 	const blocks = w.done();
-	// ConferenceCreateRequest: 拡張ビット 0x00、選択 0x08、会議名 "1"(numeric)、user data が 1 つ、h221NonStandard の鍵 "Duca"。
-	// ここまでで 23 バイト(先頭の 7 + 長さ 2 + この 12 + 長さ 2)。サーバーによってはこの 23 バイトを決め打ちで読み飛ばす
+	// ConferenceCreateRequest。拡張ビット 0x00、選択 0x08、会議名 "1"(numeric)、user data 1 つ、h221NonStandard の鍵 "Duca"。
+	// ここまでで先頭の 7 + 長さ 2 + この 12 + 長さ 2 の 23 バイトになる。この 23 バイトを決め打ちで読み飛ばすサーバーがある
 	const inner = new Writer(blocks.length + 32)
 		.bytes(Uint8Array.of(0x00, 0x08, 0x00, 0x10, 0x00, 0x01, 0xc0, 0x00))
 		.bytes(new TextEncoder().encode("Duca"))
@@ -162,7 +162,7 @@ export function gccCreateRequest(
 		.done();
 }
 
-/** 符号を付けない最短の INTEGER(実際のクライアントは 65535 を 02 02 ff ff で送る) */
+/** 符号を付けない最短の INTEGER。実際のクライアントも 65535 を 02 02 ff ff で送る */
 const uint = (v: number) =>
 	der.tlv(
 		der.INTEGER,
@@ -210,13 +210,13 @@ export function connectInitial(userData: Uint8Array): Uint8Array {
 // ---- サーバーの応答 ----
 
 export type ServerData = {
-	/** I/O チャネル(画面・入力)の ID */
+	/** 画面と入力が通る I/O チャネルの ID */
 	ioChannelId: number;
-	/** 要求した静的チャネルに割り当てられた ID(要求した順) */
+	/** 要求した静的チャネルに割り当てられた ID。要求した順に並ぶ */
 	channelIds: number[];
-	/** SC_CORE の clientRequestedProtocols / earlyCapabilityFlags(無ければ 0) */
+	/** SC_CORE の clientRequestedProtocols / earlyCapabilityFlags。無ければ 0 */
 	earlyCapabilityFlags: number;
-	/** メッセージ チャネル(回線の自動検出)の ID。頼まなかった・サーバーが使わないときは無い */
+	/** 回線の自動検出に使うメッセージ チャネルの ID。頼まなかったときや、サーバーが使わないときは無い */
 	messageChannelId?: number;
 };
 
@@ -326,12 +326,12 @@ export function sendDataRequest(
 		.done();
 }
 
-/** サーバーが切った(エラーではなく、終わり) */
+/** サーバーが切った。エラーではなく、ふつうの終わり */
 export class Disconnected extends Error {}
 
 export type SendData = { channelId: number; data: Uint8Array };
 
-/** Send Data Indication(サーバー → クライアント)。切断の通知なら例外 */
+/** Send Data Indication(サーバー → クライアント)を読む。切断の通知なら例外にする */
 export function parseSendDataIndication(b: Uint8Array): SendData {
 	const r = new Reader(b);
 	const choice = r.u8() >> 2;

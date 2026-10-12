@@ -1,4 +1,4 @@
-// NTLM に要る暗号のうち、WebCrypto に無いもの(MD4・MD5・RC4・HMAC-MD5)と、WebCrypto の薄い包み(SHA-256・乱数)。
+// NTLM に要る暗号。WebCrypto に無い MD4、MD5、RC4、HMAC-MD5 はここで実装する。SHA-256 と乱数は WebCrypto を薄く包む。
 
 import { concat } from "./bytes";
 

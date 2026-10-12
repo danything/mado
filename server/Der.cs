@@ -1,8 +1,8 @@
 namespace Mado;
 
 /// <summary>
-/// RDCleanPath に要るだけの DER(ASN.1)の読み書き。長さは長形式まで読む(サーバー証明書の連なりは 127 バイトを超える)。
-/// System.Formats.Asn1 もあるが、RDCleanPath の「全部 EXPLICIT の文脈タグ」を素直に書くにはこちらのほうが短い。
+/// RDCleanPath で使う範囲の DER (ASN.1) の読み書き。サーバー証明書の連なりは 127 バイトを超えるので、長さは長形式も読む。
+/// System.Formats.Asn1 も使えるが、RDCleanPath は全部が EXPLICIT の文脈タグなので、自前で書いたほうが短い。
 /// </summary>
 internal static class Der
 {
@@ -11,12 +11,12 @@ internal static class Der
     public const byte Utf8String = 0x0c;
     public const byte Sequence = 0x30;
 
-    /// <summary>[n] EXPLICIT(構造化・文脈タグ)</summary>
+    /// <summary>[n] EXPLICIT。構造化された文脈タグ</summary>
     public static byte Context(int n) => (byte)(0xa0 | n);
 
     public readonly record struct Tlv(byte Tag, ReadOnlyMemory<byte> Value, int End);
 
-    /// <summary>buf[at] から 1 つ読む。足りなければ null(続きを待つ)</summary>
+    /// <summary>buf[at] から 1 つ読む。バイトが足りなければ null を返し、呼び出し側は続きを待つ</summary>
     public static Tlv? Read(ReadOnlyMemory<byte> buf, int at = 0)
     {
         var s = buf.Span;
@@ -38,7 +38,7 @@ internal static class Der
         return new Tlv(tag, buf.Slice(start, len), start + len);
     }
 
-    /// <summary>中身を順に全部読む(SEQUENCE や文脈タグの中)</summary>
+    /// <summary>SEQUENCE や文脈タグの中身を順に全部読む</summary>
     public static List<Tlv> ReadAll(ReadOnlyMemory<byte> buf)
     {
         var list = new List<Tlv>();
@@ -67,7 +67,7 @@ internal static class Der
         return [.. head, .. parts.SelectMany(p => p)];
     }
 
-    /// <summary>0 以上の整数(2 の補数で最小の長さ。先頭が 0x80 以上なら 0x00 を足す)</summary>
+    /// <summary>0 以上の整数を、2 の補数で最も短く書く。先頭が 0x80 以上なら 0x00 を足す</summary>
     public static byte[] WriteInteger(ulong n)
     {
         var b = new List<byte>();

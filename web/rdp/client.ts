@@ -1,4 +1,5 @@
-// つながったあとのセッション。届く PDU を読んで画面とポインタに流し、入力を送り、サーバーが画面を作り直す(Deactivate-Reactivate)のに付き合う。
+// つながったあとのセッション。届いた PDU を読んで画面とポインタに流し、入力を送る。
+// サーバーが画面を作り直す Deactivate-Reactivate にも応じる。
 
 import { AutoDetect, type NetworkInfo } from "./autodetect";
 import { parseBitmapUpdate } from "./bitmap";
@@ -16,10 +17,10 @@ import * as x224 from "./x224";
 
 const CHANNEL_OPTION_SHOW_PROTOCOL = 0x00200000;
 
-/** 画面の出力先。ブラウザでは canvas(display.ts)、試験では何かを溜めるもの */
+/** 画面の出力先。ブラウザでは display.ts の canvas、試験では描いたものを溜めておくもの */
 export interface Screen {
 	resize(width: number, height: number): void;
-	/** (x, y) から w x h の RGBA(上の行から) */
+	/** (x, y) から w x h の RGBA を描く。行は上から並ぶ */
 	draw(
 		x: number,
 		y: number,
@@ -27,11 +28,11 @@ export interface Screen {
 		h: number,
 		rgba: Uint8ClampedArray,
 	): void;
-	/** null は「描かない」(ポインタを隠す)、"default" は OS の既定 */
+	/** null ならポインタを隠す。"default" は OS の既定のカーソル */
 	setCursor(cursor: pointer.Cursor | "default" | null): void;
 }
 
-/** 静的チャネルに届いたメッセージ(断片は組み立て済み。drdynvc / cliprdr)を受け取る */
+/** drdynvc や cliprdr など、静的チャネルに届いたメッセージを受け取る。断片は組み立ててから渡す */
 type ChannelHandler = (name: string, data: Uint8Array) => void;
 
 export class RdpClient {
@@ -43,22 +44,25 @@ export class RdpClient {
 	/** サーバーと決めた RemoteFX の codecId */
 	private rfxCodecId: number;
 	private closed = false;
-	/** Share Data に付ける shareId(再アクティベーションで変わる) */
+	/** Share Data に付ける shareId。再アクティベーションで変わる */
 	private shareId: number;
-	/** RemoteFX のタイルと旧ビットマップを溜めて、覆われたものは復号せず、受けた順に描く */
+	/** RemoteFX のタイルと旧ビットマップを溜めて、受けた順に描く。あとのものに覆われたものは復号しない */
 	private surface: SurfaceRenderer;
-	/** 回線の自動検出(メッセージ チャネル)。つなぐ途中で使ったものを続ける */
+	/** メッセージ チャネルでの回線の自動検出。つなぐ途中で使ったものを引き継ぐ */
 	private autodetect: AutoDetect;
 	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
 	errorInfo = 0;
-	/** 受けた更新の種類(Fast-Path の updateCode)ごとの数。診断用 */
+	/** Fast-Path の updateCode ごとの、受けた更新の数。診断に出す */
 	readonly stats: Record<number, number> = {};
 	onChannel?: ChannelHandler;
 
 	constructor(
 		readonly session: Session,
 		private screen: Screen,
-		/** 画面の復号(RemoteFX・旧ビットマップ)の置き場。省略するとその場で復号する(ブラウザでは createPool() の Worker のプールを渡す) */
+		/**
+		 * RemoteFX と旧ビットマップを復号する場所。省略するとその場で復号する。
+		 * ブラウザでは createPool() で作った Worker のプールを渡す
+		 */
 		options: { pool?: TilePool } = {},
 	) {
 		this.width = session.width;
@@ -73,7 +77,7 @@ export class RdpClient {
 		});
 	}
 
-	/** 描き終えたフレームをサーバーに知らせる(応答しないと、サーバーは送るのを止める) */
+	/** 描き終えたフレームをサーバーに知らせる。知らせないと、サーバーは送るのを止める */
 	private sendFrameAck(frameId: number): void {
 		this.sendIo(
 			pdu.shareData(
@@ -85,12 +89,12 @@ export class RdpClient {
 		);
 	}
 
-	/** 画面の復号の統計(診断用。RemoteFX のタイルと旧ビットマップ): 後のものに覆われて復号しなかった数、壊れていて捨てた数 */
+	/** RemoteFX のタイルと旧ビットマップの統計。あとのものに覆われて復号しなかった数と、壊れていて捨てた数。診断に出す */
 	get decodeStats(): { coalesced: number; skipped: number } {
 		return { coalesced: this.surface.coalesced, skipped: this.surface.skipped };
 	}
 
-	/** サーバーが測った回線の様子(診断用)と、答えた測定の数。測っていなければ network は無い */
+	/** サーバーが測った回線の様子と、こちらが答えた測定の数。診断に出す。測っていなければ network は無い */
 	get network(): {
 		info?: NetworkInfo;
 		answered: { rtt: number; bandwidth: number };
@@ -98,7 +102,10 @@ export class RdpClient {
 		return { info: this.autodetect.network, answered: this.autodetect.stats };
 	}
 
-	/** 終わるまで読み続ける。正常な終わり(サーバーが切った・こちらが閉じた)は理由の文字列、通信の失敗は例外 */
+	/**
+	 * 終わるまで読み続ける。サーバーが切ったときやこちらが閉じたときは、理由の文字列を返す。
+	 * 通信に失敗したら例外にする
+	 */
 	async run(): Promise<string> {
 		const s = this.session;
 		this.screen.resize(this.width, this.height);
@@ -115,8 +122,8 @@ export class RdpClient {
 				return e.message;
 			throw e;
 		} finally {
-			// 溜めたタイルは、切れる前の最後の画面なので描いておく(失敗しても、切れた本当の理由を隠さない)
-			// (復号中のものも描き終えてから、Worker を止める)
+			// 溜めたタイルは切れる前の最後の画面なので描いておく。ここで失敗しても、切れた本当の理由は隠さない。
+			// 復号中のものも描き終えてから Worker を止める
 			try {
 				this.surface.ordered(() => this.surface.dispose());
 			} catch {}
@@ -129,13 +136,13 @@ export class RdpClient {
 		this.session.stream.close();
 	}
 
-	/** 入力のイベント(input.ts のもの)を送る。1 つの PDU に 15 まで */
+	/** input.ts で作った入力のイベントを送る。1 つの PDU に入るのは 15 まで */
 	sendInput(events: Uint8Array[]): void {
 		for (let i = 0; i < events.length; i += 15)
 			this.send(input.fastPathInput(events.slice(i, i + 15)));
 	}
 
-	/** 静的チャネルへ送る(drdynvc / cliprdr の中身)。断片に分ける */
+	/** drdynvc や cliprdr の中身を静的チャネルへ送る。大きければ断片に分ける */
 	sendChannel(name: string, data: Uint8Array): void {
 		const id = this.session.channels.get(name);
 		if (id === undefined) throw new Error(`チャネル ${name} は無い`);
@@ -165,7 +172,7 @@ export class RdpClient {
 	}
 
 	private handlePdu(p: x224.Pdu): void {
-		// 帯域の測定(つないだあと)は、届いたものを全部数える(ヘッダーの数バイトは数えない)
+		// つないだあとの帯域の測定では、届いたものを全部数える。ヘッダーの数バイトは数えない
 		this.autodetect.received(p.data.length);
 		if (p.kind === "fastpath") {
 			for (const u of this.fast.push(p.data)) this.handleUpdate(u.code, u.data);
@@ -178,7 +185,7 @@ export class RdpClient {
 		else this.handleChannel(ind.channelId, ind.data);
 	}
 
-	/** メッセージ チャネル: 回線の自動検出に、その場で答える(サーバーは答えるまでの時間で RTT を測る) */
+	/** メッセージ チャネルに届いた回線の自動検出に、その場で答える。サーバーは答えるまでの時間で RTT を測る */
 	private handleMessage(data: Uint8Array): void {
 		const id = this.session.messageChannelId;
 		const reply = this.autodetect.handle(data);
@@ -215,7 +222,7 @@ export class RdpClient {
 	private handleShareData(sd: pdu.ShareData): void {
 		switch (sd.type2) {
 			case pdu.PDUTYPE2.UPDATE:
-				// Slow-Path の更新は、先頭が updateType(0 orders、1 bitmap、2 palette、3 sync)
+				// Slow-Path の更新は先頭が updateType。0 が orders、1 が bitmap、2 が palette、3 が sync
 				if (sd.payload[0] === 1) this.handleUpdate(UPDATE.BITMAP, sd.payload);
 				break;
 			case pdu.PDUTYPE2.POINTER:
@@ -236,10 +243,10 @@ export class RdpClient {
 		}
 	}
 
-	/** Demand Active をもう一度受けた(画面の大きさが変わった): Confirm Active と同期をやり直す */
+	/** 画面の大きさが変わると Demand Active がもう一度来る。Confirm Active と同期をやり直す */
 	private reactivate(d: pdu.DemandActive): void {
 		this.surface.flush(); // 大きさが変わる前の画面を先に描く
-		// 復号中の前のフレームの Frame Acknowledge は前の shareId で返す。描画の順序に乗せて切り替える
+		// 復号中のフレームの Frame Acknowledge は前の shareId で返す。そのため shareId は描画と同じ順番で切り替える
 		this.surface.ordered(() => {
 			this.shareId = d.shareId;
 		});
@@ -251,14 +258,14 @@ export class RdpClient {
 		}
 		this.rfxCodecId = pdu.serverRfxCodecId(d.capabilities);
 		const s = this.session;
-		// Confirm Active と同期の 4 つ(つないだときと同じ。connect.ts も同じ関数を使う)
+		// Confirm Active と同期の 4 つを送る。つないだときと同じで、connect.ts も同じ関数を使う
 		for (const p of pdu.activationPdus(s.userId, d.shareId, {
 			width: this.width,
 			height: this.height,
 			keyboardLayout: s.keyboardLayout,
 		}))
 			this.sendIo(p);
-		// 大きさが変わる前の画面(復号中のタイル)を、先に描き終えてから
+		// 復号中のタイルなど、大きさが変わる前の画面を先に描き終えておく
 		const { width, height } = this;
 		this.surface.ordered(() => this.screen.resize(width, height));
 	}
@@ -267,7 +274,7 @@ export class RdpClient {
 		this.stats[code] = (this.stats[code] ?? 0) + 1;
 		switch (code) {
 			case UPDATE.BITMAP:
-				// 復号は後回し(Worker のプール。RemoteFX のタイルと同じ列で、受けた順に描く)。壊れた矩形は捨てて続ける
+				// 復号は Worker のプールに回す。RemoteFX のタイルと同じ列に並べ、受けた順に描く。壊れた矩形は捨てて続ける
 				this.surface.bitmaps(parseBitmapUpdate(data), {
 					width: this.width,
 					height: this.height,
@@ -301,11 +308,12 @@ export class RdpClient {
 				if (c) this.screen.setCursor(c);
 				break;
 			}
-			// SYNCHRONIZE、PTR_POSITION(サーバーがマウスを動かす指示。ブラウザでは動かせない)、Orders(断っている)は何もしない
+			// SYNCHRONIZE と Orders は何もしない。Orders は断っているので来ない。
+			// PTR_POSITION はサーバーがマウスを動かす指示だが、ブラウザではマウスを動かせない
 		}
 	}
 
-	/** ポインタの形が壊れていても、セッションは続ける(既定のカーソルにする) */
+	/** ポインタの形が壊れていたら既定のカーソルにして、セッションは続ける */
 	private setPointer(
 		parse: () => { index: number; cursor: pointer.Cursor },
 	): void {
@@ -318,7 +326,7 @@ export class RdpClient {
 		}
 	}
 
-	/** Slow-Path のポインタ: messageType(2)、pad(2)、本体 */
+	/** Slow-Path のポインタ。messageType(2 バイト)、pad(2 バイト)、本体の順 */
 	private handleSlowPointer(payload: Uint8Array): void {
 		const type = payload[0] as number;
 		const body = payload.subarray(4);

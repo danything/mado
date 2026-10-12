@@ -1,5 +1,5 @@
-// CredSSP([MS-CSSP])。TLS の上で NTLM を回し、サーバーの公開鍵に結びつけてから、ユーザー名とパスワードを封印して渡す。
-// TLS は mado が張っているので、ここでは平文の TSRequest を読み書きするだけ。公開鍵は RDCleanPath が返した証明書から取る。
+// CredSSP([MS-CSSP])。TLS の上で NTLM を回し、サーバーの公開鍵に結びつける。そのあとユーザー名とパスワードを封印して渡す。
+// TLS は mado が張っているので、ここで読み書きする TSRequest は平文。公開鍵は RDCleanPath が返した証明書から取る。
 //
 //   TSRequest ::= SEQUENCE { version [0] INTEGER, negoTokens [1] NegoData OPTIONAL, authInfo [2] OCTET STRING OPTIONAL,
 //     pubKeyAuth [3] OCTET STRING OPTIONAL, errorCode [4] INTEGER OPTIONAL, clientNonce [5] OCTET STRING OPTIONAL }
@@ -92,7 +92,7 @@ function ntStatus(code: number): string {
 	return known[code] ? `${known[code]} (${hex})` : `CredSSP の失敗 (${hex})`;
 }
 
-/** TSCredentials(パスワード)。中の文字列は UTF-16LE */
+/** パスワードを入れる TSCredentials。中の文字列は UTF-16LE */
 function tsCredentials(
 	domain: string,
 	user: string,
@@ -132,7 +132,8 @@ export async function credssp(
 	const version = Math.min(VERSION, peerVersion);
 	const auth = ntlm.authenticate(challenge.negoToken);
 
-	// サーバーの公開鍵に結びつける。v5 からはハッシュ、それより前は公開鍵そのものを封印して送る(返りは 1 足したもの)
+	// サーバーの公開鍵に結びつける。v5 からはハッシュを封印して送る。
+	// それより前は公開鍵そのものを封印して送り、サーバーは 1 足したものを返してくる
 	const clientPub =
 		peerVersion >= 5
 			? await sha256(CLIENT_SERVER, nonce, publicKey)
@@ -164,7 +165,7 @@ export async function credssp(
 	);
 }
 
-/** リトル エンディアンの数として 1 足す(CredSSP v2〜4 の公開鍵の応答) */
+/** リトル エンディアンの数として 1 足す。CredSSP v2〜4 の公開鍵の応答に使う */
 function increment(b: Uint8Array): Uint8Array {
 	const o = concat(b);
 	for (let i = 0; i < o.length; i++) {

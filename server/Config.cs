@@ -6,8 +6,8 @@ namespace Mado;
 internal sealed record Target(string Name, string Host, int Port);
 
 /// <summary>
-/// 設定ファイル(JSON)。置き場所は `--config &lt;path&gt;`、無ければ %ProgramData%\mado\mado.json
-/// (MSI で入れたときの置き場所。サービスはここを読む)。書き方は v0.2 / v0.3(bun 版)と同じ。
+/// JSON の設定ファイル。`--config &lt;path&gt;` で場所を指定する。指定が無ければ %ProgramData%\mado\mado.json を読む。
+/// MSI で入れるとここに置かれ、サービスもここを読む。書き方は bun 版の v0.2 / v0.3 と同じ。
 /// </summary>
 internal sealed record Config(
     string File,
@@ -21,7 +21,7 @@ internal sealed record Config(
     int StatusPort,
     Config.UpdateOptions Update)
 {
-    /// <summary>自動更新。CheckHours ごとに GitHub のリリースを見る(Updater.cs)</summary>
+    /// <summary>自動更新。CheckHours ごとに GitHub のリリースを見る。中身は Updater.cs</summary>
     public sealed record UpdateOptions(bool Enabled, int CheckHours, string Repo);
     public sealed record ListenOptions(int Https, int Http, string Hostname);
     public sealed record AcmeOptions(string Email, bool Staging);
@@ -94,12 +94,12 @@ internal sealed record Config(
         })];
     }
 
-    /// <summary>外から見た URL の起点(https、tls = off なら http + ポート)</summary>
+    /// <summary>外から見た URL の起点。普段は https で、tls が off なら http とポート</summary>
     public string Origin => Tls == "off"
         ? $"http://{Host}{(Listen.Http == 80 ? "" : $":{Listen.Http}")}"
         : $"https://{Host}{(Listen.Https == 443 ? "" : $":{Listen.Https}")}";
 
-    // --- ファイルの形(snake_case。MadoJson で読む) ------------------------------------------------
+    // ファイルの形。キーは snake_case で、MadoJson で読む
     internal sealed class Raw
     {
         public string? Host { get; set; }
@@ -120,7 +120,7 @@ internal sealed record Config(
         public string? Issuer { get; set; }
         public string? ClientId { get; set; }
         public string? ClientSecret { get; set; }
-        /// <summary>client_secret の代わりにファイルから読む(1 行目)</summary>
+        /// <summary>client_secret をこのファイルの 1 行目から読む</summary>
         public string? ClientSecretFile { get; set; }
         public string? RequiredRole { get; set; }
     }

@@ -1,5 +1,5 @@
-// つなぐ手順の全部([MS-RDPBCGR] 1.3.1.1)。RDCleanPath → CredSSP → MCS → Client Info → ライセンス → 能力 → 同期。
-// 終わったら、画面の更新と入力を流せる状態(Session)を返す。
+// つなぐ手順([MS-RDPBCGR] 1.3.1.1)。RDCleanPath → CredSSP → MCS → Client Info → ライセンス → 能力 → 同期の順に進める。
+// 終わると、画面の更新と入力を流せる Session を返す。
 
 import { AutoDetect } from "./autodetect";
 import { concat, Reader } from "./bytes";
@@ -16,7 +16,7 @@ export type ConnectOptions = {
 	url: string;
 	/** /api/token でもらった使い捨てのトークン */
 	token: string;
-	/** つなぐ先(トークンで決まるので、サーバーは見ない) */
+	/** つなぐ先。実際の行き先はトークンで決まるので、サーバーはこれを見ない */
 	destination: string;
 	username: string;
 	password: string;
@@ -26,15 +26,18 @@ export type ConnectOptions = {
 	/** 静的チャネル。ID は同じ順で Session.channels に入る */
 	channels?: mcs.StaticChannel[];
 	onLog?: (line: string) => void;
-	/** 中止(つなぐのに時間がかかりすぎたとき、利用者が取り消したとき) */
+	/** 中止の合図。時間がかかりすぎたときや、利用者が取り消したときに使う */
 	signal?: AbortSignal;
-	/** GFX(H.264)を使う。受け手(GfxClient)を attachChannels に渡すこと */
+	/** GFX(H.264)を使う。受け手の GfxClient を attachChannels に渡しておく */
 	gfx?: boolean;
 	/** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
 	allowTls?: boolean;
-	/** 試験用。LICENSE_REQUEST にダミーの NEW_LICENSE_REQUEST で答える(xrdp は中身を見ない)。本物のライセンス交渉(PLATFORM_CHALLENGE 以降)はしないので、xrdp 以外では先へ進めない */
+	/**
+	 * 試験用。LICENSE_REQUEST にダミーの NEW_LICENSE_REQUEST で答える。xrdp は中身を見ないので通る。
+	 * PLATFORM_CHALLENGE から先の本物の交渉はしないので、xrdp 以外では先へ進めない
+	 */
 	dummyLicense?: boolean;
-	/** 回線の自動検出(サーバーが RTT と帯域を測って画質を変える)を頼む。既定で頼む */
+	/** 回線の自動検出を頼む。サーバーが RTT と帯域を測って画質を変える。既定は true */
 	autodetect?: boolean;
 };
 
@@ -44,21 +47,21 @@ export type Session = {
 	ioChannelId: number;
 	/** 静的チャネルの名前 → チャネル ID */
 	channels: Map<string, number>;
-	/** 静的チャネルの名前 → オプション(SHOW_PROTOCOL を付けて送るかの判断に) */
+	/** 静的チャネルの名前 → オプション。送るときに SHOW_PROTOCOL を付けるかをこれで決める */
 	channelOptions: Map<string, number>;
 	shareId: number;
 	serverCapabilities: Map<number, Uint8Array>;
-	/** 宣言したキーボード配列(再アクティベーションでも同じものを言う) */
+	/** 宣言したキーボード配列。再アクティベーションでも同じものを伝える */
 	keyboardLayout: number;
 	width: number;
 	height: number;
-	/** 同期の途中で届いた Fast-Path の PDU(画面の更新を取りこぼさない) */
+	/** 同期の途中で届いた Fast-Path の PDU。あとで流して、画面の更新を取りこぼさないようにする */
 	pending: x224.Pdu[];
-	/** 同期の途中で届いた静的チャネル(drdynvc など)のデータ */
+	/** 同期の途中で届いた、drdynvc などの静的チャネルのデータ */
 	pendingChannel: { channelId: number; data: Uint8Array }[];
-	/** メッセージ チャネル(回線の自動検出)の ID。サーバーが使わないときは無い */
+	/** 回線の自動検出に使うメッセージ チャネルの ID。サーバーが使わないときは無い */
 	messageChannelId?: number;
-	/** 回線の自動検出の受け手(つなぐ途中で答えたものを、つないだあとも続ける) */
+	/** 回線の自動検出の受け手。つなぐ途中で使ったものを、つないだあとも使い続ける */
 	autodetect?: AutoDetect;
 };
 
@@ -97,8 +100,8 @@ export async function connect(o: ConnectOptions): Promise<Session> {
 }
 
 /**
- * TLS が張れて、X.224 Connection Confirm とサーバーの証明書がある状態から、つながるまで進める。
- * connect() が WebSocket でここまで来る。試験は TCP + TLS で直接ここに来る
+ * TLS が張れて、X.224 Connection Confirm とサーバーの証明書を受け取ったところから、つながるまで進める。
+ * connect() は WebSocket でここまで来る。試験は TCP + TLS で直接ここから始める
  */
 export async function establish(
 	stream: Transport,
@@ -154,11 +157,11 @@ export async function establish(
 	await join(server.ioChannelId);
 	for (const [i, c] of channels.entries()) {
 		const id = server.channelIds[i];
-		if (id === undefined) continue; // サーバーが割り当てなかった(使えない)
+		if (id === undefined) continue; // サーバーが割り当てなかったチャネルは使えない
 		await join(id);
 		joined.set(c.name, id);
 	}
-	// メッセージ チャネルは静的チャネルのあと(サーバーが返したときだけ)
+	// サーバーがメッセージ チャネルを返していれば、静的チャネルのあとに参加する
 	const messageChannelId = server.messageChannelId;
 	if (messageChannelId !== undefined) await join(messageChannelId);
 	log(
@@ -183,7 +186,7 @@ export async function establish(
 		),
 	);
 
-	// 6. ライセンス →(回線の自動検出)→ Demand Active
+	// 6. ライセンス → 回線の自動検出 → Demand Active。自動検出はサーバーが始めたときだけ
 	const inbox: Inbox = {
 		ioChannelId: server.ioChannelId,
 		pending: [],
@@ -280,7 +283,7 @@ export async function establish(
 	};
 }
 
-/** Share Control の totalLength が PDU の長さと合い、種類が正しければ Share Control(そうでなければ Security Header) */
+/** totalLength が PDU の長さと合い、種類も正しければ Share Control とみなす。そうでなければ Security Header */
 function isShareControl(data: Uint8Array): boolean {
 	if (data.length < 6) return false;
 	const total = (data[0] as number) | ((data[1] as number) << 8);
@@ -305,15 +308,15 @@ async function readSlow(s: Transport): Promise<{ data: Uint8Array }> {
 /** 接続の途中に届くものの行き先 */
 export type Inbox = {
 	ioChannelId: number;
-	/** Fast-Path の PDU(つないだあとで RdpClient が流す) */
+	/** Fast-Path の PDU。つないだあとで RdpClient が流す */
 	pending: x224.Pdu[];
-	/** 静的チャネルのもの(同上) */
+	/** 静的チャネルのデータ。これも RdpClient があとで流す */
 	pendingChannel: Session["pendingChannel"];
-	/** メッセージ チャネル(回線の自動検出)。その場で答える(サーバーは答えるまでの時間を測る) */
+	/** 回線の自動検出のメッセージ チャネル。サーバーは答えるまでの時間を測るので、その場で答える */
 	message?: { id: number; handle: (data: Uint8Array) => void };
 };
 
-/** I/O チャネルの Send Data Indication を 1 つ読む。Fast-Path とほかのチャネルのものは溜め、メッセージ チャネルのものはその場で答える */
+/** I/O チャネルの Send Data Indication を 1 つ読む。Fast-Path とほかのチャネルのデータは溜めておき、メッセージ チャネルにはその場で答える */
 export async function readIo(s: Transport, inbox: Inbox): Promise<Uint8Array> {
 	for (;;) {
 		const p = await x224.readPdu(s);

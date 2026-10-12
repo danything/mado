@@ -1,12 +1,12 @@
-// 画面の復号の置き場(RemoteFX のタイル、旧ビットマップ、GFX の Progressive のタイル)。ブラウザでは Web Worker のプールで、メインスレッドを塞がずに複数コアで並列に復号する。
-// それ以外(試験や、Worker が作れない環境)では、同じ形でその場で復号する。
+// 画面の復号を受け持つところ。RemoteFX のタイル、旧ビットマップ、GFX の Progressive のタイルを復号する。ブラウザでは Web Worker のプールを使い、メインスレッドを塞がずに複数のコアで並列に復号する。
+// 試験のときや Worker を作れない環境では、同じ形のままその場で復号する。
 
 import { type BitmapJob, decodeBitmap } from "./bitmap";
 import { type ProgressiveTileJob, ProgressiveTiles } from "./progressive";
 import { decodeTile } from "./rfx";
 import type { WorkerReply, WorkerRequest } from "./rfx.worker";
 
-/** ビルド(tools/build-web.ts)が差し込む、束ねた Worker の URL。ビルドしていない環境(試験など)では未定義 */
+/** 束ねた Worker の URL。ビルド(tools/build-web.ts)が差し込む。試験などビルドしていない環境では未定義 */
 declare const __RFX_WORKER__: string | undefined;
 
 type TileData = [Uint8Array, Uint8Array, Uint8Array];
@@ -16,15 +16,15 @@ type TileQuant = [number[], number[], number[]];
 export type DecodeJob =
 	| { kind: "rfx"; mode: number; data: TileData; quant: TileQuant }
 	| { kind: "bitmap"; rect: BitmapJob }
-	/** Progressive のタイル。タイルの状態を持つので、同じタイルは同じ Worker(runOn の lane)へ */
+	/** Progressive のタイル。タイルの状態を持つので、同じタイルは runOn で同じ lane の Worker へ送る */
 	| { kind: "progressive"; tile: ProgressiveTileJob }
-	/** Progressive のタイルの状態を面ごとに捨てる(面を作り直した・消した)。全部の lane へ */
+	/** Progressive のタイルの状態を面ごとに捨てる。面を作り直したときや消したときに、全部の lane へ送る */
 	| { kind: "progressiveReset"; surface: number };
 
-/** Progressive のタイルの状態。Worker の中では Worker ごと、その場で復号するときはメインスレッドに 1 つ */
+/** Progressive のタイルの状態。Worker の中では Worker ごとに 1 つ持つ。その場で復号するときはメインスレッドに 1 つ */
 const progressiveTiles = new ProgressiveTiles();
 
-/** その場で復号する(Worker の中と同じ処理) */
+/** その場で復号する。Worker の中と同じ処理 */
 export function decodeJob(j: DecodeJob): Uint8ClampedArray {
 	switch (j.kind) {
 		case "rfx":
@@ -40,12 +40,12 @@ export function decodeJob(j: DecodeJob): Uint8ClampedArray {
 }
 
 export interface TilePool {
-	/** true なら run は本当に非同期(完了の順序は保証されない)。false ならその場で復号するので、呼び出し側は同期の経路を使ってよい */
+	/** true なら run は本当に非同期で、終わる順は決まらない。false ならその場で復号するので、呼び出し側は同期の経路を使ってよい */
 	readonly async: boolean;
 	run(job: DecodeJob): Promise<Uint8ClampedArray>;
-	/** 決まった Worker で復号する(状態を持つ仕事用)。lane は 0 以上の整数で、lanes で割った余りの Worker へ */
+	/** 決まった Worker で復号する。状態を持つ仕事に使う。lane は 0 以上の整数で、lanes で割った余りの Worker へ送る */
 	runOn(lane: number, job: DecodeJob): Promise<Uint8ClampedArray>;
-	/** Worker の数(その場で復号するときは 1) */
+	/** Worker の数。その場で復号するときは 1 */
 	readonly lanes: number;
 	terminate(): void;
 }
@@ -71,11 +71,11 @@ type Slot = {
 	worker: Worker;
 	/** 復号を頼んで、まだ返っていない仕事の数 */
 	busy: number;
-	/** 読めなかった・落ちた。lane の割り当てを変えないよう、配列からは外さずに印を付ける */
+	/** 読めなかった、または落ちた。lane の割り当てを変えないよう、配列からは外さずに印を付ける */
 	dead?: boolean;
 };
 
-/** Worker の数: コアの数 - 1(メインスレッドの分)、1〜4 */
+/** Worker の数。コアの数からメインスレッドの分の 1 を引き、1〜4 に収める */
 function poolSize(cores: number): number {
 	return Math.max(1, Math.min(4, (Number.isFinite(cores) ? cores : 2) - 1));
 }
@@ -93,13 +93,13 @@ class WorkerPool implements TilePool {
 		}
 	>();
 	private nextId = 1;
-	/** Worker が読めない(404・MIME など)ときや落ちたときは、その場で復号に切り替える(画面を真っ黒にしない) */
+	/** Worker が読めない(404 や MIME の違い)ときや落ちたときは、その場で復号に切り替える。画面を真っ黒にしないため */
 	private fallback = new SyncPool();
 
-	/** Worker が作れなければ例外 */
+	/** Worker を作れなければ例外を投げる */
 	constructor(size: number) {
 		for (let i = 0; i < size; i++) {
-			// ビルドしたものは束ねた Worker の URL、そうでなければ(試験・開発)ソースのまま
+			// ビルドしたものなら束ねた Worker の URL を使う。試験や開発ではソースのまま
 			const url =
 				typeof __RFX_WORKER__ === "string"
 					? __RFX_WORKER__
@@ -127,19 +127,19 @@ class WorkerPool implements TilePool {
 	}
 
 	runOn(lane: number, job: DecodeJob): Promise<Uint8ClampedArray> {
-		// 落ちた Worker の lane は、その場で復号する(ほかの lane の割り当ては変えない)
+		// 落ちた Worker の lane は、その場で復号する。ほかの lane の割り当ては変えない
 		const slot = this.slots[lane % this.slots.length];
 		return this.send(slot?.dead ? undefined : slot, job);
 	}
 
-	/** slot の Worker へ頼む。生きている Worker が無ければ、その場で復号 */
+	/** slot の Worker へ頼む。生きている Worker が無ければ、その場で復号する */
 	private send(
 		slot: Slot | undefined,
 		job: DecodeJob,
 	): Promise<Uint8ClampedArray> {
 		if (!slot) return this.fallback.run(job);
 		const id = this.nextId++;
-		// 入力は PDU 全体の buffer の一部(subarray)なので、構造化複製だと全体が複製される。小さく切り出して渡す
+		// 入力は PDU 全体の buffer の一部(subarray)なので、そのまま構造化複製すると全体が複製される。小さく切り出して渡す
 		let req: WorkerRequest;
 		let transfer: ArrayBuffer[];
 		if (job.kind === "rfx") {
@@ -180,7 +180,7 @@ class WorkerPool implements TilePool {
 		else w.resolve(r.rgba);
 	}
 
-	/** Worker が読めなかった・落ちた: その Worker は使わず、頼んであったものはその場で復号し直す */
+	/** Worker が読めなかったときや落ちたとき。その Worker は使わず、頼んであったものはその場で復号し直す */
 	private fail(slot: Slot, e: Error): void {
 		if (!slot.dead) {
 			slot.dead = true;
@@ -206,7 +206,7 @@ class WorkerPool implements TilePool {
 	}
 }
 
-/** ブラウザなら Worker のプール、作れなければその場で復号するもの */
+/** ブラウザなら Worker のプールを返す。作れなければ、その場で復号するものを返す */
 export function createPool(): TilePool {
 	if (typeof Worker === "undefined") return new SyncPool();
 	try {

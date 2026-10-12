@@ -1,4 +1,4 @@
-// 静的チャネル(drdynvc / cliprdr)を RdpClient に結びつける。drdynvc の上に DisplayControl と(使うときは)GFX を載せる。
+// 静的チャネルの drdynvc と cliprdr を RdpClient に結びつける。drdynvc の上には DisplayControl を載せ、GFX を使うときは GFX も載せる。
 
 import type { RdpClient } from "./client";
 import { Clipboard } from "./cliprdr";
@@ -10,11 +10,11 @@ export type Channels = {
 	clipboard: Clipboard;
 };
 
-/** onRemoteText は、サーバー側でコピーされた文字列。ブラウザのクリップボードへ入れるのは呼び出し側 */
+/** onRemoteText はサーバー側でコピーされた文字列を受ける。ブラウザのクリップボードへは呼び出し側が入れる */
 export function attachChannels(
 	client: RdpClient,
 	onRemoteText: (text: string) => void,
-	/** GFX(H.264)の受け手。connect で gfx を付けたときだけ */
+	/** GFX(H.264)の受け手。connect で gfx を指定したときに渡す */
 	options: { gfx?: GfxClient } = {},
 ): Channels {
 	const dvc = new DynamicChannels((data) =>

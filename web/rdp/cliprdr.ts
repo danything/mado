@@ -1,5 +1,5 @@
-// クリップボード([MS-RDPECLIP])。文字列(CF_UNICODETEXT)だけ。
-// ブラウザのクリップボードとの行き来は呼び出し側(onRemoteText / setLocalText)。
+// クリップボード([MS-RDPECLIP])。扱うのは CF_UNICODETEXT の文字列だけ。
+// ブラウザのクリップボードとのやりとりは、呼び出し側が onRemoteText と setLocalText で行う。
 
 import { concat, Reader, Writer } from "./bytes";
 
@@ -29,13 +29,13 @@ function pdu(
 	);
 }
 
-/** 文字列 → CF_UNICODETEXT(UTF-16LE、NUL 終わり、改行は CRLF) */
+/** 文字列を CF_UNICODETEXT にする。UTF-16LE で NUL で終わり、改行は CRLF */
 export function encodeText(text: string): Uint8Array {
 	const crlf = text.replace(/\r?\n/g, "\r\n");
 	return new Writer(crlf.length * 2 + 2).utf16(crlf, true).done();
 }
 
-/** CF_UNICODETEXT → 文字列(最初の NUL まで。改行は LF) */
+/** CF_UNICODETEXT を最初の NUL まで読んで文字列にする。改行は LF にする */
 export function decodeText(data: Uint8Array): string {
 	let s = "";
 	for (let i = 0; i + 1 < data.length; i += 2) {
@@ -58,7 +58,7 @@ export class Clipboard {
 		private onRemoteText: (text: string) => void,
 	) {}
 
-	/** こちら(ブラウザ)でコピーされた文字列。サーバーに「あります」と知らせ、要求されたら渡す */
+	/** ブラウザでコピーされた文字列。サーバーには文字列があることだけ知らせ、要求されたら渡す */
 	setLocalText(text: string): void {
 		this.local = text;
 		if (this.ready) this.sendFormatList();
@@ -72,10 +72,10 @@ export class Clipboard {
 		const body = r.bytes(Math.min(len, r.left));
 		switch (type) {
 			case MSG.CLIP_CAPS:
-				break; // 版や長い書式名の可否は、こちらが長い書式名を使うと答えるだけ
+				break; // サーバーの版や長い書式名の可否は見ない。こちらは長い書式名を使うと答える
 			case MSG.MONITOR_READY:
 				this.ready = true;
-				// 能力(CLIP_CAPS: 1 セット、GENERAL、版 2、長い書式名)→ 書式の一覧
+				// 能力を送り、続けて書式の一覧を送る。能力は CLIP_CAPS に GENERAL を 1 セット、版 2、長い書式名
 				this.send(
 					pdu(
 						MSG.CLIP_CAPS,
@@ -121,7 +121,7 @@ export class Clipboard {
 	}
 
 	private sendFormatList(): void {
-		// 長い書式名: 書式 ID(4)+ 名前(UTF-16、NUL 終わり。標準の書式は空)
+		// 長い書式名の形。4 バイトの書式 ID のあとに、NUL で終わる UTF-16 の名前が続く。標準の書式は名前が空
 		const body =
 			this.local === undefined
 				? new Uint8Array()

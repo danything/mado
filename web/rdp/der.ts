@@ -1,5 +1,5 @@
-// DER / BER の最低限。RDCleanPath と CredSSP の TSRequest、証明書から公開鍵を抜くのと、MCS の Connect Initial / Response に使う。
-// タグは 1 バイト目そのまま(0x30 = SEQUENCE、0xa0 + n = 文脈 [n] の構造型)。MCS の 0x7f65 のような 2 バイトのタグも数として扱う。
+// 最低限の DER / BER。RDCleanPath、CredSSP の TSRequest、証明書からの公開鍵の取り出し、MCS の Connect Initial / Response で使う。
+// タグは 1 バイト目をそのまま数として扱う。0x30 は SEQUENCE、0xa0 + n は文脈 [n] の構造型。MCS の 0x7f65 のような 2 バイトのタグも 1 つの数にする。
 
 import { concat } from "./bytes";
 import type { ByteStream } from "./stream";
@@ -17,7 +17,7 @@ export type Tlv = {
 	tag: number;
 	/** 中身 */
 	value: Uint8Array;
-	/** この TLV の全体(タグから中身の終わりまで) */
+	/** タグから中身の終わりまでの、この TLV の全体 */
 	raw: Uint8Array;
 };
 
@@ -27,7 +27,7 @@ export function read(buf: Uint8Array, at = 0): (Tlv & { end: number }) | null {
 	if (p >= buf.length) return null;
 	let tag = buf[p++] as number;
 	if ((tag & 0x1f) === 0x1f) {
-		// 長い形のタグ(MCS の APPLICATION 101 など)
+		// MCS の APPLICATION 101 などの、長い形のタグ
 		let b: number;
 		do {
 			if (p >= buf.length) return null;
@@ -59,7 +59,7 @@ export function mustRead(buf: Uint8Array, at = 0): Tlv & { end: number } {
 	return t;
 }
 
-/** 中身に並んでいる TLV を全部 */
+/** 中身に並んでいる TLV をすべて読む */
 export function readAll(buf: Uint8Array): Tlv[] {
 	const out: Tlv[] = [];
 	let p = 0;
@@ -71,7 +71,7 @@ export function readAll(buf: Uint8Array): Tlv[] {
 	return out;
 }
 
-/** SEQUENCE の中の文脈タグ [n] を引く(EXPLICIT なので中身の TLV を返す) */
+/** SEQUENCE の中の文脈タグ [n] を探す。EXPLICIT なので、中に包まれた TLV を返す */
 export function fields(seq: Uint8Array): Map<number, Tlv> {
 	const m = new Map<number, Tlv>();
 	for (const f of readAll(seq)) {
@@ -121,8 +121,8 @@ export const utf8 = (s: string) =>
 export const field = (n: number, v: Uint8Array) => tlv(ctx(n), v);
 
 /**
- * 証明書(DER)から SubjectPublicKeyInfo の subjectPublicKey(BIT STRING の中身、先頭の未使用ビット数は除く)を抜く。
- * CredSSP の pubKeyAuth はこれに結びつける
+ * DER の証明書から、SubjectPublicKeyInfo の subjectPublicKey を取り出す。
+ * 返すのは BIT STRING の中身で、先頭の未使用ビット数は除く。CredSSP の pubKeyAuth はこれに結びつける
  *
  *   Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signature }
  *   TBSCertificate ::= SEQUENCE { [0] version OPTIONAL, serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo, ... }
@@ -140,7 +140,7 @@ export function subjectPublicKey(cert: Uint8Array): Uint8Array {
 	return bits.value.subarray(1);
 }
 
-/** 流れから TLV を 1 つ(タグから中身の終わりまで)読む。中身が max バイトを超えるなら tooLarge の例外 */
+/** 流れから TLV を 1 つ、タグから中身の終わりまで読む。中身が max バイトを超えたら tooLarge の例外にする */
 export async function readFrom(
 	s: ByteStream,
 	max: number,

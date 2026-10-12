@@ -1,10 +1,10 @@
-// ZGFX の伸長の速さ。試験用の符号化器で作ったデータを、何度も伸長して MB/s を出す。
+// ZGFX を伸長する速さを計る。試験用の符号化器で作ったデータを何度も伸長して、MB/s を出す。
 //   wslc run --rm -v "<repo>:/app" -w /app oven/bun:1 bun tools/zgfx-bench.ts
 
 import { Zgfx } from "../web/rdp/zgfx";
 import { encode } from "../web/rdp/zgfx.fixture";
 
-// 画面の更新に近い、繰り返しの多いデータ(64KB)
+// 画面の更新に近い、繰り返しの多い 64KB のデータ
 const n = 64 * 1024;
 const data = new Uint8Array(n);
 let seed = 1;

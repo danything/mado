@@ -1,14 +1,14 @@
 <!--
-  mado の MSI(WiX v5)。入れるもの:
-  - C:\Program Files\mado\mado.exe(.NET の Native AOT。これ自体が Windows のサービス)
-  - C:\Program Files\mado\mado-tray.exe(タスクトレイ。サインイン時に起動する)
-  - サービス mado(LocalSystem、自動起動、落ちたら 5 秒後に起こし直す。引数で C:\ProgramData\mado\mado.json を読む)
-  - ファイアウォールの受信の許可(TCP 80 / 443)
-  - C:\ProgramData\mado(設定・client secret・証明書・ログ。SYSTEM と Administrators だけ)
+  mado の MSI。WiX v5 で作る。入れるものは次のとおり。
+  - C:\Program Files\mado\mado.exe。.NET の Native AOT で、これ自体が Windows のサービスになる
+  - C:\Program Files\mado\mado-tray.exe。タスクトレイのアプリで、サインインしたときに起動する
+  - サービス mado。LocalSystem で自動起動し、落ちたら 5 秒後に起こし直す。引数で C:\ProgramData\mado\mado.json を読む
+  - ファイアウォールの受信の許可。TCP 80 と 443
+  - C:\ProgramData\mado。設定、client secret、証明書、ログを置く。SYSTEM と Administrators だけが触れる
 
-  設定(mado.json)と client secret は MSI に入れない(MSI のプロパティで渡すとインストールのログに残る)。
+  設定の mado.json と client secret は MSI に入れない。MSI のプロパティで渡すと、インストールのログに残ってしまう。
   先に ProgramData\mado に置いてから入れるか、入れたあとに置いてサービスを起動し直す。
-  設定が無いうちはサービスは起動に失敗するだけで、インストールは止めない(起動は待たない)。
+  設定が無いうちはサービスの起動が失敗するが、起動は待たないので、インストールは止まらない。
 
   ビルド: wix build installer/mado.wxs -arch x64 -ext WixToolset.Firewall.wixext -ext WixToolset.Util.wixext
           -d Version=0.4.0 -d PublishDir=publish -o dist/mado.msi
@@ -19,7 +19,7 @@
   <Package Name="mado" Manufacturer="Doa" Version="$(Version)" Scope="perMachine"
            UpgradeCode="686617C4-D113-448F-93B1-B4F997EDC5EC" Compressed="yes"
            Codepage="932" Language="1041">
-    <!-- 説明などに日本語を使うので、MSI の文字コードは Shift_JIS(932)。MSI は UTF-8(65001)を正しく扱えない -->
+    <!-- 説明などに日本語を使うので、MSI の文字コードは Shift_JIS (932) にする。MSI は UTF-8 (65001) を正しく扱えない -->
     <SummaryInformation Codepage="932" Description="OIDC でログインして、ブラウザから RDP する小さなゲートウェイ" />
     <!-- 新しい版を入れると古い版を外す。古い版で上書きはさせない -->
     <MajorUpgrade DowngradeErrorMessage="これより新しい mado が入っている。" />
@@ -37,14 +37,15 @@
                                 ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5"
                                 ResetPeriodInDays="1" />
           </ServiceInstall>
-          <!-- 止めるのは入れ替え・外すとき(待つ)。起動は入れたとき(待たない。設定が無いと起動に失敗するが、入れるのは止めない) -->
+          <!-- 入れ替えと削除のときは止めて、止まるのを待つ。入れたときは起動するが、待たない。
+               設定が無いと起動に失敗するが、それでインストールを止めはしない -->
           <ServiceControl Id="MadoServiceStop" Name="mado" Stop="both" Remove="uninstall" Wait="yes" />
           <ServiceControl Id="MadoServiceStart" Name="mado" Start="install" Wait="no" />
           <fw:FirewallException Id="MadoHttp" Name="mado (TCP 80)" Protocol="tcp" Port="80" Scope="any" />
           <fw:FirewallException Id="MadoHttps" Name="mado (TCP 443)" Protocol="tcp" Port="443" Scope="any" />
         </Component>
-        <!-- タスクトレイ。サインインした人ごとに、サインイン時に起動する(HKLM の Run)。サービスとはファイルを分けて、
-             トレイが動いていても更新でサービスの exe を入れ替えられるようにする -->
+        <!-- タスクトレイ。HKLM の Run に登録して、サインインした人ごとに起動する。サービスとはファイルを分けてあるので、
+             トレイが動いていても更新でサービスの exe を入れ替えられる -->
         <Component Id="Tray" Bitness="always64">
           <File Id="MadoTrayExe" Source="$(PublishDir)\mado-tray.exe" KeyPath="yes" />
           <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="mado-tray"
@@ -56,7 +57,7 @@
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="DATAFOLDER" Name="mado">
         <Component Id="DataFolder" Guid="1A50BB15-EFA8-470F-B39D-3FD6AB7057F9" Bitness="always64">
-          <!-- client secret とセッションの鍵が入るので、継承を切って SYSTEM と Administrators だけに -->
+          <!-- client secret とセッションの鍵が入るので、継承を切って SYSTEM と Administrators だけが触れるようにする -->
           <CreateFolder>
             <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
           </CreateFolder>

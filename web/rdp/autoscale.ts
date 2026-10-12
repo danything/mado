@@ -1,17 +1,18 @@
-// 回線と端末の混み具合に合わせて、RDP の画素数(窓の大きさに対する割合)を自動で上げ下げする。
-// 混み具合は、GFX のフレームに付く時刻(サーバーが作った時刻)から、こちらで描き終えるまでの遅れで測る。
-// 時計はずれているので遅れそのものは分からないが、いちばん小さかった遅れとの差(溜まった遅れ)は分かる(WebRTC の遅延ベースの輻輳制御と同じ考え方)。
+// 回線と端末の混み具合に合わせて、RDP の画素数を自動で上げ下げする。画素数は窓の大きさに対する割合で決める。
+// 混み具合は、GFX のフレームにサーバーが付けた時刻から、こちらで描き終えるまでの遅れで測る。
+// 時計がずれているので遅れそのものは分からない。それでも、いちばん小さかった遅れとの差は分かる。この差を溜まった遅れと呼ぶ。
+// WebRTC の遅延ベースの輻輳制御と同じ考え方。
 
-/** 1 日の ms(GFX の時刻は時・分・秒・ms だけ) */
+/** 1 日の ms。GFX の時刻には日付が無く、時・分・秒・ms だけ */
 const DAY = 86_400_000;
 /** いちばん小さい遅れを探す範囲 */
 const BASE_WINDOW_MS = 30_000;
-/** 遅れがこれより大きく跳んだら、時計が飛んだとみなす(本当に混んでも、一度にここまでは溜まらない) */
+/** 遅れがこれより大きく跳んだら、時計が飛んだとみなす。本当に混んでいても、一度にここまでは溜まらない */
 const CLOCK_JUMP_MS = 5000;
 /** 溜まった遅れを出すのに要るフレームの数 */
 const MIN_SAMPLES = 5;
 
-/** RDPGFX_START_FRAME_PDU の timestamp(ms 10 ビット・秒 6・分 6・時 10)→ その日の 0 時からの ms */
+/** RDPGFX_START_FRAME_PDU の timestamp を、その日の 0 時からの ms にする。timestamp は下から ms 10 ビット、秒 6、分 6、時 10 */
 export function gfxTimestampMs(t: number): number {
 	const ms = t & 0x3ff;
 	const s = (t >>> 10) & 0x3f;
@@ -20,20 +21,20 @@ export function gfxTimestampMs(t: number): number {
 	return ((h * 60 + m) * 60 + s) * 1000 + ms;
 }
 
-/** フレームの遅れ(作られてから描き終えるまで)のうち、溜まった分 */
+/** フレームが作られてから描き終えるまでの遅れのうち、溜まった分を測る */
 export class FrameLatency {
 	private samples: { at: number; delay: number }[] = [];
 	/** 最後に測った、溜まった遅れ(ms) */
 	queued?: number;
-	/** 最後に測った時刻(古ければ使わない) */
+	/** 最後に測った時刻。古ければ使わない */
 	at = 0;
 
-	/** serverMs: フレームの時刻(その日の 0 時からの ms)。nowUtc: こちらの時計(Date.now())。mono: 経過の時計(performance.now()) */
+	/** serverMs はフレームの時刻で、その日の 0 時からの ms。nowUtc はこちらの Date.now()、mono は performance.now() */
 	add(serverMs: number, nowUtc: number, mono: number): void {
 		// 日付をまたいでも、差を ±12 時間に収める
 		let delay = ((((nowUtc % DAY) - serverMs) % DAY) + DAY) % DAY;
 		if (delay > DAY / 2) delay -= DAY;
-		// どちらかの時計が飛んだ(起動直後の時刻合わせなど)。前の遅れとは比べられないので測り直す
+		// 起動直後の時刻合わせなどで、どちらかの時計が飛んだ。前の遅れとは比べられないので測り直す
 		const last = this.samples.at(-1);
 		if (last && Math.abs(delay - last.delay) > CLOCK_JUMP_MS) this.samples = [];
 		while (
@@ -53,7 +54,7 @@ export class FrameLatency {
 
 /** 混み具合の 1 回分 */
 export type Sample = {
-	/** 溜まった遅れ(ms)。最近のフレームが無ければ undefined(静かなときは混んでいない) */
+	/** 溜まった遅れ(ms)。最近のフレームが無ければ undefined で、混んでいないとみなす */
 	queued?: number;
 	/** 受け取って、まだ描き終えていないフレームの数 */
 	backlog: number;
@@ -63,21 +64,21 @@ export type Sample = {
 const CONGESTED_MS = 200;
 /** これより小さければ空いている */
 const CALM_MS = 50;
-/** 下げるのは、続けて混んでいたとき(サンプル 2 回) */
+/** 2 回続けて混んでいたら下げる */
 const DOWN_AFTER = 2;
-/** 上げるのは、続けて空いていたとき(サンプル 5 回) */
+/** 5 回続けて空いていたら上げる */
 const UP_AFTER = 5;
-/** 上げたのにすぐまた混んだら、次に上げるまで待つ長さを倍にする(行ったり来たりしない) */
+/** 上げてすぐまた混んだら、次に上げるまで待つ時間を倍にする。これで上げ下げを繰り返さない */
 const FIRST_HOLD_MS = 10_000;
 const MAX_HOLD_MS = 120_000;
-/** 解像度を変えたあと、様子を見ない長さ */
+/** 解像度を変えたあと、判定を休む時間 */
 const SETTLE_MS = 6000;
 /** 上げてからこれより早く混んだら、上げたのが早すぎた */
 const FAILED_UP_MS = 30_000;
 
 /**
- * 画素数の割合を決める。max(上限。今は 1)から、steps の小さいほうへ下げる。
- * 解像度を変えると全面を送り直すので、下げるのも上げるのも続けて同じ様子だったときだけ
+ * 画素数の割合を決める。上限の max(今は 1)から、steps の小さいほうへ下げていく。
+ * 解像度を変えると全面が送り直されるので、上げ下げは同じ様子が何回か続いたときに限る
  */
 export class AutoScale {
 	scale: number;
@@ -95,14 +96,14 @@ export class AutoScale {
 		this.scale = max;
 	}
 
-	/** until まで様子を見ない(つないだ直後の全面の送り直しを、混んでいるとみなさない) */
+	/** until まで判定を休む。つないだ直後の全面の送り直しを、混んでいるとみなさないようにする */
 	pause(until: number): void {
 		this.quietUntil = Math.max(this.quietUntil, until);
 		this.bad = 0;
 		this.good = 0;
 	}
 
-	/** 定期的に呼ぶ。割合を変えるべきなら新しい割合、変えないなら undefined */
+	/** 定期的に呼ぶ。割合を変えるときは新しい割合を、変えないときは undefined を返す */
 	sample(s: Sample, now: number): number | undefined {
 		if (now < this.quietUntil) return undefined;
 		const q = s.queued ?? 0;
@@ -131,7 +132,7 @@ export class AutoScale {
 
 	private set(scale: number, now: number): number {
 		this.scale = scale;
-		// 解像度を変えると全面を送り直してくるので、その間は見ない
+		// 解像度を変えると全面が送り直されてくるので、その間は判定しない
 		this.pause(now + SETTLE_MS);
 		return scale;
 	}

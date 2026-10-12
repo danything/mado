@@ -1,4 +1,4 @@
-// X.224 / MCS の試験。実機で取った応答と、よく知られたバイト列と突き合わせる。
+// X.224 / MCS の試験。実機で取った応答や、よく知られたバイト列と突き合わせる。
 // 実行: bun test
 
 import { describe, expect, test } from "bun:test";

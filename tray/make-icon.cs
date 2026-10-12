@@ -1,6 +1,6 @@
-// mado.ico を作る(画面のロゴと同じ「窓」の形。暗い角丸の四角に白い線)。依存なしで ICO(32 bit の DIB)を書く。
+// mado.ico を作る。形は画面のロゴと同じ窓で、暗い角丸の四角に白い線を引く。ICO は 32 bit の DIB で、ライブラリを使わずに書く。
 //   dotnet run tray/make-icon.cs tray/mado.ico
-// 線は少しぼかして(縁を 1 ピクセルで透明度を変えて)小さい大きさでもつぶれにくくする。
+// 線の縁は 1 ピクセルかけて透明度を変え、少しぼかす。小さく表示してもつぶれにくい。
 
 var output = args.Length > 0 ? args[0] : "mado.ico";
 int[] sizes = [16, 20, 24, 32, 48, 64, 256];
@@ -40,7 +40,7 @@ static byte[] Dib(int s)
     for (var x = 0; x < s; x++)
     {
         double cx = x + 0.5, cy = y + 0.5;
-        // 角丸の四角の内側か(内側の四角 [r, s-r] からの距離が r 以内)
+        // 角丸の四角の内側かどうか。内側の四角 [r, s-r] からの距離が r 以内なら内側
         var qx = Math.Max(0, Math.Max(r - cx, cx - (s - r)));
         var qy = Math.Max(0, Math.Max(r - cy, cy - (s - r)));
         var edge = r - Math.Sqrt(qx * qx + qy * qy);

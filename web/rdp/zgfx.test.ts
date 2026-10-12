@@ -1,4 +1,4 @@
-// ZGFX(RDP8 bulk)の伸長の試験。試験側の簡単な符号化器(文字・一致・生の並び)で往復する。
+// ZGFX(RDP8 bulk)の伸長の試験。文字、一致、生の並びだけを使う簡単な符号化器で往復する。
 
 import { describe, expect, test } from "bun:test";
 import { hex } from "./bytes";

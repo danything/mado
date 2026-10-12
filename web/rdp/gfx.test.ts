@@ -1,4 +1,4 @@
-// GFX(PDU・流れ・キャッシュ・Frame Acknowledge・AVC420)と ClearCodec の試験。描画と H.264 の復号は偽物。
+// GFX と ClearCodec の試験。PDU、流れ、キャッシュ、Frame Acknowledge、AVC420 を見る。描画と H.264 の復号は偽物を使う。
 
 import { describe, expect, test } from "bun:test";
 import { concat, fromHex, hex, Writer } from "./bytes";
@@ -99,7 +99,7 @@ function channel(): DynamicChannel & { sent: Uint8Array[] } {
 	return { id: 1, sent, send: (d) => sent.push(d) };
 }
 
-/** 偽の H.264 復号器: わざと少し遅れて返す */
+/** 偽の H.264 復号器。わざと少し遅れて返す */
 class FakeAvc implements AvcDecoder {
 	calls: string[] = [];
 	closed = 0;
@@ -155,7 +155,7 @@ describe("GFX の PDU", () => {
 			]
 				.flat()
 				.join("");
-		// AVC420 と AVC444: 8.1 に AVC420_ENABLED、10.x は何も付けない(10.7 だけ SCALEDMAP_DISABLE)
+		// AVC420 と AVC444 を使えるとき。8.1 に AVC420_ENABLED を付け、10.x には何も付けない。10.7 だけ SCALEDMAP_DISABLE
 		expect(hex(capsAdvertise(true, true))).toBe(
 			"1200" +
 				"0000" +
@@ -165,7 +165,7 @@ describe("GFX の PDU", () => {
 				v81("10000000") +
 				v10("00000000", "80000000"),
 		);
-		// H.264 なし: 10.x に AVC_DISABLED
+		// H.264 なしなら、10.x に AVC_DISABLED
 		expect(hex(capsAdvertise(false))).toBe(
 			"1200" +
 				"0000" +
@@ -175,7 +175,7 @@ describe("GFX の PDU", () => {
 				v81("00000000") +
 				v10("20000000", "a0000000"),
 		);
-		// AVC420 だけ: 10.x は宣言しない
+		// AVC420 しか使えないなら、10.x は宣言しない
 		expect(hex(capsAdvertise(true))).toBe(
 			["1200", "0000", "22000000", "0200", v8, v81("10000000")].join(""),
 		);
@@ -352,7 +352,7 @@ describe("GfxClient の流れ", () => {
 		]);
 		expect(avc.calls).toEqual(["key 64x64"]);
 		expect(avc.closed).toBe(1);
-		// Frame Acknowledge(frameId 42、これまでに 1 フレーム)
+		// Frame Acknowledge。frameId は 42 で、これまでに 1 フレーム
 		expect(hex(ch.sent[1] as Uint8Array)).toBe(hex(frameAcknowledge(42, 1)));
 	});
 
@@ -688,7 +688,7 @@ describe("レビューの指摘(#33)", () => {
 		const errors: unknown[] = [];
 		gfx.onFatal = (e) => fatal.push(e);
 		gfx.onError = (e) => errors.push(e);
-		// 知らない descriptor(例外は呼び出し元に投げない)
+		// 知らない descriptor。例外は呼び出し元に投げない
 		expect(() => gfx.onData(Uint8Array.of(0x12, 0, 0))).not.toThrow();
 		expect(fatal.length).toBe(1);
 		// 壊れた後は、正しいデータも捨てる
@@ -741,7 +741,7 @@ describe("レビューの指摘(#33)", () => {
 		const ops = new Recorder();
 		const gfx = new GfxClient(ops, new FakeAvc());
 		gfx.onOpen(channel());
-		// 8192x8192 は 2^26 画素。2 つで上限(2^27)、3 つ目は作らない
+		// 8192x8192 は 2^26 画素。2 つで上限の 2^27 になり、3 つ目は作らない
 		gfx.onData(
 			segmentedUncompressed(
 				concat(
@@ -771,7 +771,7 @@ describe("レビューの指摘(#33)", () => {
 		const ops = new Recorder();
 		const gfx = new GfxClient(ops, new FakeAvc());
 		gfx.onOpen(channel());
-		// 8192x4096x4 = 128MB。2 つで上限(256MB)、3 つ目で 1 つ目を捨てる
+		// 8192x4096x4 は 128MB。2 つで上限の 256MB になり、3 つ目で 1 つ目を捨てる
 		gfx.onData(
 			segmentedUncompressed(
 				concat(
@@ -794,7 +794,7 @@ describe("レビューの指摘(#33)", () => {
 	});
 });
 
-/** Worker の代わりに、lane ごとに順に復号する非同期のプール(Worker と同じく、同じ lane の仕事は頼んだ順に終わる) */
+/** Worker の代わりに、lane ごとに順に復号する非同期のプール。Worker と同じく、同じ lane の仕事は頼んだ順に終わる */
 function lanePool(lanes: number): TilePool {
 	const tails: Promise<unknown>[] = Array.from({ length: lanes }, () =>
 		Promise.resolve(),
@@ -826,7 +826,7 @@ describe("WireToSurface2", () => {
 					.u32(b.length + 6)
 					.bytes(b)
 					.done();
-			// 空のタイル(係数が全部 0 = 灰色)。tiles が空なら矩形だけの Region
+			// 空のタイル。係数が全部 0 なので灰色になる。tiles が空なら矩形だけの Region
 			const region = (
 				rect: [number, number, number, number],
 				tiles: number,
@@ -885,7 +885,7 @@ describe("WireToSurface2", () => {
 						),
 						start(1),
 						w2(region([0, 0, 8, 8], 1)),
-						// タイルの無い矩形だけの PDU: 前の PDU のタイル (0, 0) をここにも描く
+						// タイルの無い、矩形だけの PDU。前の PDU のタイル (0, 0) をここにも描く
 						w2(region([8, 0, 8, 8], 0)),
 						end(1),
 						start(2),
@@ -912,7 +912,7 @@ describe("WireToSurface2", () => {
 					.u32(b.length + 6)
 					.bytes(b)
 					.done();
-			// 空のタイル(係数が全部 0 = 灰色)を 1 つ、(4, 2) からの 8x8 の矩形で切る
+			// 空のタイル(係数が全部 0 で灰色)を 1 つ、(4, 2) からの 8x8 の矩形で切る
 			const tile = blk(
 				0xccc5,
 				new Writer().u8(0).u8(0).u8(0).u16(0).u16(0).u8(0).u32(0).u32(0).done(),
@@ -966,7 +966,7 @@ describe("WireToSurface2", () => {
 		});
 });
 
-/** 偽の AVC444 の復号器: 呼ばれた順に、決まった YUV420 の面を返す(null は「出なかった」) */
+/** 偽の AVC444 の復号器。呼ばれた順に、決まった YUV420 の面を返す。null は出なかったことを表す */
 class FakeYuvAvc implements AvcDecoder {
 	calls: string[] = [];
 	constructor(private outputs: (Yuv420 | null)[]) {}
@@ -1038,7 +1038,7 @@ describe("GfxClient の AVC444", () => {
 						dest,
 						avc444(0, avc420(region, concat(SPS, IDR)), avc420(region, P)),
 					),
-					// 主の絵だけ(v2)。領域なしは全体
+					// 主の絵だけ(v2)。領域が無ければ全体
 					wire(1, CODEC.AVC444V2, dest, avc444(1, avc420([], P))),
 				),
 			),

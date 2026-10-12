@@ -257,7 +257,7 @@ describe("Planar (RDP 6.0、32bpp の圧縮)", () => {
 	const RLE = 0x10;
 	const rgba = (a: Uint8ClampedArray) => [...a];
 
-	/** 面(下の行から並べた行)を RLE にする試験用の符号化器。短い繰り返しは raw 1 + run、長いものは nRun 1 / 2 */
+	/** 面を RLE にする試験用の符号化器。面は下の行から並べたもの。短い繰り返しは raw 1 と run で、長いものは nRun 1 / 2 で表す */
 	function encodeRow(sym: number[]): number[] {
 		const out: number[] = [];
 		let i = 0;

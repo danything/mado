@@ -21,24 +21,24 @@ internal sealed record UpdateState(
     [property: JsonPropertyName("error")] string? Error);
 
 /// <summary>
-/// 新しい版を入れる。GitHub のリリースの最新を見て、今より新しければ mado.msi と mado.msi.sig を落とし、
-/// **署名を確かめてから** msiexec に渡す。入れ替え(サービスを止める・古い版を外す・新しい版を入れて起動する)は
+/// 新しい版を入れる。GitHub の最新のリリースが今より新しければ mado.msi と mado.msi.sig を落とし、
+/// 署名を確かめてから msiexec に渡す。サービスを止め、古い版を外し、新しい版を入れて起動するところは
 /// MSI のメジャー アップグレードがやる。
 ///
-/// 署名は CI(release.yml)が ECDSA P-256 の秘密鍵(GitHub の secret MADO_SIGNING_KEY)で `mado &lt;タグ&gt; &lt;MSI の SHA-256&gt;` に
-/// 付けたもので、確かめる公開鍵は下の PublicKey。タグも署名の中なので、古い版を「最新」と偽って戻させることもできない
-/// (今より新しい版しか受けない。MSI も古い版では上書きしない)。入れるのは誰もつないでいないときだけ。
+/// 署名は CI の release.yml が `mado &lt;タグ&gt; &lt;MSI の SHA-256&gt;` に付ける。鍵は ECDSA P-256 で、秘密鍵は GitHub の secret MADO_SIGNING_KEY、
+/// 確かめる公開鍵は下の PublicKey。タグも署名の中に入っているので、古い版を最新と偽って戻させることはできない。
+/// そもそも今より新しい版しか受けないし、MSI も古い版では上書きしない。入れるのは誰もつないでいないときだけ。
 /// </summary>
 internal sealed class Updater(
     string repo, string version, string dataDir, HttpClient http, Action<string> log,
     Action<string, string>? launch = null, string publicKey = Updater.PublicKey)
 {
-    /// <summary>release.yml の秘密鍵と対になる公開鍵(SubjectPublicKeyInfo の base64)</summary>
+    /// <summary>release.yml の秘密鍵と対になる公開鍵。SubjectPublicKeyInfo を base64 にしたもの</summary>
     internal const string PublicKey =
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExPX0Nm0/E8OPtFh/7BxycvGRy2DSjjnAJBTGRgFKpSngFDwF7QRI8d6cWHRD/WttcrUHR0Ci7Kn3uidHi0SMyQ==";
 
     public UpdateState State { get; private set; } = new(null, false, null, null);
-    /// <summary>msiexec を起動する(MSI, ログ)。試験のときだけ差し替える</summary>
+    /// <summary>MSI とログの場所を受けて msiexec を起動する。試験では差し替える</summary>
     readonly Action<string, string> launch = launch ?? ((msi, msiLog) => Process.Start(new ProcessStartInfo("msiexec.exe")
     {
         ArgumentList = { "/i", msi, "/qn", "/norestart", "/l*v", msiLog },
@@ -47,7 +47,7 @@ internal sealed class Updater(
     Release? release;
     /// <summary>署名が合わなかった版。次の版が出るまで取り直さない</summary>
     string? failed;
-    /// <summary>msiexec を起動した版と時刻。入れ損ねたときに 10 分ごとに起動し直さないよう、1 時間は空ける</summary>
+    /// <summary>msiexec を起動した版と時刻。入れ損ねたときに 10 分ごとに起動し直さないよう、同じ版は 1 時間空ける</summary>
     (string Tag, DateTimeOffset At)? launched;
     readonly SemaphoreSlim gate = new(1, 1);
 
@@ -99,8 +99,8 @@ internal sealed class Updater(
     }
 
     /// <summary>
-    /// 新しい版を落として確かめ、msiexec を起動する(終わりは待たない。MSI がこのサービスを止めて入れ替える)。
-    /// isIdle は落とし終えた直前にもう一度聞く(落としているあいだに誰かがつないだら入れない)
+    /// 新しい版を落として確かめ、msiexec を起動する。終わるのは待たない。MSI がこのサービスを止めて入れ替える。
+    /// 落としているあいだに誰かがつないだら入れないので、落とし終えたところで isIdle をもう一度聞く
     /// </summary>
     public async Task<bool> Apply(Func<bool> isIdle)
     {
@@ -115,8 +115,8 @@ internal sealed class Updater(
             Directory.CreateDirectory(dir);
             var msi = Path.Combine(dir, $"mado-{r.TagName}.msi");
             var sigFile = msi + ".sig";
-            // 前に落として確かめたものがあれば使う(つないでいる人がいて入れられなかったとき、落とし直さない)。
-            // 置いてあるものも毎回確かめ直す
+            // つないでいる人がいて前回入れられなかったときは、そのとき落としたものを使う。
+            // 置いてあるものでも、署名は毎回確かめ直す
             if (!(File.Exists(msi) && File.Exists(sigFile) && await Verified(r.TagName, msi, await File.ReadAllTextAsync(sigFile))))
             {
                 var sig = await http.GetStringAsync(Url("mado.msi.sig"));
@@ -168,7 +168,7 @@ internal sealed class Updater(
         return Verify(Message(tag, sha), sig, publicKey);
     }
 
-    /// <summary>入れ終わった古い MSI を消す(今の版より古いもの)</summary>
+    /// <summary>入れ終わった MSI のうち、今の版より新しくないものを消す</summary>
     public void Cleanup()
     {
         var dir = Path.Combine(dataDir, "updates");

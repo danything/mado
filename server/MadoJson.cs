@@ -13,7 +13,7 @@ namespace Mado;
 [JsonSerializable(typeof(Config.Raw))]
 internal sealed partial class MadoJson : JsonSerializerContext;
 
-/// <summary>API の返事・署名付きの値・外の API(OIDC、ACME、GitHub)。名前はそのまま(camelCase / snake_case を型で書く)</summary>
+/// <summary>API の返事、署名付きの値、OIDC・ACME・GitHub の API。名前は変換しない。camelCase か snake_case かは型の側で書く</summary>
 [JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(SessionInfo))]
 [JsonSerializable(typeof(TokenInfo))]

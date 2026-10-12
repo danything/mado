@@ -1,4 +1,4 @@
-// RemoteFX の試験: RLGR(既知の符号語・往復・実機のタイル)、逆 DWT、色変換、ストリームの解析。
+// RemoteFX の試験。RLGR(既知の符号語、往復、実機のタイル)、逆 DWT、色変換、ストリームの解析を見る。
 
 import { describe, expect, test } from "bun:test";
 import { fromHex } from "./bytes";
@@ -197,7 +197,7 @@ describe("タイルとストリーム", () => {
 		expect(() => decodeStream(ok.slice(0, ok.length - 10))).toThrow("長さ");
 		// 知らないブロック
 		expect(() => decodeStream(fromHex("ffff0600000000"))).toThrow("知らない");
-		// 量子化の番号が範囲外(タイルのブロックは c3 ca から。6 バイト先が quantIdxY)
+		// 量子化の番号が範囲外。タイルのブロックは c3 ca から始まり、6 バイト先が quantIdxY
 		const copy = Uint8Array.from(ok);
 		const at = copy.findIndex((v, i) => v === 0xc3 && copy[i + 1] === 0xca);
 		copy[at + 6] = 5;

@@ -1,5 +1,5 @@
-// RDCleanPath(server/RdCleanPath.cs と同じ形)。最初に X.224 の接続要求を包んで送り、
-// mado が RDP サーバーと TLS まで張ったら、X.224 の接続確認とサーバーの証明書の鎖が返ってくる。
+// RDCleanPath。形は server/RdCleanPath.cs と同じ。最初に X.224 の接続要求を包んで送る。
+// mado が RDP サーバーと TLS まで張ると、X.224 の接続確認とサーバーの証明書チェーンが返ってくる。
 
 import * as der from "./der";
 import type { ByteStream } from "./stream";
@@ -23,7 +23,7 @@ export function request(
 
 export type Response = { x224: Uint8Array; certChain: Uint8Array[] };
 
-/** X.224 の接続確認に失敗の理由(RDP_NEG_FAILURE)があれば、それを言う */
+/** X.224 の接続確認に RDP_NEG_FAILURE があれば、その理由を返す */
 function negotiationFailure(raw: Uint8Array | undefined): string {
 	try {
 		const cc = raw && parseConnectionConfirm(raw);
@@ -32,7 +32,7 @@ function negotiationFailure(raw: Uint8Array | undefined): string {
 	return "RDP サーバーが接続を断った(ネゴシエーション)";
 }
 
-/** 応答を 1 つ読む(DER の長さで切る) */
+/** 応答を 1 つ、DER の長さで切り出して読む */
 export async function readResponse(s: ByteStream): Promise<Response> {
 	const raw = await der.readFrom(s, 1 << 20, "RDCleanPath: 応答が大きすぎる");
 	const f = der.fields(der.mustRead(raw).value);

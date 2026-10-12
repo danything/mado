@@ -7,8 +7,8 @@ using System.Text.Json.Serialization.Metadata;
 namespace Mado;
 
 /// <summary>
-/// 署名付きの小さな値(Cookie とページに渡すトークン)。中身は JSON に exp(秒)を足したもので、HMAC-SHA256 で署名する。
-/// 鍵は dataDir/session.key(初回に作る)。鍵を消せば、出したものは全部使えなくなる。形は bun 版と同じ。
+/// Cookie やページに渡すトークンに使う、署名付きの小さな値。JSON に秒単位の exp を足し、HMAC-SHA256 で署名する。
+/// 鍵は dataDir/session.key で、初めて起動したときに作る。鍵を消すと、それまでに出したものは全部使えなくなる。形は bun 版と同じ。
 /// </summary>
 internal sealed class Signer(byte[] key)
 {
@@ -18,7 +18,7 @@ internal sealed class Signer(byte[] key)
         Directory.CreateDirectory(dataDir);
         try
         {
-            // 無いときだけ作る(CreateNew)。同時に作ろうとしたら、先に作ったほうを読む
+            // CreateNew で、無いときだけ作る。ほかと同時に作ろうとしたら、先に作られたほうを読む
             using var f = new FileStream(file, FileMode.CreateNew, FileAccess.Write);
             var key = RandomNumberGenerator.GetBytes(32);
             f.Write(key);
@@ -28,7 +28,7 @@ internal sealed class Signer(byte[] key)
         {
             var existing = File.ReadAllBytes(file);
             if (existing.Length == 32) return new Signer(existing);
-            // 書きかけで終わったなど、壊れていれば作り直す(出したものは使えなくなるが、ログインし直せばよい)
+            // 書きかけで終わったなどで壊れていたら作り直す。出したものは使えなくなるが、ログインし直せば済む
             var key = RandomNumberGenerator.GetBytes(32);
             File.WriteAllBytes(file, key);
             return new Signer(key);

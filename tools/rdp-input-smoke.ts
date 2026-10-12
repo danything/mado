@@ -1,6 +1,7 @@
-// xrdp を相手にする実機試験(docs/rdp-client.md の「試験」)。つないで画面を PNG にし、「Use default config」のボタンのクリック、
-// ドックの端末を開いて echo mado と打つ、こちらでコピーした文字列の貼り付けを順に試す。wslc の node:lts コンテナで動かす
-// 環境変数: HOST / PORT / RDPUSER / RDPPASS / OUT(クリック前は OUT の .before.png)
+// xrdp を相手にする実機試験。docs/rdp-client.md の「試験」を参照。wslc の node:lts コンテナで動かす。
+// つないで画面を PNG に保存したあと、Use default config のボタンを押す、ドックの端末を開いて echo mado と打つ、
+// こちらでコピーした文字列を貼り付ける、を順に試す。
+// 環境変数は HOST、PORT、RDPUSER、RDPPASS、OUT。クリック前の画面は OUT の名前に .before.png を付けて保存する
 
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -146,7 +147,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const out = process.env.OUT ?? "screen.png";
 await sleep(8000);
 png(out.replace(/\.png$/, ".before.png"));
-// 「Use default config」(515, 419)をクリック
+// (515, 419) にある Use default config をクリックする
 client.sendInput([input.mouseMove(515, 419)]);
 await sleep(300);
 client.sendInput([
@@ -157,7 +158,7 @@ await sleep(8000);
 png(out);
 console.log("cursor updates:", cursors);
 console.log("updates by code:", JSON.stringify(client.stats));
-// キーボード: ドックの端末アイコン(567, 696)をクリックして開き、"echo mado" と打つ
+// キーボード。(567, 696) にあるドックの端末アイコンをクリックして開き、"echo mado" と打つ
 const key = (code: string, down: boolean) => input.keyEvent(code, down) as Uint8Array;
 client.sendInput([input.mouseMove(567, 696)]);
 await sleep(300);
@@ -170,7 +171,7 @@ for (const c of ["KeyE", "KeyC", "KeyH", "KeyO", "Space", "KeyM", "KeyA", "KeyD"
 	client.sendInput([key(c, true), key(c, false)]);
 await sleep(3000);
 png(out.replace(/\.png$/, ".keys.png"));
-// クリップボード: こちらでコピーした文字列を、リモートのターミナルへ Ctrl+Shift+V で貼る
+// クリップボード。こちらでコピーした文字列を、リモートの端末に Ctrl+Shift+V で貼る
 channels.clipboard.setLocalText("pasted-from-mado");
 await sleep(1500);
 client.sendInput([key("ControlLeft", true), key("ShiftLeft", true), key("KeyV", true), key("KeyV", false), key("ShiftLeft", false), key("ControlLeft", false)]);

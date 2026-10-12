@@ -1,6 +1,6 @@
-// RDP8 の bulk 圧縮(ZGFX、[MS-RDPEGFX] 2.2.5 / 3.1.9.1)の伸長。GFX のサーバーからの PDU はこれで包まれて来る。
-// RDP_SEGMENTED_DATA(1 つ / 複数のセグメント)→ 各セグメントの RDP8_BULK_ENCODED_DATA を伸長して、つなげる。
-// 履歴(2.5MB の輪)はセッションを通して続くので、1 つの Zgfx を使い続ける。
+// RDP8 の bulk 圧縮(ZGFX、[MS-RDPEGFX] 2.2.5 / 3.1.9.1)を伸長する。GFX でサーバーから来る PDU はこれで包まれている。
+// RDP_SEGMENTED_DATA には 1 つか複数のセグメントが入る。各セグメントの RDP8_BULK_ENCODED_DATA を伸長して、つなげる。
+// 履歴は 2.5MB の輪で、セッションを通して続く。だから 1 つの Zgfx を使い続ける。
 
 const SEGMENTED_SINGLE = 0xe0;
 const SEGMENTED_MULTIPART = 0xe1;
@@ -15,7 +15,7 @@ type Token = {
 	prefixCode: number;
 	/** 続くビット数 */
 	valueBits: number;
-	/** 0: 文字(literal)、1: 一致(match: 履歴の距離) */
+	/** 0 なら文字(literal)、1 なら一致(match。履歴の距離) */
 	match: boolean;
 	valueBase: number;
 };
@@ -75,7 +75,7 @@ const TOKENS: Token[] = (
 
 export { TOKENS as ZGFX_TOKENS };
 
-/** 接頭辞は最長 9 ビット。先頭 9 ビットで引く表(接頭辞の符号は互いに接頭辞にならないので、一意に決まる) */
+/** 接頭辞は最長 9 ビット。先頭 9 ビットで引く表を作る。接頭辞の符号はどれもほかの接頭辞にならないので、一意に決まる */
 const PREFIX_BITS = 9;
 const PREFIX_TABLE: (Token | undefined)[] = (() => {
 	const table: (Token | undefined)[] = new Array(1 << PREFIX_BITS);
@@ -87,7 +87,7 @@ const PREFIX_TABLE: (Token | undefined)[] = (() => {
 	return table;
 })();
 
-/** 上位ビットから読む。32 ビットの窓で、まとめて取り出す */
+/** 上位ビットから読む。32 ビットの窓でまとめて取り出す */
 class BitReader {
 	private pos = 0;
 	constructor(
@@ -98,7 +98,7 @@ class BitReader {
 	get left(): number {
 		return this.limit - this.pos;
 	}
-	/** 今の位置から n ビット(1〜25)を、進めずに見る。入力の終わりの先は 0 */
+	/** 今の位置から n ビット(1〜25)を、進めずに見る。入力の終わりより先は 0 */
 	peek(n: number): number {
 		const p = this.pos;
 		const i = p >> 3;
@@ -124,7 +124,7 @@ class BitReader {
 			this.pos += n;
 			return v;
 		}
-		// 26 ビット以上(一致の長さの続き)は 2 回に分ける
+		// 26 ビット以上は 2 回に分けて読む。一致の長さの続きで使う
 		const hi = this.bits(n - 16);
 		return hi * 65536 + this.bits(16);
 	}
@@ -190,7 +190,7 @@ export class Zgfx {
 		return out;
 	}
 
-	/** RDP8_BULK_ENCODED_DATA(先頭 1 バイトが header、続きがデータ) */
+	/** RDP8_BULK_ENCODED_DATA。先頭 1 バイトが header で、続きがデータ */
 	private segment(seg: Uint8Array): Uint8Array {
 		if (seg.length < 1) throw new Error("ZGFX: セグメントが空");
 		const header = seg[0] as number;
@@ -207,7 +207,7 @@ export class Zgfx {
 		const out = new Output();
 		const hist = this.history;
 		while (r.left > 0) {
-			// 末尾の詰め物(使わないビットは数えてあるので、残りが接頭辞に足りなければ終わり)
+			// 末尾の詰め物。使わないビットは数えてあるので、残りが接頭辞に足りなければ終わり
 			const token = PREFIX_TABLE[r.peek(PREFIX_BITS)];
 			if (!token) throw new Error("ZGFX: 知らない符号");
 			if (token.prefixLength > r.left) break;
@@ -251,7 +251,7 @@ export class Zgfx {
 				out.len = at;
 				this.index = to;
 			} else {
-				// 符号化しない並び: 15 ビットの長さ、バイトの境目から生のバイト
+				// 符号化しない並び。15 ビットの長さのあと、バイトの境目から生のバイトが続く
 				const count = r.bits(15);
 				r.align();
 				const at = r.bytePos;
@@ -275,7 +275,7 @@ export class Zgfx {
 	}
 }
 
-/** 試験用: 圧縮しない RDP_SEGMENTED_DATA(1 セグメント) */
+/** 試験用。圧縮しない RDP_SEGMENTED_DATA を 1 セグメントで作る */
 export function segmentedUncompressed(data: Uint8Array): Uint8Array {
 	const out = new Uint8Array(data.length + 2);
 	out[0] = SEGMENTED_SINGLE;

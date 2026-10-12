@@ -1,8 +1,8 @@
-// RemoteFX の試験用の部品: 実機(xrdp)から取ったタイルの成分と、RemoteFX のストリームを組み立てる関数、RLGR3 の符号化(往復の試験用)。
+// RemoteFX の試験用の部品。実機(xrdp)から取ったタイルの成分、RemoteFX のストリームを組み立てる関数、往復の試験に使う RLGR3 の符号化を置く。
 
 import { concat, fromHex, Writer } from "./bytes";
 
-/** xrdp が送ってきたタイル(位置 (8, 7)、壁紙の青いグラデーション)の Y / Cb / Cr(RLGR3)と、量子化(5 バイト) */
+/** xrdp が送ってきたタイルの Y / Cb / Cr(RLGR3)と、量子化の 5 バイト。タイルの位置は (8, 7) で、壁紙の青いグラデーション */
 export const REAL_TILE = {
 	quant: fromHex("6666778898"),
 	y: fromHex(
@@ -33,7 +33,7 @@ const block = (type: number, body: Uint8Array) =>
 const channelBlock = (type: number, body: Uint8Array) =>
 	block(type, concat(Uint8Array.of(0x01, 0x00), body));
 
-/** 1 つの領域(矩形)と、1 つの Tileset を持つ RemoteFX のストリーム(Sync と Context から Frame End まで) */
+/** 領域(矩形)と Tileset を 1 つずつ持つ RemoteFX のストリーム。Sync と Context から Frame End まで */
 export function rfxStream(
 	rects: { x: number; y: number; w: number; h: number }[],
 	tiles: TileInput[],
@@ -85,7 +85,7 @@ export function rfxStream(
 	);
 }
 
-// ---- RLGR3 の符号化(試験用。復号と同じ規則を逆にしたもの) ----
+// ---- RLGR3 の符号化。試験用で、復号と同じ規則を逆にしたもの ----
 
 class BitWriter {
 	private bytes: number[] = [];

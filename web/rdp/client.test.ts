@@ -1,4 +1,4 @@
-// ポインタの復号と、セッションのループ(偽の通信路で)の試験。
+// ポインタの復号と、セッションのループの試験。ループは偽の通信路で動かす。
 
 import { describe, expect, test } from "bun:test";
 import { concat, fromHex, Reader, Writer } from "./bytes";
@@ -135,7 +135,7 @@ class Recorder implements Screen {
 
 describe("RdpClient", () => {
 	test("Fast-Path のビットマップと PTR_NULL を画面へ流し、通信が閉じたら理由を返す", async () => {
-		// 2x1 の 16bpp ビットマップ(生)、矩形の右端は幅より 1 小さい(幅が揃えられている)
+		// 圧縮していない 2x1 の 16bpp ビットマップ。幅がそろえてあるので、矩形の右端は幅より 1 小さい
 		const bitmap = new Writer()
 			.u16(1)
 			.u16(1)
@@ -158,7 +158,7 @@ describe("RdpClient", () => {
 		const stream = scripted([fast]);
 		const reason = await new RdpClient(fakeSession(stream), screen).run();
 		expect(reason).toContain("connection closed");
-		// ビットマップの復号は後回し(吐き出しのとき)なので、ポインタの変更が先に出る
+		// ビットマップは吐き出すときまで復号しないので、ポインタの変更が先に出る
 		expect(screen.events).toEqual([
 			"resize 64x48",
 			"cursor none",
@@ -248,7 +248,7 @@ describe("メッセージ チャネル(回線の自動検出)", () => {
 			new Recorder(),
 		);
 		await client.run();
-		// Input 同期のあとに、RTT Measure Response(Share Control としては読まない)
+		// Input 同期のあとに RTT Measure Response が続く。これは Share Control としては読まない
 		expect(stream.written.length).toBe(2);
 		expect(stream.written[1]).toEqual(
 			x224.data(
@@ -288,7 +288,7 @@ describe("壊れたポインタ", () => {
 });
 
 describe("RemoteFX の間引きと Frame Acknowledge", () => {
-	/** Fast-Path の PDU(ヘッダー 1 + 長さ 1〜2 + 更新)。127 バイトを超える長さは 2 バイト */
+	/** Fast-Path の PDU。ヘッダー 1 バイト、長さ 1〜2 バイト、更新の順。127 バイトを超える長さは 2 バイトで書く */
 	const fastPdu = (update: Uint8Array) =>
 		update.length + 2 < 0x80
 			? concat(Uint8Array.of(0, update.length + 2), update)
@@ -486,7 +486,7 @@ describe("非同期のプールでの順序", () => {
 		const ended = client.run();
 		const settle = () => new Promise((r) => setTimeout(r, 20));
 		await settle();
-		// 通信が閉じて run は終わっても、タイルはまだ復号中なので、何も描いていない
+		// 通信が閉じて run が終わっても、タイルはまだ復号中なので何も描いていない
 		expect(events.filter((e) => e.startsWith("draw"))).toEqual([]);
 		expect(stream.written.length).toBe(1); // Input の同期だけ。Frame Acknowledge はまだ
 		for (const f of done) f();
