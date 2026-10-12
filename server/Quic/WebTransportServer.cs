@@ -24,6 +24,8 @@ internal sealed class WebTransportServer : IDisposable
     readonly ConcurrentDictionary<QuicConnection, (Http3Connection H3, ConnectionLimits.Ticket Ticket)> _connections = new();
     readonly ConnectionLimits _limits = new();
     QuicServerConfig? _config;
+    // Windows で msquic に渡した証明書。鍵の入れ物は、これを Dispose すると消える。設定を使う間は持っておく
+    X509Certificate2? _cert;
     QuicListener? _listener;
     bool _disposed;
 
@@ -93,14 +95,18 @@ internal sealed class WebTransportServer : IDisposable
     {
         try
         {
-            var config = new QuicServerConfig(_reg, "h3", Settings(), Pkcs12(keyPem, certPem), null);
+            var (config, cert) = LoadConfig(keyPem, certPem);
             QuicServerConfig? old;
+            X509Certificate2? oldCert;
             lock (_configLock)
             {
                 old = _config;
                 _config = config;
+                oldCert = _cert;
+                _cert = cert;
             }
             old?.Dispose();
+            oldCert?.Dispose();
             if (_listener is null)
             {
                 var back = config.ReadBack();
@@ -143,7 +149,50 @@ internal sealed class WebTransportServer : IDisposable
         return true;
     }
 
-    internal static byte[] Pkcs12(string keyPem, string certPem)
+    /// <summary>
+    /// msquic の設定を作る。Windows(Schannel)では、パスワードなしの PKCS#12 を受け付けない(0x80004002)。
+    /// そこで .NET の QUIC と同じく、鍵を鍵コンテナに入れた証明書のコンテキストを渡す。だめなら、パスワード付きの PKCS#12 を試す
+    /// </summary>
+    (QuicServerConfig, X509Certificate2?) LoadConfig(string keyPem, string certPem)
+    {
+        if (!OperatingSystem.IsWindows())
+            return (new QuicServerConfig(_reg, "h3", Settings(), Pkcs12(keyPem, certPem), null), null);
+        var password = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+        var pfx = Pkcs12(keyPem, certPem, password);
+        AddIntermediates(certPem);
+        X509Certificate2? cert = null;
+        try
+        {
+            cert = X509CertificateLoader.LoadPkcs12(pfx, password, X509KeyStorageFlags.MachineKeySet);
+            return (new QuicServerConfig(_reg, "h3", Settings(), cert.Handle), cert);
+        }
+        catch (Exception e)
+        {
+            cert?.Dispose();
+            _log($"webtransport: 証明書のコンテキストで渡せない ({e.Message})。PKCS#12 で試す");
+            return (new QuicServerConfig(_reg, "h3", Settings(), pfx, password), null);
+        }
+    }
+
+    /// <summary>中間証明書を、この PC の中間 CA の置き場に入れる。Schannel はそこから証明書の鎖を作って送る。入れられなくても続ける</summary>
+    void AddIntermediates(string certPem)
+    {
+        try
+        {
+            var all = new X509Certificate2Collection();
+            all.ImportFromPem(certPem);
+            if (all.Count < 2) return;
+            using var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.LocalMachine);
+            store.Open(OpenFlags.ReadWrite);
+            for (var i = 1; i < all.Count; i++) store.Add(all[i]);
+        }
+        catch (Exception e)
+        {
+            _log($"webtransport: 中間証明書を入れられない ({e.Message})");
+        }
+    }
+
+    internal static byte[] Pkcs12(string keyPem, string certPem, string? password = null)
     {
         using var leaf = X509Certificate2.CreateFromPem(certPem, keyPem);
         var all = new X509Certificate2Collection();
@@ -151,7 +200,7 @@ internal sealed class WebTransportServer : IDisposable
         var col = new X509Certificate2Collection { leaf };
         foreach (var c in all)
             if (c.Thumbprint != leaf.Thumbprint) col.Add(c);
-        return col.Export(X509ContentType.Pkcs12)!;
+        return col.Export(X509ContentType.Pkcs12, password)!;
     }
 
     public void Dispose()
@@ -162,6 +211,8 @@ internal sealed class WebTransportServer : IDisposable
             _disposed = true;
             _listener?.Dispose();
             _listener = null;
+            _cert?.Dispose();
+            _cert = null;
             // 接続を閉じ始めるだけで、終わるのは待たない。サービスの停止を長引かせない
             _reg.Shutdown();
         }

@@ -24,6 +24,7 @@ internal static unsafe class MsQuic
     public const ushort CongestionCubic = 0;
     public const ushort CongestionBbr = 1;
 
+    public const int CredentialTypeCertificateContext = 3;
     public const int CredentialTypePkcs12 = 6;
 
     public const int StreamOpenUnidirectional = 1;
@@ -359,17 +360,25 @@ internal sealed unsafe class QuicServerConfig : IDisposable
 {
     public nint Handle { get; private set; }
 
+    /// <summary>Windows(Schannel)用。証明書のコンテキスト(PCCERT_CONTEXT)を渡す。鍵は CNG の鍵コンテナにある必要がある</summary>
+    public QuicServerConfig(QuicRegistration reg, string alpn, in QuicSettings settings, nint certContext)
+    {
+        Open(reg, alpn, settings);
+        try
+        {
+            var cred = new QuicCredentialConfig { Type = MsQuic.CredentialTypeCertificateContext, Flags = 0, Certificate = (void*)certContext };
+            MsQuic.Check(MsQuic.Api->ConfigurationLoadCredential(Handle, &cred), "ConfigurationLoadCredential");
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
     public QuicServerConfig(QuicRegistration reg, string alpn, in QuicSettings settings, byte[] pkcs12, string? password)
     {
-        var alpnBytes = System.Text.Encoding.ASCII.GetBytes(alpn);
-        var s = settings;
-        fixed (byte* pAlpn = alpnBytes)
-        {
-            var buf = new QuicBuffer { Length = (uint)alpnBytes.Length, Buffer = pAlpn };
-            nint h;
-            MsQuic.Check(MsQuic.Api->ConfigurationOpen(reg.Handle, &buf, 1, &s, (uint)sizeof(QuicSettings), null, &h), "ConfigurationOpen");
-            Handle = h;
-        }
+        Open(reg, alpn, settings);
         try
         {
             var pw = password is null ? null : QuicRegistration.Utf8z(password);
@@ -385,6 +394,19 @@ internal sealed unsafe class QuicServerConfig : IDisposable
         {
             Dispose();
             throw;
+        }
+    }
+
+    void Open(QuicRegistration reg, string alpn, in QuicSettings settings)
+    {
+        var alpnBytes = System.Text.Encoding.ASCII.GetBytes(alpn);
+        var s = settings;
+        fixed (byte* pAlpn = alpnBytes)
+        {
+            var buf = new QuicBuffer { Length = (uint)alpnBytes.Length, Buffer = pAlpn };
+            nint h;
+            MsQuic.Check(MsQuic.Api->ConfigurationOpen(reg.Handle, &buf, 1, &s, (uint)sizeof(QuicSettings), null, &h), "ConfigurationOpen");
+            Handle = h;
         }
     }
 
