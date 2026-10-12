@@ -41,7 +41,9 @@ internal sealed record SessionInfo(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("version")] string Version,
     [property: JsonPropertyName("targets")] string[] Targets,
-    [property: JsonPropertyName("ws")] string Ws);
+    [property: JsonPropertyName("ws")] string Ws,
+    // WebTransport の URL。待ち受けていないときは無い
+    [property: JsonPropertyName("wt")] string? Wt = null);
 
 internal sealed record TokenInfo([property: JsonPropertyName("token")] string Token);
 

@@ -6,6 +6,7 @@
 //   https://<host>/api/session  ログイン中の名前・版・つなぐ先
 //   https://<host>/api/token    ?target=<name>。つなぐ直前に取る使い捨ての中継のトークン
 //   wss://<host>/ws             RDCleanPath の中継。Relay.cs
+//   https://<host>/wt (UDP)     同じ中継を WebTransport(HTTP/3)で。WebTransportRelay.cs と Quic/
 //   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
 //   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態
 
@@ -14,6 +15,7 @@ using System.Net;
 using System.Net.Security;
 using System.Reflection;
 using Mado;
+using Mado.Quic;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 
 Config config;
@@ -97,17 +99,22 @@ CookieOptions Cookie(int maxAge) => new()
 };
 Target? TargetOf(string? name) => config.Targets.FirstOrDefault(t => t.Name == name);
 
-// 使ったトークンの jti と期限。使い回しを弾く
-var used = new ConcurrentDictionary<string, long>();
-Target? Consume(string? token, string sub)
+// 中継の使い捨てのトークン。使い回しを弾く
+var tokens = new RelayTokens(signer, RelayTokenSeconds);
+
+// WebTransport。UDP で、証明書が取れたら待ち受けを始める。msquic が無ければ WebSocket だけで動く
+WebTransportServer? wt = null;
+if (config.WebTransportPort != 0)
 {
-    var t = signer.Verify(token, ApiJson.Default.RelayToken);
-    if (t is null || t.Sub != sub || !used.TryAdd(t.Jti, DateTimeOffset.UtcNow.ToUnixTimeSeconds() + RelayTokenSeconds)) return null;
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-    foreach (var (k, exp) in used)
-        if (exp < now) used.TryRemove(k, out _);
-    return TargetOf(t.Target);
+    var ip = config.Listen.Hostname is "::" or "0.0.0.0" or "" ? null : IPAddress.Parse(config.Listen.Hostname);
+    // CONNECT でトークンを使う。Cookie が無いので sub は見ない(WebTransportRelay.cs)
+    var handler = new WebTransportRelay(origin, token =>
+        tokens.Consume(token, null) is { } t && TargetOf(t.Target) is { } target ? (target, t.Name ?? t.Sub) : null,
+        log.Write, d => Interlocked.Add(ref sessions, d), app.Lifetime.ApplicationStopping);
+    wt = WebTransportServer.TryCreate(handler, ip, (ushort)config.WebTransportPort, log.Write);
+    app.Lifetime.ApplicationStopping.Register(() => wt?.Dispose());
 }
+var wtUrl = $"https://{config.Host}{(config.WebTransportPort == 443 ? "" : $":{config.WebTransportPort}")}{WebTransportRelay.Path}";
 
 // 来たポートで分ける。80 番は ACME と https への転送、状態のポートは状態だけ、それ以外は本体
 app.Use(async (ctx, next) =>
@@ -192,7 +199,7 @@ app.MapGet("/api/session", (HttpContext ctx) =>
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return Results.Json(new LoginRequired("/login?to=/"), ApiJson.Default.LoginRequired, statusCode: 401);
     var ws = (origin.StartsWith("https") ? "wss" : "ws") + origin[(origin.IndexOf(':'))..] + "/ws";
-    return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(t => t.Name)], ws), ApiJson.Default.SessionInfo);
+    return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(t => t.Name)], ws, wt is { IsListening: true } ? wtUrl : null), ApiJson.Default.SessionInfo);
 });
 
 app.MapGet("/api/token", (HttpContext ctx) =>
@@ -200,7 +207,7 @@ app.MapGet("/api/token", (HttpContext ctx) =>
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return Results.Json(new LoginRequired("/login?to=/"), ApiJson.Default.LoginRequired, statusCode: 401);
     if (TargetOf(ctx.Request.Query["target"]) is not { } target) return Text(404, "そのつなぐ先は無い");
-    var token = signer.Sign(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16)), ApiJson.Default.RelayToken, RelayTokenSeconds);
+    var token = tokens.Issue(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name));
     return Results.Json(new TokenInfo(token), ApiJson.Default.TokenInfo);
 });
 
@@ -215,7 +222,7 @@ app.Map("/ws", async (HttpContext ctx) =>
     log.Write($"ws open: {user.Name}");
     try
     {
-        await Relay.Run(ws, auth => Consume(auth, user.Sub), m => log.Write($"{user.Name}: {m}"), ctx.RequestAborted);
+        await Relay.Run(ws, auth => tokens.Consume(auth, user.Sub) is { } t ? TargetOf(t.Target) : null, m => log.Write($"{user.Name}: {m}"), ctx.RequestAborted);
     }
     finally
     {
@@ -243,6 +250,8 @@ if (secure)
             if (current is null || renewed)
             {
                 current = Acme.Context(key, cert);
+                // WebTransport も同じ証明書。差し替えは次の接続から
+                wt?.SetCertificate(key, cert);
                 log.Write($"https で待ち受け: {origin}(証明書の残り {certDaysLeft} 日)");
             }
         }

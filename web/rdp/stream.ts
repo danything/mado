@@ -1,5 +1,5 @@
-// mado の /ws(WebSocket)を RDP のバイト列として読み書きする。
-// WebSocket のメッセージの切れ目は RDP の PDU の切れ目と関係ない。届いたものを溜めておき、要る分だけ切り出す。
+// mado の中継(/ws の WebSocket か /wt の WebTransport)を RDP のバイト列として読み書きする。
+// どちらもメッセージやかたまりの切れ目は RDP の PDU の切れ目と関係ない。届いたものを溜めておき、要る分だけ切り出す。
 
 import { concat } from "./bytes";
 
@@ -18,45 +18,23 @@ export interface Transport extends ByteStream {
 	close(): void;
 }
 
-export class WsStream implements Transport {
+/** 届いたかたまりを溜めて、要る分だけ切り出す。WebSocket と WebTransport で共通 */
+abstract class ChunkStream implements Transport {
 	private chunks: Uint8Array[] = [];
 	private have = 0;
 	private waiter?: () => void;
-	private closed?: Error;
+	protected closed?: Error;
 
-	private constructor(private ws: WebSocket) {
-		ws.binaryType = "arraybuffer";
-		ws.addEventListener("message", (e) => {
-			if (!(e.data instanceof ArrayBuffer)) return;
-			const b = new Uint8Array(e.data);
-			this.chunks.push(b);
-			this.have += b.length;
-			this.wake();
-		});
-		ws.addEventListener("close", (e) => {
-			this.closed ??= new StreamClosed(
-				`connection closed${e.reason ? `: ${e.reason}` : ""} (${e.code})`,
-			);
-			this.wake();
-		});
-		ws.addEventListener("error", () => {
-			this.closed ??= new StreamClosed("WebSocket error");
-			this.wake();
-		});
+	protected push(b: Uint8Array): void {
+		if (b.length === 0) return;
+		this.chunks.push(b);
+		this.have += b.length;
+		this.wake();
 	}
 
-	static open(url: string): Promise<WsStream> {
-		return new Promise((resolve, reject) => {
-			const ws = new WebSocket(url);
-			ws.addEventListener("open", () => resolve(new WsStream(ws)), {
-				once: true,
-			});
-			ws.addEventListener(
-				"error",
-				() => reject(new Error(`cannot open ${url}`)),
-				{ once: true },
-			);
-		});
+	protected end(e: Error): void {
+		this.closed ??= e;
+		this.wake();
 	}
 
 	private wake(): void {
@@ -117,18 +95,139 @@ export class WsStream implements Transport {
 		return out;
 	}
 
+	abstract write(b: Uint8Array): void;
+	abstract close(): void;
+
+	get isClosed(): boolean {
+		return !!this.closed;
+	}
+}
+
+export class WsStream extends ChunkStream {
+	private constructor(private ws: WebSocket) {
+		super();
+		ws.binaryType = "arraybuffer";
+		ws.addEventListener("message", (e) => {
+			if (e.data instanceof ArrayBuffer) this.push(new Uint8Array(e.data));
+		});
+		ws.addEventListener("close", (e) => {
+			this.end(
+				new StreamClosed(
+					`connection closed${e.reason ? `: ${e.reason}` : ""} (${e.code})`,
+				),
+			);
+		});
+		ws.addEventListener("error", () => {
+			this.end(new StreamClosed("WebSocket error"));
+		});
+	}
+
+	static open(url: string): Promise<WsStream> {
+		return new Promise((resolve, reject) => {
+			const ws = new WebSocket(url);
+			ws.addEventListener("open", () => resolve(new WsStream(ws)), {
+				once: true,
+			});
+			ws.addEventListener(
+				"error",
+				() => reject(new Error(`cannot open ${url}`)),
+				{ once: true },
+			);
+		});
+	}
+
 	write(b: Uint8Array): void {
 		if (this.ws.readyState === WebSocket.OPEN)
 			this.ws.send(b as Uint8Array<ArrayBuffer>);
 	}
 
 	close(): void {
-		this.closed ??= new StreamClosed("closed");
+		this.end(new StreamClosed("closed"));
 		this.ws.close();
-		this.wake();
+	}
+}
+
+/**
+ * WebTransport の双方向 stream 1 本。mado の /wt はその上で /ws と同じ RDCleanPath の中継をする。
+ * UDP(QUIC)なので、TCP の WebSocket より損失に強い。輻輳制御はサーバーが BBR を使う
+ */
+export class WtStream extends ChunkStream {
+	private writer: WritableStreamDefaultWriter<Uint8Array>;
+
+	private constructor(
+		private wt: WebTransport,
+		s: WebTransportBidirectionalStream,
+	) {
+		super();
+		this.writer = s.writable.getWriter();
+		this.pump(s.readable.getReader());
+		wt.closed.then(
+			(i) =>
+				this.end(
+					new StreamClosed(
+						`connection closed${i.reason ? `: ${i.reason}` : ""} (${i.closeCode ?? 0})`,
+					),
+				),
+			() => this.end(new StreamClosed("WebTransport error")),
+		);
 	}
 
-	get isClosed(): boolean {
-		return !!this.closed;
+	private async pump(r: ReadableStreamDefaultReader<Uint8Array>) {
+		try {
+			for (;;) {
+				const { value, done } = await r.read();
+				if (done) break;
+				this.push(value);
+			}
+			this.end(new StreamClosed("connection closed"));
+		} catch {
+			this.end(new StreamClosed("WebTransport stream error"));
+		}
+	}
+
+	/** ready まで timeoutMs だけ待つ。間に合わなければ閉じて失敗にする */
+	static async open(url: string, timeoutMs: number): Promise<WtStream> {
+		const wt = new WebTransport(url);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				wt.ready,
+				new Promise((_, reject) => {
+					timer = setTimeout(
+						() => reject(new Error(`WebTransport: ${timeoutMs} ms で開かない`)),
+						timeoutMs,
+					);
+				}),
+			]);
+			const s = await wt.createBidirectionalStream();
+			return new WtStream(wt, s);
+		} catch (e) {
+			// 後から開いても使わない。閉じたときの拒否は握りつぶす
+			wt.ready.then(
+				() => wt.close(),
+				() => {},
+			);
+			wt.closed.catch(() => {});
+			throw e;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	write(b: Uint8Array): void {
+		if (this.closed) return;
+		// 書く順は writer が保つ。待たずに積む
+		this.writer
+			.write(b)
+			.catch(() => this.end(new StreamClosed("write failed")));
+	}
+
+	close(): void {
+		this.end(new StreamClosed("closed"));
+		try {
+			this.wt.close();
+		} catch {
+			// もう閉じている
+		}
 	}
 }

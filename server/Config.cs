@@ -19,7 +19,8 @@ internal sealed record Config(
     Config.OidcOptions Oidc,
     IReadOnlyList<Target> Targets,
     int StatusPort,
-    Config.UpdateOptions Update)
+    Config.UpdateOptions Update,
+    int WebTransportPort = 0)
 {
     /// <summary>自動更新。CheckHours ごとに GitHub のリリースを見る。中身は Updater.cs</summary>
     public sealed record UpdateOptions(bool Enabled, int CheckHours, string Repo);
@@ -73,7 +74,36 @@ internal sealed record Config(
             raw.Status?.Port ?? 8788,
             new UpdateOptions(raw.Update?.Enabled ?? true, raw.Update?.CheckHours ?? 6, raw.Update?.Repo ?? "danything/mado"));
         if (config.Tls == "acme" && config.Acme.Email == "") throw new ConfigException($"{file}: acme.email が要る");
-        return config;
+        return config with { WebTransportPort = ReadWebTransport(raw, config, file) };
+    }
+
+    /// <summary>
+    /// WebTransport の UDP の port。0 は使わない。書いていなければ、tls が acme のとき https と同じ port を使う。
+    /// false か port 0 で止める。証明書が要るので、tls が off のときは使えない
+    /// </summary>
+    static int ReadWebTransport(Raw raw, Config config, string file)
+    {
+        var at = $"{file}: webtransport";
+        int port;
+        switch (raw.Webtransport)
+        {
+            case null:
+            case { ValueKind: JsonValueKind.Null }:
+                return config.Tls == "acme" ? config.Listen.Https : 0;
+            case { ValueKind: JsonValueKind.False }:
+                return 0;
+            case { ValueKind: JsonValueKind.True }:
+                port = config.Listen.Https;
+                break;
+            case { ValueKind: JsonValueKind.Object } o:
+                if (!o.TryGetProperty("port", out var p)) port = config.Listen.Https;
+                else if (!p.TryGetInt32(out port) || port is < 0 or > 65535) throw new ConfigException($"{at}.port は 0〜65535 の整数");
+                break;
+            default:
+                throw new ConfigException($"{at} は true / false か {{ \"port\": 443 }}");
+        }
+        if (port != 0 && config.Tls != "acme") throw new ConfigException($"{at} は tls が acme のときだけ使える(証明書が要る)");
+        return port;
     }
 
     static List<Target> ReadTargets(Raw raw, string file)
@@ -111,6 +141,8 @@ internal sealed record Config(
         public List<RawTarget>? Targets { get; set; }
         public RawStatus? Status { get; set; }
         public RawUpdate? Update { get; set; }
+        /// <summary>true / false か { "port": 443 }</summary>
+        public JsonElement? Webtransport { get; set; }
     }
     internal sealed class RawUpdate { public bool? Enabled { get; set; } public int? CheckHours { get; set; } public string? Repo { get; set; } }
     internal sealed class RawListen { public int? Https { get; set; } public int? Http { get; set; } public string? Hostname { get; set; } }

@@ -46,6 +46,28 @@ public class ConfigTests
     }
 
     [Test]
+    [Arguments("", 443)]
+    [Arguments(", \"webtransport\": true", 443)]
+    [Arguments(", \"webtransport\": false", 0)]
+    [Arguments(", \"webtransport\": { \"port\": 8443 }", 8443)]
+    [Arguments(", \"webtransport\": { \"port\": 0 }", 0)]
+    [Arguments(", \"listen\": { \"https\": 9443 }", 9443)]
+    public async Task webtransport_は既定で_https_と同じ_port(string extra, int port)
+    {
+        await Assert.That(Load($"{{ {Base}{extra} }}").WebTransportPort).IsEqualTo(port);
+    }
+
+    [Test]
+    public async Task tls_が_off_なら_webtransport_は使わない()
+    {
+        await Assert.That(Load($"{{ {Base}, \"tls\": \"off\" }}").WebTransportPort).IsEqualTo(0);
+        var e = Assert.Throws<ConfigException>(() => Load($"{{ {Base}, \"tls\": \"off\", \"webtransport\": {{ \"port\": 443 }} }}"));
+        await Assert.That(e.Message).Contains("acme");
+        e = Assert.Throws<ConfigException>(() => Load($"{{ {Base}, \"webtransport\": 1 }}"));
+        await Assert.That(e.Message).Contains("webtransport");
+    }
+
+    [Test]
     public async Task 古い_TOML_には_JSON_に変わったと言う()
     {
         var e = Assert.Throws<ConfigException>(() => Load("host = \"x\"", "mado.toml"));

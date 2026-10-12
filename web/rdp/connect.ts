@@ -8,14 +8,21 @@ import * as mcs from "./mcs";
 import { identity } from "./ntlm";
 import * as pdu from "./pdu";
 import * as cleanpath from "./rdcleanpath";
-import { type Transport, WsStream } from "./stream";
+import { type Transport, WsStream, WtStream } from "./stream";
 import * as x224 from "./x224";
 
 export type ConnectOptions = {
 	/** mado の /ws */
 	url: string;
+	/** mado の /wt(WebTransport)。あれば先に試し、だめなら黙って /ws を使う */
+	wt?: string;
 	/** /api/token でもらった使い捨てのトークン */
 	token: string;
+	/**
+	 * トークンを取り直す。WebTransport の CONNECT はトークンを使うので、WebTransport が開けずに WebSocket に移るときに使う
+	 * (サーバーが CONNECT を受けた後で、ブラウザの待ち時間が切れることがある)
+	 */
+	newToken?: () => Promise<string>;
 	/** つなぐ先。実際の行き先はトークンで決まるので、サーバーはこれを見ない */
 	destination: string;
 	username: string;
@@ -43,6 +50,8 @@ export type ConnectOptions = {
 
 export type Session = {
 	stream: Transport;
+	/** 中継に使っている方式。試験で TCP から直接つないだときは無い */
+	transport?: TransportKind;
 	userId: number;
 	ioChannelId: number;
 	/** 静的チャネルの名前 → チャネル ID */
@@ -65,9 +74,63 @@ export type Session = {
 	autodetect?: AutoDetect;
 };
 
-export async function connect(o: ConnectOptions): Promise<Session> {
+export type TransportKind = "WebTransport" | "WebSocket";
+
+/** WebTransport の ready を待つ時間。UDP が通らない回線では来ないので、短く切って WebSocket に移る */
+export const WT_TIMEOUT_MS = 1500;
+
+export type TransportOpeners = {
+	wt?: (url: string, timeoutMs: number) => Promise<Transport>;
+	ws: (url: string) => Promise<Transport>;
+};
+
+const defaultOpeners = (): TransportOpeners => ({
+	wt:
+		typeof WebTransport === "undefined"
+			? undefined
+			: (url, ms) => WtStream.open(url, ms),
+	ws: (url) => WsStream.open(url),
+});
+
+/**
+ * 中継への道を開く。WebTransport が使えれば先に試し、開けなければ WebSocket にする。
+ * WebTransport には Cookie が付かないので、/wt?token= にトークンを付ける。サーバーは CONNECT でトークンを使い、
+ * RDCleanPath の要求にも同じトークンを求める。WebSocket に移るときは、newToken があればトークンを取り直す。
+ * 返す token は RDCleanPath の要求に入れるもの
+ */
+export async function openTransport(
+	o: Pick<ConnectOptions, "url" | "wt" | "token" | "newToken" | "onLog">,
+	openers: TransportOpeners = defaultOpeners(),
+): Promise<{ stream: Transport; kind: TransportKind; token: string }> {
 	const log = o.onLog ?? (() => {});
-	const stream = await WsStream.open(o.url);
+	let token = o.token;
+	if (o.wt && openers.wt) {
+		try {
+			return {
+				stream: await openers.wt(
+					`${o.wt}?token=${encodeURIComponent(o.token)}`,
+					WT_TIMEOUT_MS,
+				),
+				kind: "WebTransport",
+				token,
+			};
+		} catch (e) {
+			log(
+				`WebTransport が使えないので WebSocket にする (${e instanceof Error ? e.message : e})`,
+			);
+			if (o.newToken) token = await o.newToken();
+		}
+	}
+	return { stream: await openers.ws(o.url), kind: "WebSocket", token };
+}
+
+export async function connect(
+	o: ConnectOptions,
+	openers?: TransportOpeners,
+): Promise<Session> {
+	const log = o.onLog ?? (() => {});
+	const { stream, kind, token } = await openTransport(o, openers);
+	log(`中継: ${kind}`);
 	if (o.signal?.aborted) {
 		stream.close();
 		throw new Error("つなぐのに時間がかかりすぎた(または取り消した)");
@@ -79,7 +142,7 @@ export async function connect(o: ConnectOptions): Promise<Session> {
 		stream.write(
 			cleanpath.request(
 				x224.connectionRequest(x224.PROTOCOL.HYBRID),
-				o.token,
+				token,
 				o.destination,
 			),
 		);
@@ -88,6 +151,7 @@ export async function connect(o: ConnectOptions): Promise<Session> {
 		if (!cert) throw new Error("RDP サーバーの証明書が届かない");
 		log("RDCleanPath OK");
 		const session = await establish(stream, o, resp.x224, cert);
+		session.transport = kind;
 		o.signal?.removeEventListener("abort", abort);
 		return session;
 	} catch (e) {

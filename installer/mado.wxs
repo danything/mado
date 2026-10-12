@@ -3,7 +3,8 @@
   - C:\Program Files\mado\mado.exe。.NET の Native AOT で、これ自体が Windows のサービスになる
   - C:\Program Files\mado\mado-tray.exe。タスクトレイのアプリで、サインインしたときに起動する
   - サービス mado。LocalSystem で自動起動し、落ちたら 5 秒後に起こし直す。引数で C:\ProgramData\mado\mado.json を読む
-  - ファイアウォールの受信の許可。TCP 80 と 443
+  - C:\Program Files\mado\msquic.dll。WebTransport(HTTP/3)に使う QUIC の実装。mado.exe が読む
+  - ファイアウォールの受信の許可。TCP 80 と 443、UDP 443(WebTransport)
   - C:\ProgramData\mado。設定、client secret、証明書、ログを置く。SYSTEM と Administrators だけが触れる
 
   設定の mado.json と client secret は MSI に入れない。MSI のプロパティで渡すと、インストールのログに残ってしまう。
@@ -43,6 +44,11 @@
           <ServiceControl Id="MadoServiceStart" Name="mado" Start="install" Wait="no" />
           <fw:FirewallException Id="MadoHttp" Name="mado (TCP 80)" Protocol="tcp" Port="80" Scope="any" />
           <fw:FirewallException Id="MadoHttps" Name="mado (TCP 443)" Protocol="tcp" Port="443" Scope="any" />
+          <fw:FirewallException Id="MadoQuic" Name="mado (UDP 443)" Protocol="udp" Port="443" Scope="any" />
+        </Component>
+        <!-- msquic。mado.exe と同じときに入れ替える -->
+        <Component Id="MsQuic" Bitness="always64">
+          <File Id="MsQuicDll" Source="$(PublishDir)\msquic.dll" KeyPath="yes" />
         </Component>
         <!-- タスクトレイ。HKLM の Run に登録して、サインインした人ごとに起動する。サービスとはファイルを分けてあるので、
              トレイが動いていても更新でサービスの exe を入れ替えられる -->
@@ -67,6 +73,7 @@
 
     <Feature Id="Main">
       <ComponentRef Id="Service" />
+      <ComponentRef Id="MsQuic" />
       <ComponentRef Id="Tray" />
       <ComponentRef Id="DataFolder" />
     </Feature>

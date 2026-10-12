@@ -21,7 +21,9 @@ internal sealed record Pending(
 internal sealed record RelayToken(
     [property: JsonPropertyName("sub")] string Sub,
     [property: JsonPropertyName("target")] string Target,
-    [property: JsonPropertyName("jti")] string Jti);
+    [property: JsonPropertyName("jti")] string Jti,
+    // ログに出す名前。WebTransport には Cookie が無いので、トークンから読む
+    [property: JsonPropertyName("name")] string? Name = null);
 
 internal sealed record OidcDiscovery(
     [property: JsonPropertyName("issuer")] string Issuer,

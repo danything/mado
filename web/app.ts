@@ -17,6 +17,8 @@ type SessionInfo = {
 	version: string;
 	targets: string[];
 	ws: string;
+	/** WebTransport の URL。サーバーが UDP で待っているときだけある */
+	wt?: string;
 };
 
 const $ = <T extends HTMLElement>(sel: string) =>
@@ -168,7 +170,14 @@ async function runSession(
 		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
 		const rdp = await connect({
 			url: session.ws,
+			wt: session.wt,
 			token,
+			newToken: async () =>
+				(
+					await getJson<{ token: string }>(
+						`/api/token?target=${encodeURIComponent(login.target)}`,
+					)
+				).token,
 			destination: login.target,
 			username: login.username,
 			password: login.password,
@@ -215,7 +224,9 @@ async function runSession(
 		const channels = attachChannels(client, writeClipboard, { gfx: gfxClient });
 		current = { client, channels };
 		if (gfxClient) stops.push(() => gfxClient.onClose());
-		stops.push(watchDiag(() => diagText(client, gfxClient, pool.async)));
+		stops.push(
+			watchDiag(() => diagText(client, gfxClient, pool.async, rdp.transport)),
+		);
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
 		// 窓の大きさが変わったら RDP の解像度も変える。GFX のときは、混んでいれば解像度を下げる
@@ -285,11 +296,12 @@ function diagText(
 	client: RdpClient,
 	gfx: GfxClient | undefined,
 	workers: boolean,
+	transport: string | undefined,
 ): string {
 	// GFX を頼んでも、サーバーがチャネルを開かなければ旧来の描画のまま
 	const mode: Mode = gfx?.active ? (gfx.avcEnabled ? "avc" : "gfx") : "bitmap";
 	const lines = [
-		`mado ${session.version}  方式: ${MODE_NAMES[mode]}  復号: ${workers ? "Worker" : "メインスレッド"}`,
+		`mado ${session.version}  中継: ${transport ?? "-"}  方式: ${MODE_NAMES[mode]}  復号: ${workers ? "Worker" : "メインスレッド"}`,
 		`画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}`,
 		`更新: ${
 			Object.entries(client.stats)
