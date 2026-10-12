@@ -2,6 +2,12 @@
 
 OIDC でログインして、ブラウザから RDP する小さなゲートウェイ。Windows のサービスとして動く。MSI で入れる。
 
+| ログインしたあと、つなぐ先・画面の大きさ・Windows のユーザー名とパスワード | つないだ画面(上に Ctrl+Alt+Del・Windows キー・診断・全画面・切断) |
+| --- | --- |
+| <img src="docs/images/login.png" alt="つなぐ前の画面" width="300"> | <img src="docs/images/session.jpg" alt="つないだ画面" width="560"> |
+
+画像は試験用の Windows 11(Hyper-V)につないだもの。画面の中は Wikipedia の記事。
+
 Guacamole のようにサーバーで画面を描くのではなく、RDP は全部ブラウザの中の
 自前の TypeScript 実装(`web/rdp/`)が話す。mado がするのは、ログインの確認と、
 ブラウザ ↔ RDP サーバーの中継(RDCleanPath)だけ。
