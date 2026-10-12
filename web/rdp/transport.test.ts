@@ -72,6 +72,33 @@ describe("openTransport", () => {
 		expect(calls).toEqual(["ws wss://h/ws"]);
 	});
 
+	test("WebSocket に移るときはトークンを取り直す", async () => {
+		const { o } = openers(() => Promise.reject(new Error("timeout")));
+		const r = await openTransport(
+			{
+				url: "wss://h/ws",
+				wt: "https://h/wt",
+				token: "old",
+				newToken: async () => "new",
+			},
+			o,
+		);
+		expect(r.kind).toBe("WebSocket");
+		expect(r.token).toBe("new");
+		// WebTransport で開けたら、CONNECT と同じトークンを使う
+		const ok = openers(async () => fake("wt"));
+		const w = await openTransport(
+			{
+				url: "wss://h/ws",
+				wt: "https://h/wt",
+				token: "old",
+				newToken: async () => "new",
+			},
+			ok.o,
+		);
+		expect(w.token).toBe("old");
+	});
+
 	test("WebSocket も開けなければ失敗する", async () => {
 		const o: TransportOpeners = {
 			wt: () => Promise.reject(new Error("no udp")),

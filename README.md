@@ -20,6 +20,7 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 
 - 外に開けるのは TCP 443 と 80、UDP 443。80 は Let's Encrypt の確認と https への転送に使う。3389 は開けない
 - 中継はまず WebTransport(HTTP/3、UDP)で試し、1.5 秒で開かなければ WebSocket(TCP)に移る。UDP 443 を開けない(ルーターで UDP 443 を転送しない)ときも、WebSocket で使える。WebTransport は輻輳制御に BBR を使い、損失のある回線で TCP より速度を保ちやすい
+- WebTransport の CONNECT には Cookie が付かない。そのため /wt は Origin と、/api/token の出した使い捨てのトークン(60 秒、1 度だけ)で確かめる。トークンは CONNECT の URL(`/wt?token=`)に入るが、mado はパスをログに書かない。正しい CONNECT の来ない接続、要求を送らない口は 10 秒で閉じ、確かめる前の接続の数も絞る
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)

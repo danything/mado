@@ -153,6 +153,42 @@ function check(name, ok, detail) {
 	const path = await relayOverWt(page, `${ORIGIN}/other`, relayToken());
 	check("/wt 以外のパスは開かない", !path.ready, path.error);
 
+	// 放っておいた口は閉じられる。CONNECT の後に stream を開かないとき、開いても要求を送らないとき(どちらも 10 秒)
+	const idle = await page.evaluate(async (url) => {
+		const t0 = performance.now();
+		const wt = new WebTransport(url);
+		await wt.ready;
+		const info = await Promise.race([wt.closed.then((i) => JSON.stringify(i), (e) => String(e)), new Promise((r) => setTimeout(() => r("まだ開いている"), 15000))]);
+		return { info, ms: Math.round(performance.now() - t0) };
+	}, `${ORIGIN}/wt?token=${encodeURIComponent(relayToken())}`);
+	check("stream を開かないセッションは 10 秒で閉じる", idle.info !== "まだ開いている" && idle.ms < 13000, JSON.stringify(idle));
+	const silent = await page.evaluate(async (url) => {
+		const t0 = performance.now();
+		const wt = new WebTransport(url);
+		wt.closed.catch(() => {});
+		await wt.ready;
+		const s = await wt.createBidirectionalStream();
+		// 何か書かないと stream がサーバーに届かない。RDCleanPath の頭の 1 バイトだけ送る
+		const w = s.writable.getWriter();
+		await w.write(new Uint8Array([0x30]));
+		const r = s.readable.getReader();
+		let n = 0;
+		let hex = "";
+		try {
+			for (;;) {
+				const { value, done } = await r.read();
+				if (done) break;
+				n += value.length;
+				hex += Array.from(value, (b) => b.toString(16).padStart(2, "0")).join("");
+			}
+		} catch (e) {
+			hex += ` ${e}`;
+		}
+		return { n, hex, ms: Math.round(performance.now() - t0) };
+	}, `${ORIGIN}/wt?token=${encodeURIComponent(relayToken())}`);
+	// http_status_code 408 → a1 04 02 02 01 98
+	check("要求を送り切らない stream は 10 秒で 408 を返して閉じる", silent.hex.includes("a10402020198") && silent.ms < 13000, JSON.stringify(silent));
+
 	await page.goto("https://evil.test/e2e");
 	const evil = await relayOverWt(page, `${ORIGIN}/wt`, relayToken());
 	check("ほかの origin からは開かない", !evil.ready, evil.error);

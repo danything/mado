@@ -16,11 +16,16 @@ internal sealed class WebTransportServer : IDisposable
     readonly IPAddress? _ip;
     readonly ushort _port;
     readonly Action<string> _log;
+    // _config の差し替えと、listener のコールバックが付けるのを重ねない
     readonly Lock _configLock = new();
+    // SetCertificate と Dispose を重ねない。ListenerClose はコールバックの終わりを待つので、_configLock とは分ける
+    readonly Lock _stateLock = new();
     // 接続が終わるまで参照を持つ
-    readonly ConcurrentDictionary<QuicConnection, Http3Connection> _connections = new();
+    readonly ConcurrentDictionary<QuicConnection, (Http3Connection H3, ConnectionLimits.Ticket Ticket)> _connections = new();
+    readonly ConnectionLimits _limits = new();
     QuicServerConfig? _config;
     QuicListener? _listener;
+    bool _disposed;
 
     WebTransportServer(QuicRegistration reg, IWebTransportHandler handler, IPAddress? ip, ushort port, Action<string> log)
     {
@@ -77,6 +82,15 @@ internal sealed class WebTransportServer : IDisposable
     /// </summary>
     public void SetCertificate(string keyPem, string certPem)
     {
+        lock (_stateLock)
+        {
+            if (_disposed) return;
+            SetCertificateLocked(keyPem, certPem);
+        }
+    }
+
+    void SetCertificateLocked(string keyPem, string certPem)
+    {
         try
         {
             var config = new QuicServerConfig(_reg, "h3", Settings(), Pkcs12(keyPem, certPem), null);
@@ -109,17 +123,23 @@ internal sealed class WebTransportServer : IDisposable
         lock (_configLock)
         {
             int st = _config is null ? -1 : conn.SetConfiguration(_config.Handle);
-            if (st == -1 || MsQuic.Failed(st)) _connections.TryRemove(conn, out _);
+            if ((st == -1 || MsQuic.Failed(st)) && _connections.TryRemove(conn, out var e)) e.Ticket.Release();
             return st;
         }
     }
 
+    /// <summary>上限を超えていれば断る。ログを確かめる前の接続は、全体と同じ IP からの数を特に絞る</summary>
     bool OnConnection(QuicConnection conn)
     {
-        var h3 = new Http3Connection(conn, _handler, _log);
-        _connections[conn] = h3;
+        if (_limits.TryAdmit(conn.RemoteAddress) is not { } ticket) return false;
+        var h3 = new Http3Connection(conn, _handler, _log) { OnAuthenticated = ticket.Authenticated };
+        _connections[conn] = (h3, ticket);
         var prev = conn.OnClosed;
-        conn.OnClosed = c => { prev?.Invoke(c); _connections.TryRemove(c, out _); };
+        conn.OnClosed = c =>
+        {
+            prev?.Invoke(c);
+            if (_connections.TryRemove(c, out var e)) e.Ticket.Release();
+        };
         return true;
     }
 
@@ -136,9 +156,14 @@ internal sealed class WebTransportServer : IDisposable
 
     public void Dispose()
     {
-        _listener?.Dispose();
-        _listener = null;
-        // 接続を閉じ始めるだけで、終わるのは待たない。サービスの停止を長引かせない
-        _reg.Shutdown();
+        lock (_stateLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _listener?.Dispose();
+            _listener = null;
+            // 接続を閉じ始めるだけで、終わるのは待たない。サービスの停止を長引かせない
+            _reg.Shutdown();
+        }
     }
 }

@@ -137,7 +137,80 @@ public class QuicTests
     [Arguments("https://mado.example.com", "/wt/x?token=ok", 404)]
     public async Task 中継は_origin_とパスとトークンを確かめる(string requestOrigin, string path, int status)
     {
-        await Assert.That(WebTransportRelay.Check("https://mado.example.com", requestOrigin, path, t => t == "ok")).IsEqualTo(status);
+        var target = new Target("t", "127.0.0.1", 3389);
+        var got = WebTransportRelay.Check("https://mado.example.com", requestOrigin, path, t => t == "ok" ? (target, "u") : null, out var claim);
+        await Assert.That(got).IsEqualTo(status);
+        await Assert.That(claim is not null).IsEqualTo(status == 200);
+    }
+
+    static (RelayTokens Tokens, Func<string, (Target, string)?> Consume) Tokens()
+    {
+        var tokens = new RelayTokens(new Signer(new byte[32]), 60);
+        var target = new Target("t", "127.0.0.1", 3389);
+        return (tokens, t => tokens.Consume(t, null) is { } r ? (target, r.Name ?? r.Sub) : null);
+    }
+
+    [Test]
+    public async Task 同じトークンで_2_度目の_CONNECT_は_401()
+    {
+        var (tokens, consume) = Tokens();
+        var token = tokens.Issue(new RelayToken("u1", "t", "jti-1", "名前"));
+        var path = $"/wt?token={Uri.EscapeDataString(token)}";
+        await Assert.That(WebTransportRelay.Check("https://m", "https://m", path, consume, out var claim)).IsEqualTo(200);
+        await Assert.That(claim!.User).IsEqualTo("名前");
+        await Assert.That(WebTransportRelay.Check("https://m", "https://m", path, consume, out _)).IsEqualTo(401);
+        // /ws でも、もう使えない
+        await Assert.That(tokens.Consume(token, "u1")).IsNull();
+    }
+
+    [Test]
+    public async Task RDCleanPath_のトークンは_CONNECT_のものと同じ文字列だけ通す()
+    {
+        var (tokens, consume) = Tokens();
+        var token = tokens.Issue(new RelayToken("u1", "t", "jti-2"));
+        var other = tokens.Issue(new RelayToken("u1", "t", "jti-3"));
+        WebTransportRelay.Check("https://m", "https://m", $"/wt?token={token}", consume, out var claim);
+        await Assert.That(WebTransportRelay.Authorize(claim!, token)).IsEqualTo(claim!.Target);
+        // 2 度目でも通る(トークンは CONNECT で使ってあり、ここでは使わない)
+        await Assert.That(WebTransportRelay.Authorize(claim, token)).IsNotNull();
+        await Assert.That(WebTransportRelay.Authorize(claim, other)).IsNull();
+        await Assert.That(WebTransportRelay.Authorize(claim, null)).IsNull();
+    }
+
+    [Test]
+    public async Task 接続の数の上限()
+    {
+        var limits = new ConnectionLimits(maxTotal: 5, maxPreAuth: 3, maxPreAuthPerIp: 2);
+        var a = System.Net.IPAddress.Parse("192.0.2.1");
+        var b = System.Net.IPAddress.Parse("192.0.2.2");
+        var c = System.Net.IPAddress.Parse("192.0.2.3");
+        var a1 = limits.TryAdmit(a);
+        var a2 = limits.TryAdmit(a);
+        // 同じ IP からの、確かめる前の接続は 2 つまで
+        await Assert.That(limits.TryAdmit(a)).IsNull();
+        var b1 = limits.TryAdmit(b);
+        // 確かめる前の接続は全体で 3 つまで
+        await Assert.That(limits.TryAdmit(c)).IsNull();
+        // 確かめたら数えなくなる。何度呼んでも 1 度だけ
+        a1!.Authenticated();
+        a1.Authenticated();
+        await Assert.That(limits.PreAuth).IsEqualTo(2);
+        var a3 = limits.TryAdmit(a);
+        await Assert.That(a3).IsNotNull();
+        a2!.Authenticated();
+        b1!.Authenticated();
+        a3!.Authenticated();
+        var c1 = limits.TryAdmit(c);
+        // 全体で 5 つまで
+        await Assert.That(limits.Total).IsEqualTo(5);
+        await Assert.That(limits.TryAdmit(c)).IsNull();
+        // 終われば空く。Release も何度呼んでも 1 度だけ
+        c1!.Release();
+        c1.Release();
+        a1.Release();
+        await Assert.That(limits.Total).IsEqualTo(3);
+        await Assert.That(limits.PreAuth).IsEqualTo(0);
+        await Assert.That(limits.TryAdmit(c)).IsNotNull();
     }
 
     [Test]

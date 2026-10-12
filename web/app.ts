@@ -172,6 +172,12 @@ async function runSession(
 			url: session.ws,
 			wt: session.wt,
 			token,
+			newToken: async () =>
+				(
+					await getJson<{ token: string }>(
+						`/api/token?target=${encodeURIComponent(login.target)}`,
+					)
+				).token,
 			destination: login.target,
 			username: login.username,
 			password: login.password,

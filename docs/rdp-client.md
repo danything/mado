@@ -21,12 +21,14 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 RDCleanPath と、その後の RDP のバイトは、mado との 1 本の道に流す(`stream.ts`、`connect.ts` の `openTransport`)。
 
 - `/api/session` に `wt` があり、ブラウザに `WebTransport` があれば、先に WebTransport(HTTP/3、UDP)で `/wt` を開く。`ready` を 1.5 秒待ち、双方向の stream を 1 本開いてそこに流す
-- 開けなければ、黙って WebSocket(`/ws`)にする。トークンは RDCleanPath の要求で送るので、WebTransport で失敗しても減らない
+- 開けなければ、黙って WebSocket(`/ws`)にする。サーバーが CONNECT を受けた後で待ち時間が切れることもあるので、トークンは取り直す
 - どちらも、届いたかたまりを溜めて要る分だけ切り出す(`ChunkStream`)。RDCleanPath の形も同じ
 - 診断の 1 行目に、使っている道(WebTransport / WebSocket)が出る
 
 サーバーは msquic を直接呼んで HTTP/3 と WebTransport を話す(`server/Quic/`)。Chrome は WebTransport の draft-02 を宣言してくるので、サーバーは draft-02 と draft-07 の両方を宣言する。輻輳制御は BBR。
 WebTransport の CONNECT には Cookie が付かないので、Origin と使い捨てのトークンで確かめる(`server/WebTransportRelay.cs`)。
+トークンは `/wt?token=` に付け、サーバーは CONNECT で使う(2 度目の CONNECT は 401)。RDCleanPath の proxy_auth には同じトークンを入れる。
+WebSocket に移るときは、`newToken` でトークンを取り直す。mado はパスをログに書かないので、トークンはログに残らない。
 
 ## 転送方式の選択
 

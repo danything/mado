@@ -178,6 +178,23 @@ public class RelayTests
     }
 
     [Test]
+    public async Task 要求が来なければ時間切れで_408_を返して閉じる()
+    {
+        var ch = new FakeChannel();
+        var logs = new List<string>();
+        var relay = Relay.Run(ch, _ => throw new InvalidOperationException("呼ばれない"), logs.Add, CancellationToken.None, TimeSpan.FromMilliseconds(100));
+        // 途中まで送って止まる
+        ch.Feed(Request("tok", X224Request)[..5]);
+        var resp = await ch.TakePdu();
+        var error = Der.ReadAll(resp.Value).First(f => f.Tag == Der.Context(1));
+        var status = Der.ReadAll(Der.Read(error.Value)!.Value.Value).First(f => f.Tag == Der.Context(1));
+        await Assert.That(Der.ReadInteger(Der.Read(status.Value)!.Value)).IsEqualTo(408UL);
+        await relay.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(ch.Closed).IsTrue();
+        await Assert.That(logs.Any(l => l.Contains("timeout"))).IsTrue();
+    }
+
+    [Test]
     public async Task トークンが通らなければ_401_で閉じる()
     {
         var ch = new FakeChannel();

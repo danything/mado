@@ -18,6 +18,11 @@ export type ConnectOptions = {
 	wt?: string;
 	/** /api/token でもらった使い捨てのトークン */
 	token: string;
+	/**
+	 * トークンを取り直す。WebTransport の CONNECT はトークンを使うので、WebTransport が開けずに WebSocket に移るときに使う
+	 * (サーバーが CONNECT を受けた後で、ブラウザの待ち時間が切れることがある)
+	 */
+	newToken?: () => Promise<string>;
 	/** つなぐ先。実際の行き先はトークンで決まるので、サーバーはこれを見ない */
 	destination: string;
 	username: string;
@@ -89,14 +94,16 @@ const defaultOpeners = (): TransportOpeners => ({
 
 /**
  * 中継への道を開く。WebTransport が使えれば先に試し、開けなければ WebSocket にする。
- * WebTransport には Cookie が付かないので、/wt?token= にトークンを付ける。サーバーはここでは確かめるだけで、
- * 使うのは RDCleanPath の要求で送ったとき。だから開くのに失敗しても、トークンは WebSocket で使える
+ * WebTransport には Cookie が付かないので、/wt?token= にトークンを付ける。サーバーは CONNECT でトークンを使い、
+ * RDCleanPath の要求にも同じトークンを求める。WebSocket に移るときは、newToken があればトークンを取り直す。
+ * 返す token は RDCleanPath の要求に入れるもの
  */
 export async function openTransport(
-	o: Pick<ConnectOptions, "url" | "wt" | "token" | "onLog">,
+	o: Pick<ConnectOptions, "url" | "wt" | "token" | "newToken" | "onLog">,
 	openers: TransportOpeners = defaultOpeners(),
-): Promise<{ stream: Transport; kind: TransportKind }> {
+): Promise<{ stream: Transport; kind: TransportKind; token: string }> {
 	const log = o.onLog ?? (() => {});
+	let token = o.token;
 	if (o.wt && openers.wt) {
 		try {
 			return {
@@ -105,14 +112,16 @@ export async function openTransport(
 					WT_TIMEOUT_MS,
 				),
 				kind: "WebTransport",
+				token,
 			};
 		} catch (e) {
 			log(
 				`WebTransport が使えないので WebSocket にする (${e instanceof Error ? e.message : e})`,
 			);
+			if (o.newToken) token = await o.newToken();
 		}
 	}
-	return { stream: await openers.ws(o.url), kind: "WebSocket" };
+	return { stream: await openers.ws(o.url), kind: "WebSocket", token };
 }
 
 export async function connect(
@@ -120,7 +129,7 @@ export async function connect(
 	openers?: TransportOpeners,
 ): Promise<Session> {
 	const log = o.onLog ?? (() => {});
-	const { stream, kind } = await openTransport(o, openers);
+	const { stream, kind, token } = await openTransport(o, openers);
 	log(`中継: ${kind}`);
 	if (o.signal?.aborted) {
 		stream.close();
@@ -133,7 +142,7 @@ export async function connect(
 		stream.write(
 			cleanpath.request(
 				x224.connectionRequest(x224.PROTOCOL.HYBRID),
-				o.token,
+				token,
 				o.destination,
 			),
 		);

@@ -23,19 +23,30 @@ namespace Mado;
 internal static class Relay
 {
     const int MaxRequest = 64 * 1024;
+    /// <summary>つないでから RDCleanPath の要求が揃うまでの時間。ログインしていても、何も送らない口をいつまでも開けておかない</summary>
+    public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>authorize は proxy_auth の使い捨てのトークンを確かめて、つなぐ先を返す。通らなければ null</summary>
     public static Task Run(WebSocket ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct) =>
         Run(new WebSocketChannel(ws), authorize, log, ct);
 
-    public static async Task Run(IRelayChannel ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct)
+    public static async Task Run(IRelayChannel ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct, TimeSpan? requestTimeout = null)
     {
         var buf = new byte[64 * 1024];
         var pending = new MemoryStream();
         (RdCleanPath.Request Request, ReadOnlyMemory<byte> Remaining)? parsed = null;
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        wait.CancelAfter(requestTimeout ?? RequestTimeout);
         while (parsed is null)
         {
-            var n = await ws.ReceiveAsync(buf, ct);
+            int n;
+            try { n = await ws.ReceiveAsync(buf, wait.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // WebSocket は受信を取り消すと壊れるので、誤りの PDU は送れないことがある(Fail は失敗を飲み込む)
+                await Fail(ws, 408, "RDCleanPath request timeout", log, ct);
+                return;
+            }
             if (n == 0) return;
             pending.Write(buf, 0, n);
             // RDCleanPath の要求は 1 KB ほど。いつまでも揃わないものを溜め込まない

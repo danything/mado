@@ -99,27 +99,17 @@ CookieOptions Cookie(int maxAge) => new()
 };
 Target? TargetOf(string? name) => config.Targets.FirstOrDefault(t => t.Name == name);
 
-// 使ったトークンの jti と期限。使い回しを弾く
-var used = new ConcurrentDictionary<string, long>();
-// sub を渡すと、トークンの sub がそれと同じことも確かめる(/ws は Cookie の sub)
-RelayToken? Consume(string? token, string? sub)
-{
-    var t = signer.Verify(token, ApiJson.Default.RelayToken);
-    if (t is null || (sub is not null && t.Sub != sub) || !used.TryAdd(t.Jti, DateTimeOffset.UtcNow.ToUnixTimeSeconds() + RelayTokenSeconds)) return null;
-    var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-    foreach (var (k, exp) in used)
-        if (exp < now) used.TryRemove(k, out _);
-    return t;
-}
+// 中継の使い捨てのトークン。使い回しを弾く
+var tokens = new RelayTokens(signer, RelayTokenSeconds);
 
 // WebTransport。UDP で、証明書が取れたら待ち受けを始める。msquic が無ければ WebSocket だけで動く
 WebTransportServer? wt = null;
 if (config.WebTransportPort != 0)
 {
     var ip = config.Listen.Hostname is "::" or "0.0.0.0" or "" ? null : IPAddress.Parse(config.Listen.Hostname);
-    var handler = new WebTransportRelay(origin, auth =>
-        Consume(auth, null) is { } t && TargetOf(t.Target) is { } target ? (target, t.Name ?? t.Sub) : null,
-        token => signer.Verify(token, ApiJson.Default.RelayToken) is { } t && !used.ContainsKey(t.Jti),
+    // CONNECT でトークンを使う。Cookie が無いので sub は見ない(WebTransportRelay.cs)
+    var handler = new WebTransportRelay(origin, token =>
+        tokens.Consume(token, null) is { } t && TargetOf(t.Target) is { } target ? (target, t.Name ?? t.Sub) : null,
         log.Write, d => Interlocked.Add(ref sessions, d), app.Lifetime.ApplicationStopping);
     wt = WebTransportServer.TryCreate(handler, ip, (ushort)config.WebTransportPort, log.Write);
     app.Lifetime.ApplicationStopping.Register(() => wt?.Dispose());
@@ -217,7 +207,7 @@ app.MapGet("/api/token", (HttpContext ctx) =>
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return Results.Json(new LoginRequired("/login?to=/"), ApiJson.Default.LoginRequired, statusCode: 401);
     if (TargetOf(ctx.Request.Query["target"]) is not { } target) return Text(404, "そのつなぐ先は無い");
-    var token = signer.Sign(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name), ApiJson.Default.RelayToken, RelayTokenSeconds);
+    var token = tokens.Issue(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name));
     return Results.Json(new TokenInfo(token), ApiJson.Default.TokenInfo);
 });
 
@@ -232,7 +222,7 @@ app.Map("/ws", async (HttpContext ctx) =>
     log.Write($"ws open: {user.Name}");
     try
     {
-        await Relay.Run(ws, auth => Consume(auth, user.Sub) is { } t ? TargetOf(t.Target) : null, m => log.Write($"{user.Name}: {m}"), ctx.RequestAborted);
+        await Relay.Run(ws, auth => tokens.Consume(auth, user.Sub) is { } t ? TargetOf(t.Target) : null, m => log.Write($"{user.Name}: {m}"), ctx.RequestAborted);
     }
     finally
     {

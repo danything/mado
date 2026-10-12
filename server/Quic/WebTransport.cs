@@ -51,7 +51,18 @@ internal sealed class Http3Connection
     // セッションより先に着いた stream。CONNECT の処理の後に渡す
     readonly Dictionary<ulong, List<WebTransportStream>> _early = [];
     bool _peerSettingsSeen;
+    bool _closed;
+    // セッションの無いあいだ動く時計。SessionWait のうちに CONNECT が来なければ接続を閉じる
+    Timer? _wait;
     public Dictionary<ulong, ulong> PeerSettings { get; private set; } = [];
+
+    /// <summary>
+    /// セッションが無いまま待つ時間。握手の後とセッションが終わった後に数え始める。
+    /// keep-alive があるので、これが無いと何もしない接続がいつまでも残る
+    /// </summary>
+    public TimeSpan SessionWait { get; init; } = TimeSpan.FromSeconds(10);
+    /// <summary>扱い手が CONNECT を受け入れた(ログインを確かめた)。接続の数の上限に使う</summary>
+    public Action? OnAuthenticated { get; init; }
 
     public Http3Connection(QuicConnection quic, IWebTransportHandler handler, Action<string> log)
     {
@@ -75,10 +86,28 @@ internal sealed class Http3Connection
         // QPACK の encoder / decoder stream。動的表を使わないので型だけ送る
         _quic.OpenStream(unidirectional: true).Send([(byte)H3.StreamQpackEncoder]);
         _quic.OpenStream(unidirectional: true).Send([(byte)H3.StreamQpackDecoder]);
+        ArmWait();
+    }
+
+    void ArmWait()
+    {
+        _wait?.Dispose();
+        _wait = new Timer(_ =>
+        {
+            lock (_quic.Gate)
+            {
+                if (_closed || _sessions.Count > 0) return;
+                _log("webtransport: CONNECT が来ないので接続を閉じる");
+                _quic.Shutdown(H3.NoError);
+            }
+        }, null, SessionWait, Timeout.InfiniteTimeSpan);
     }
 
     void Closed()
     {
+        _closed = true;
+        _wait?.Dispose();
+        _wait = null;
         foreach (var s in _sessions.Values.ToArray()) s.Terminate(0, "接続が閉じた");
         _sessions.Clear();
         foreach (var list in _early.Values)
@@ -243,6 +272,13 @@ internal sealed class Http3Connection
             return;
         }
 
+        // 1 つの接続にセッションは 1 つだけ。トークンを使う前に断る
+        if (_sessions.Count > 0)
+        {
+            req.Respond("429", fin: true);
+            return;
+        }
+
         var session = new WebTransportSession(this, req, connect);
         int status = _handler.Accept(session);
         if (status != 200)
@@ -252,6 +288,9 @@ internal sealed class Http3Connection
             return;
         }
         _sessions[session.Id] = session;
+        _wait?.Dispose();
+        _wait = null;
+        OnAuthenticated?.Invoke();
         // draft-02 の頃の Chrome はこのヘッダーを確かめていた。今は見ないが、付けても害は無い
         req.Respond("200", fin: false, extra: [("sec-webtransport-http3-draft", "draft02")]);
 
@@ -268,6 +307,7 @@ internal sealed class Http3Connection
     {
         if (!_sessions.Remove(session.Id)) return;
         _handler.OnClosed(session, code, reason);
+        if (_sessions.Count == 0 && !_closed) ArmWait();
     }
 
     void Datagram(ReadOnlySpan<byte> d)
@@ -585,7 +625,7 @@ internal sealed class WebTransportByteStream : Stream
     bool _paused;
     Exception? _error;
     TaskCompletionSource? _waiter;
-    bool _disposed;
+    TaskCompletionSource? _closing;
 
     public WebTransportByteStream(WebTransportStream ws)
     {
@@ -690,28 +730,26 @@ internal sealed class WebTransportByteStream : Stream
 
     /// <summary>
     /// 閉じる。送信側に FIN を付け、相手が最後まで受け取るのを待つ(長くて 5 秒)。
-    /// 待たずにセッションを閉じると、相手は stream を打ち切り、まだ読んでいない最後のデータ(RDCleanPath の誤りなど)が消える
+    /// 待たずにセッションを閉じると、相手は stream を打ち切り、まだ読んでいない最後のデータ(RDCleanPath の誤りなど)が消える。
+    /// 何度呼んでもよい。2 度目からは 1 度目と同じ終わりを待つ
     /// </summary>
-    public override async ValueTask DisposeAsync()
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-            _ws.Stream.Finish();
-            try { await _ws.Stream.SendDone.WaitAsync(TimeSpan.FromSeconds(5)); }
-            catch (TimeoutException) { }
-        }
-        await base.DisposeAsync();
-    }
+    public override ValueTask DisposeAsync() => new(Finish());
 
-    /// <summary>閉じる。送信側に FIN を付ける</summary>
+    /// <summary>閉じる。送信側に FIN を付ける。待たない</summary>
     protected override void Dispose(bool disposing)
     {
-        if (disposing && !_disposed)
-        {
-            _disposed = true;
-            _ws.Stream.Finish();
-        }
+        if (disposing) _ = Finish();
         base.Dispose(disposing);
+    }
+
+    // 1 度だけ閉じる。msquic の API は Gate を取るので、_lock は持たずに呼ぶ
+    Task Finish()
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Interlocked.CompareExchange(ref _closing, tcs, null) is { } first) return first.Task;
+        _ws.Stream.Finish();
+        _ = _ws.Stream.SendDone.WaitAsync(TimeSpan.FromSeconds(5))
+            .ContinueWith(_ => tcs.TrySetResult(), TaskScheduler.Default);
+        return tcs.Task;
     }
 }

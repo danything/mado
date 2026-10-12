@@ -79,6 +79,20 @@ internal static unsafe class MsQuic
     /// QUIC_ADDR を作る。中身は sockaddr_in / sockaddr_in6。null は全アドレス(AF_UNSPEC で IPv4 と IPv6 の両方)。
     /// AF_INET6 の値は OS で違う(Windows 23、Linux 10)
     /// </summary>
+    /// <summary>QUIC_ADDR(sockaddr_in / sockaddr_in6)から IP を読む。IPv4 を IPv6 に写したものは IPv4 にする</summary>
+    public static IPAddress? ReadAddress(byte* addr)
+    {
+        if (addr == null) return null;
+        ushort family = *(ushort*)addr;
+        if (family == 2) return new IPAddress(new ReadOnlySpan<byte>(addr + 4, 4));
+        if (family is 23 or 10 or 30)
+        {
+            var ip = new IPAddress(new ReadOnlySpan<byte>(addr + 8, 16));
+            return ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip;
+        }
+        return null;
+    }
+
     public static void WriteAddress(byte* addr, IPAddress? ip, ushort port)
     {
         new Span<byte>(addr, 32).Clear();
@@ -433,6 +447,9 @@ internal sealed unsafe class QuicListener : IDisposable
         {
             var self = (QuicListener)GCHandle.FromIntPtr((nint)ctx).Target!;
             var conn = new QuicConnection(ev->NewConnectionHandle);
+            // QUIC_NEW_CONNECTION_INFO の RemoteAddress は 16 バイト目の指す先
+            if (ev->NewConnectionInfo != null)
+                conn.RemoteAddress = MsQuic.ReadAddress(*(byte**)((byte*)ev->NewConnectionInfo + 16));
             if (!self._onConnection(conn)) { conn.Release(); return refuse; }
             int st = self._configure(conn);
             if (st == -1 || MsQuic.Failed(st)) { conn.Release(); return refuse; }
@@ -462,6 +479,8 @@ internal sealed unsafe class QuicConnection
     /// <summary>この接続とその stream の状態を守る。コールバックはこれを持って呼ばれる</summary>
     public readonly Lock Gate = new();
     public nint Handle { get; private set; }
+    /// <summary>相手のアドレス。IPv4 を IPv6 に写したものは IPv4 に戻してある</summary>
+    public IPAddress? RemoteAddress { get; internal set; }
     GCHandle _self;
     bool _closed;
 
