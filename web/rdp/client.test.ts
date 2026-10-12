@@ -436,6 +436,10 @@ describe("非同期のプールでの順序", () => {
 				new Promise<Uint8ClampedArray>((resolve) =>
 					done.push(() => resolve(decodeJob(job))),
 				),
+			lanes: 1,
+			runOn(_lane: number, job: DecodeJob) {
+				return this.run(job);
+			},
 			terminate() {},
 		} satisfies TilePool;
 		const full = [{ x: 0, y: 0, w: 64, h: 64 }];

@@ -101,13 +101,122 @@ type Region = {
 	extrapolate: boolean;
 };
 
-/** Progressive の復号器。タイルの状態を面ごとに持つ(面を消したら deleteSurface) */
-export class ProgressiveDecoder {
-	/** 面 → (yIdx * 65536 + xIdx → タイル) */
+/**
+ * 1 枚のタイルの復号の仕事。Worker へ渡せる形(構造化複製できるものだけ)。
+ * タイルの状態(upgrade のための係数)は、復号する側(ProgressiveTiles)が surface と key で持つ
+ */
+export type ProgressiveTileJob = {
+	surface: number;
+	/** yIdx * 65536 + xIdx */
+	key: number;
+	/** WBT_TILE_SIMPLE / FIRST / UPGRADE */
+	type: number;
+	quant: Yuv<Quant>;
+	prog: Yuv<Quant>;
+	/** TILE_FIRST / SIMPLE のとき、前の係数に足す(RFX_TILE_DIFFERENCE) */
+	diff: boolean;
+	extrapolate: boolean;
+	/** FIRST / SIMPLE は Y・Cb・Cr の 3 つ、UPGRADE は成分ごとに SRL と RAW の 6 つ */
+	data: Uint8Array[];
+};
+
+/** 読み取ったタイル。復号の仕事と、面のどこに描くか */
+export type ProgressiveTile = {
+	job: ProgressiveTileJob;
+	x: number;
+	y: number;
+	rects: ProgressiveRect[];
+};
+
+/** タイルの状態を持って復号する。Worker ではタイルの位置ごとに受け持つ Worker を決めて、同じタイルは同じ Worker で復号する */
+export class ProgressiveTiles {
+	/** 面 → (key → タイル) */
 	private surfaces = new Map<number, Map<number, Tile>>();
 
 	deleteSurface(id: number): void {
 		this.surfaces.delete(id);
+	}
+
+	/** 64x64 の RGBA を返す */
+	decode(j: ProgressiveTileJob): Uint8ClampedArray {
+		let tiles = this.surfaces.get(j.surface);
+		if (!tiles) {
+			tiles = new Map();
+			this.surfaces.set(j.surface, tiles);
+		}
+		let tile = tiles.get(j.key);
+		if (!tile) {
+			tile = newTile();
+			tiles.set(j.key, tile);
+		}
+		return j.type === WBT_TILE_UPGRADE
+			? upgrade(tile, j.quant, j.prog, j.data, j.extrapolate)
+			: first(
+					tile,
+					j.quant,
+					j.prog,
+					j.data as Yuv<Uint8Array>,
+					j.diff,
+					j.extrapolate,
+				);
+	}
+}
+
+/**
+ * WireToSurface2 の bitmapData を読み、復号するタイルを並べる(復号はしない)。
+ * width / height は面の大きさ。面の外のタイルは描けないので飛ばす(PDU 全体は捨てない)
+ */
+export function parseProgressive(
+	surface: number,
+	data: Uint8Array,
+	width: number,
+	height: number,
+): ProgressiveTile[] {
+	const out: ProgressiveTile[] = [];
+	const r = new Reader(data);
+	while (r.left >= 6) {
+		const type = r.u16();
+		const len = r.u32();
+		if (len < 6 || len - 6 > r.left)
+			throw new Error(`Progressive: ブロックの長さが不正 (${len})`);
+		const body = r.sub(len - 6);
+		switch (type) {
+			case WBT_SYNC:
+				if (body.u32() !== SYNC_MAGIC)
+					throw new Error("Progressive: Sync の署名が違う");
+				break;
+			case WBT_FRAME_BEGIN:
+			case WBT_FRAME_END:
+			case WBT_CONTEXT:
+				break;
+			case WBT_REGION:
+				region(body, surface, width, height, out);
+				break;
+			default:
+				throw new Error(`Progressive: 知らないブロック 0x${type.toString(16)}`);
+		}
+	}
+	return out;
+}
+
+/** 復号したタイルを、Region の矩形と面で切る */
+export function clipTile(
+	t: ProgressiveTile,
+	rgba: Uint8ClampedArray,
+	width: number,
+	height: number,
+): ProgressivePart[] {
+	const out: ProgressivePart[] = [];
+	clip(rgba, t.x, t.y, t.rects, width, height, out);
+	return out;
+}
+
+/** Progressive の復号器(その場で復号する。Worker を使わないとき・試験用)。タイルの状態を面ごとに持つ(面を消したら deleteSurface) */
+export class ProgressiveDecoder {
+	private tiles = new ProgressiveTiles();
+
+	deleteSurface(id: number): void {
+		this.tiles.deleteSurface(id);
 	}
 
 	/** 1 つの WireToSurface2 の bitmapData を復号し、面に描く部分を返す。width / height は面の大きさ */
@@ -118,47 +227,18 @@ export class ProgressiveDecoder {
 		height: number,
 	): ProgressivePart[] {
 		const out: ProgressivePart[] = [];
-		const r = new Reader(data);
-		while (r.left >= 6) {
-			const type = r.u16();
-			const len = r.u32();
-			if (len < 6 || len - 6 > r.left)
-				throw new Error(`Progressive: ブロックの長さが不正 (${len})`);
-			const body = r.sub(len - 6);
-			switch (type) {
-				case WBT_SYNC:
-					if (body.u32() !== SYNC_MAGIC)
-						throw new Error("Progressive: Sync の署名が違う");
-					break;
-				case WBT_FRAME_BEGIN:
-				case WBT_FRAME_END:
-				case WBT_CONTEXT:
-					break;
-				case WBT_REGION: {
-					let tiles = this.surfaces.get(surfaceId);
-					if (!tiles) {
-						tiles = new Map();
-						this.surfaces.set(surfaceId, tiles);
-					}
-					region(body, tiles, width, height, out);
-					break;
-				}
-				default:
-					throw new Error(
-						`Progressive: 知らないブロック 0x${type.toString(16)}`,
-					);
-			}
-		}
+		for (const t of parseProgressive(surfaceId, data, width, height))
+			out.push(...clipTile(t, this.tiles.decode(t.job), width, height));
 		return out;
 	}
 }
 
 function region(
 	r: Reader,
-	tiles: Map<number, Tile>,
+	surface: number,
 	width: number,
 	height: number,
-	out: ProgressivePart[],
+	out: ProgressiveTile[],
 ): void {
 	const tileSize = r.u8();
 	const numRects = r.u16();
@@ -200,15 +280,10 @@ function region(
 		const yIdx = t.u16();
 		if (quant.some((q) => !q))
 			throw new Error("Progressive: 量子化の番号が範囲外");
-		// 面の外のタイルは描けないので飛ばす(PDU 全体は捨てない。ほかのタイルは描く)
-		if (xIdx * TILE >= width || yIdx * TILE >= height) continue;
-		const key = yIdx * 65536 + xIdx;
-		let tile = tiles.get(key);
-		if (!tile) {
-			tile = newTile();
-			tiles.set(key, tile);
-		}
-		let rgba: Uint8ClampedArray;
+		let job: Omit<
+			ProgressiveTileJob,
+			"surface" | "key" | "quant" | "extrapolate"
+		>;
 		switch (type) {
 			case WBT_TILE_SIMPLE:
 			case WBT_TILE_FIRST: {
@@ -216,34 +291,42 @@ function region(
 				const quality = type === WBT_TILE_FIRST ? t.u8() : FULL_QUALITY;
 				const lens = [t.u16(), t.u16(), t.u16()];
 				t.u16(); // tailLen
-				const data = lens.map((n) => t.bytes(n)) as Yuv<Uint8Array>;
-				rgba = first(
-					tile,
-					quant as Yuv<Quant>,
-					progQuant(reg, quality),
-					data,
-					(tileFlags & RFX_TILE_DIFFERENCE) !== 0,
-					reg.extrapolate,
-				);
+				job = {
+					type,
+					prog: progQuant(reg, quality),
+					diff: (tileFlags & RFX_TILE_DIFFERENCE) !== 0,
+					data: lens.map((n) => t.bytes(n)),
+				};
 				break;
 			}
 			case WBT_TILE_UPGRADE: {
 				const quality = t.u8();
 				const lens = [t.u16(), t.u16(), t.u16(), t.u16(), t.u16(), t.u16()];
-				const data = lens.map((n) => t.bytes(n));
-				rgba = upgrade(
-					tile,
-					quant as Yuv<Quant>,
-					progQuant(reg, quality),
-					data,
-					reg.extrapolate,
-				);
+				job = {
+					type,
+					prog: progQuant(reg, quality),
+					diff: false,
+					data: lens.map((n) => t.bytes(n)),
+				};
 				break;
 			}
 			default:
 				throw new Error(`Progressive: 知らないタイル 0x${type.toString(16)}`);
 		}
-		clip(rgba, xIdx * TILE, yIdx * TILE, reg.rects, width, height, out);
+		// 面の外のタイルは描けないので飛ばす(ほかのタイルは描く)
+		if (xIdx * TILE >= width || yIdx * TILE >= height) continue;
+		out.push({
+			job: {
+				...job,
+				surface,
+				key: yIdx * 65536 + xIdx,
+				quant: quant as Yuv<Quant>,
+				extrapolate: reg.extrapolate,
+			},
+			x: xIdx * TILE,
+			y: yIdx * TILE,
+			rects: reg.rects,
+		});
 	}
 }
 

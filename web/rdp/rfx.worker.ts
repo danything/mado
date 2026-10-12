@@ -1,6 +1,6 @@
-// 画面の復号を受け持つ Web Worker の入口(rfxpool.ts が束ねて使う)。RemoteFX のタイルと、旧ビットマップ(planar / Interleaved RLE)。
-// 受け取るもの: { id, kind: "rfx", mode, data: [Y, Cb, Cr], quant } か { id, kind: "bitmap", rect }
-// → 返すもの: { id, rgba }(buffer を渡して返す)か { id, error }
+// 画面の復号を受け持つ Web Worker の入口(rfxpool.ts がまとめて使う)。RemoteFX のタイル、旧ビットマップ(planar / Interleaved RLE)、Progressive のタイル。
+// 受け取るもの: rfxpool.ts の DecodeJob に id を付けたもの → 返すもの: { id, rgba }(buffer ごと渡す)か { id, error }
+// Progressive はタイルの状態を Worker の中に持つので、同じタイルはいつも同じ Worker に来る(rfxpool.ts の runOn)
 
 import { type DecodeJob, decodeJob } from "./rfxpool";
 

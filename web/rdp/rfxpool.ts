@@ -1,7 +1,8 @@
-// 画面の復号の置き場(RemoteFX のタイルと旧ビットマップ)。ブラウザでは Web Worker のプール(メインスレッドを塞がず、複数コアで並列に復号する)、
-// それ以外(試験・Worker が作れない環境)では、その場で復号する同じ形のもの。
+// 画面の復号の置き場(RemoteFX のタイル、旧ビットマップ、GFX の Progressive のタイル)。ブラウザでは Web Worker のプールで、メインスレッドを塞がずに複数コアで並列に復号する。
+// それ以外(試験や、Worker が作れない環境)では、同じ形でその場で復号する。
 
 import { type BitmapJob, decodeBitmap } from "./bitmap";
+import { type ProgressiveTileJob, ProgressiveTiles } from "./progressive";
 import { decodeTile } from "./rfx";
 import type { WorkerReply, WorkerRequest } from "./rfx.worker";
 
@@ -14,25 +15,48 @@ type TileQuant = [number[], number[], number[]];
 /** 復号の 1 つの仕事 */
 export type DecodeJob =
 	| { kind: "rfx"; mode: number; data: TileData; quant: TileQuant }
-	| { kind: "bitmap"; rect: BitmapJob };
+	| { kind: "bitmap"; rect: BitmapJob }
+	/** Progressive のタイル。タイルの状態を持つので、同じタイルは同じ Worker(runOn の lane)へ */
+	| { kind: "progressive"; tile: ProgressiveTileJob }
+	/** Progressive のタイルの状態を面ごとに捨てる(面を作り直した・消した)。全部の lane へ */
+	| { kind: "progressiveReset"; surface: number };
+
+/** Progressive のタイルの状態。Worker の中では Worker ごと、その場で復号するときはメインスレッドに 1 つ */
+const progressiveTiles = new ProgressiveTiles();
 
 /** その場で復号する(Worker の中と同じ処理) */
 export function decodeJob(j: DecodeJob): Uint8ClampedArray {
-	return j.kind === "rfx"
-		? decodeTile(j.mode, j.data, j.quant)
-		: decodeBitmap(j.rect);
+	switch (j.kind) {
+		case "rfx":
+			return decodeTile(j.mode, j.data, j.quant);
+		case "bitmap":
+			return decodeBitmap(j.rect);
+		case "progressive":
+			return progressiveTiles.decode(j.tile);
+		case "progressiveReset":
+			progressiveTiles.deleteSurface(j.surface);
+			return new Uint8ClampedArray(0);
+	}
 }
 
 export interface TilePool {
 	/** true なら run は本当に非同期(完了の順序は保証されない)。false ならその場で復号するので、呼び出し側は同期の経路を使ってよい */
 	readonly async: boolean;
 	run(job: DecodeJob): Promise<Uint8ClampedArray>;
+	/** 決まった Worker で復号する(状態を持つ仕事用)。lane は 0 以上の整数で、lanes で割った余りの Worker へ */
+	runOn(lane: number, job: DecodeJob): Promise<Uint8ClampedArray>;
+	/** Worker の数(その場で復号するときは 1) */
+	readonly lanes: number;
 	terminate(): void;
 }
 
 /** その場で復号する */
 export class SyncPool implements TilePool {
 	readonly async = false;
+	readonly lanes = 1;
+	runOn(_lane: number, j: DecodeJob): Promise<Uint8ClampedArray> {
+		return this.run(j);
+	}
 	run(j: DecodeJob): Promise<Uint8ClampedArray> {
 		try {
 			return Promise.resolve(decodeJob(j));
@@ -88,10 +112,26 @@ class WorkerPool implements TilePool {
 		}
 	}
 
+	get lanes(): number {
+		return Math.max(1, this.slots.length);
+	}
+
 	run(job: DecodeJob): Promise<Uint8ClampedArray> {
-		// いちばん空いている Worker へ。生きている Worker が無ければ、その場で復号
+		// いちばん空いている Worker へ
 		let slot: Slot | undefined;
 		for (const s of this.slots) if (!slot || s.busy < slot.busy) slot = s;
+		return this.send(slot, job);
+	}
+
+	runOn(lane: number, job: DecodeJob): Promise<Uint8ClampedArray> {
+		return this.send(this.slots[lane % this.slots.length], job);
+	}
+
+	/** slot の Worker へ頼む。生きている Worker が無ければ、その場で復号 */
+	private send(
+		slot: Slot | undefined,
+		job: DecodeJob,
+	): Promise<Uint8ClampedArray> {
 		if (!slot) return this.fallback.run(job);
 		const id = this.nextId++;
 		// 入力は PDU 全体の buffer の一部(subarray)なので、構造化複製だと全体が複製される。小さく切り出して渡す
@@ -101,6 +141,13 @@ class WorkerPool implements TilePool {
 			const data = job.data.map((d) => d.slice()) as TileData;
 			req = { ...job, id, data };
 			transfer = data.map((d) => d.buffer as ArrayBuffer);
+		} else if (job.kind === "progressive") {
+			const data = job.tile.data.map((d) => d.slice());
+			req = { id, kind: "progressive", tile: { ...job.tile, data } };
+			transfer = data.map((d) => d.buffer as ArrayBuffer);
+		} else if (job.kind === "progressiveReset") {
+			req = { ...job, id };
+			transfer = [];
 		} else {
 			const { width, height, bpp, compressed } = job.rect;
 			const data = job.rect.data.slice();
