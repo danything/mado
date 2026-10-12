@@ -1,12 +1,13 @@
 // 画面。自前の RDP クライアント(web/rdp)で RDP を話し、mado の /ws(RDCleanPath)を通して PC につなぐ。
 // Windows のユーザー名とパスワードはブラウザの中の CredSSP が使うだけで、mado のサーバーには届かない。
 
+import { AutoScale } from "./rdp/autoscale";
 import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
 import { bindInput, Display, watchSize } from "./rdp/display";
 import { UPDATE } from "./rdp/fastpath";
-import { avcSupported, GfxClient } from "./rdp/gfx";
+import { avcSupport, GfxClient } from "./rdp/gfx";
 import { CanvasGfxOps, WebCodecsAvc } from "./rdp/gfx-canvas";
 import * as input from "./rdp/input";
 import { createPool } from "./rdp/rfxpool";
@@ -102,6 +103,12 @@ type SessionEnd = { message: string; fallback?: Mode };
 
 /** 方式を切り替えた記録(診断用) */
 const switches: string[] = [];
+/** 画素数を自動で変えた記録(診断用。新しいもの 5 つ) */
+const scaleSwitches: string[] = [];
+/** いまの画素数の割合(診断用) */
+let currentScale: () => number = () => 1;
+/** 混み具合を見る間隔 */
+const AUTO_SAMPLE_MS = 2000;
 
 form.addEventListener("submit", async (e) => {
 	e.preventDefault();
@@ -121,10 +128,12 @@ form.addEventListener("submit", async (e) => {
 	submit.setAttribute("aria-busy", "true");
 	status.textContent = "つないでいます…";
 	switches.length = 0;
+	scaleSwitches.length = 0;
 	// H.264 は、ブラウザが復号できるときだけ頼む
-	let mode: Mode = (await avcSupported()) ? "avc" : "gfx";
+	const avc = await avcSupport();
+	let mode: Mode = avc ? "avc" : "gfx";
 	for (;;) {
-		const end = await runSession(login, mode);
+		const end = await runSession(login, mode, avc?.hardware === true);
 		if (!end.fallback) {
 			status.textContent = end.message;
 			break;
@@ -143,7 +152,11 @@ form.addEventListener("submit", async (e) => {
 	field("password").value = "";
 });
 
-async function runSession(login: Login, mode: Mode): Promise<SessionEnd> {
+async function runSession(
+	login: Login,
+	mode: Mode,
+	hardware: boolean,
+): Promise<SessionEnd> {
 	const stops: (() => void)[] = [];
 	try {
 		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入り、サーバーが決める
@@ -181,7 +194,7 @@ async function runSession(login: Login, mode: Mode): Promise<SessionEnd> {
 				? undefined
 				: new GfxClient(
 						new CanvasGfxOps(display),
-						mode === "avc" ? new WebCodecsAvc() : undefined,
+						mode === "avc" ? new WebCodecsAvc(hardware) : undefined,
 					);
 		/** 壊れて、一つ下の方式でつなぎ直すとき */
 		let fallback: SessionEnd | undefined;
@@ -210,16 +223,39 @@ async function runSession(login: Login, mode: Mode): Promise<SessionEnd> {
 		stops.push(watchDiag(() => diagText(client, gfxClient, pool.async)));
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
-		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える
-		const scale = autoScale(login.size);
-		stops.push(
-			watchSize(screen, (w, h) =>
-				channels.displayControl.resize(
-					even(Math.round(w * scale)),
-					Math.round(h * scale),
-				),
-			),
-		);
+		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える。
+		// 割合は選んだものを上限に、混んでいれば自動で下げる(GFX のときだけ。フレームの時刻で混み具合が分かる)
+		const auto = new AutoScale(autoScale(login.size));
+		const resize = (w: number, h: number) => {
+			const width = even(Math.round(w * auto.scale));
+			const height = Math.round(h * auto.scale);
+			// いまの大きさと同じなら送らない。Windows は同じ大きさでも画面の作り直しをする(GPU があると数十秒、絵が来ない)
+			if (width === display.width && height === display.height) return;
+			channels.displayControl.resize(width, height);
+		};
+		stops.push(watchSize(screen, resize));
+		let started = false;
+		const sampler = setInterval(() => {
+			if (!gfxClient?.active || gfxClient.stats.frames === 0) return;
+			const now = performance.now();
+			// 最初の絵が来てしばらくは、全面の送り直しで混んで見えるので待つ
+			if (!started) {
+				started = true;
+				auto.pause(now + 10_000);
+			}
+			const l = gfxClient.latency;
+			// 最近のフレームが無ければ(画面が静か)混んでいない
+			const queued = now - l.at < AUTO_SAMPLE_MS * 1.5 ? l.queued : undefined;
+			const next = auto.sample({ queued, backlog: gfxClient.backlog }, now);
+			if (next === undefined) return;
+			scaleSwitches.push(
+				`${new Date().toLocaleTimeString()} 画素数 ${Math.round(next * 100)}%(溜まった遅れ ${Math.round(queued ?? 0)}ms・未描画 ${gfxClient.backlog})`,
+			);
+			scaleSwitches.splice(0, scaleSwitches.length - 5);
+			resize(screen.clientWidth, screen.clientHeight);
+		}, AUTO_SAMPLE_MS);
+		stops.push(() => clearInterval(sampler));
+		currentScale = () => auto.scale;
 		display.canvas.focus();
 		status.textContent = "";
 		const reason = await client.run();
@@ -273,7 +309,12 @@ function diagText(
 	if (switches.length) lines.push("切り替え:", ...switches);
 	if (gfx?.active)
 		lines.push(
-			`GFX: ${Object.entries(gfx.stats)
+			`混み具合: 溜まった遅れ ${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}  画素数 ${Math.round(currentScale() * 100)}%`,
+			...scaleSwitches,
+		);
+	if (gfx?.active)
+		lines.push(
+			`GFX: 版=${gfx.confirmedVersion ?? "-"} ${Object.entries(gfx.stats)
 				.map(([k, v]) => `${k}=${v}`)
 				.join(" ")} clear未対応=${gfx.clearUnsupported}`,
 		);

@@ -8,6 +8,7 @@ import {
 	type Rect,
 	type VideoFrameLike,
 } from "./gfx";
+import { videoFrameYuv, type Yuv420 } from "./yuv444";
 
 type Canvas2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
 
@@ -240,7 +241,31 @@ export class CanvasGfxOps implements GfxOps {
 		}
 	}
 
+	/**
+	 * フレームの終わり。描画の周期(vsync)に 1 回だけ画面へ写す: 周期の最初のフレームはすぐ写し(待たせない)、
+	 * 同じ周期に続いて来たものは、周期の終わりにまとめて 1 回写す(変わったところは面ごとに和集合で残っている)
+	 */
 	present(): void {
+		if (this.waitingTick) {
+			this.pendingFlush = true;
+			return;
+		}
+		this.flush();
+		this.waitingTick = true;
+		nextTick(() => {
+			this.waitingTick = false;
+			if (!this.pendingFlush) return;
+			this.pendingFlush = false;
+			this.present();
+		});
+	}
+
+	/** この描画の周期に、もう写した */
+	private waitingTick = false;
+	/** 周期の終わりに写すものがある */
+	private pendingFlush = false;
+
+	private flush(): void {
 		// 変わった範囲(画面の座標)を集める
 		const changed: Rect[] = [];
 		for (const s of this.surfaces.values()) {
@@ -282,6 +307,20 @@ export class CanvasGfxOps implements GfxOps {
 	}
 }
 
+/**
+ * 次の描画の周期に cb を 1 回呼ぶ。requestAnimationFrame は隠れたタブなどで止まるので、50ms で打ち切る(画面が止まったままにしない)
+ */
+function nextTick(cb: () => void): void {
+	let done = false;
+	const once = () => {
+		if (done) return;
+		done = true;
+		cb();
+	};
+	if (typeof requestAnimationFrame === "function") requestAnimationFrame(once);
+	setTimeout(once, 50);
+}
+
 /** 2 つの矩形の重なり。無ければ undefined */
 function clip(a: Rect, b: Rect): Rect | undefined {
 	const left = Math.max(a.left, b.left);
@@ -305,6 +344,9 @@ export class WebCodecsAvc implements AvcDecoder {
 	private waiting = new Map<number, (f: VideoFrameLike | null) => void>();
 	/** close() のあと。復号器を作り直さない */
 	private closed = false;
+
+	/** hardware: GPU で復号できる(avcSupport で調べたもの)。できないのに頼むと configure で失敗するので、できるときだけ頼む */
+	constructor(private hardware = false) {}
 
 	decode(stream: Uint8Array, key: boolean): Promise<VideoFrameLike | null> {
 		if (this.closed) return Promise.resolve(null);
@@ -350,6 +392,19 @@ export class WebCodecsAvc implements AvcDecoder {
 		});
 	}
 
+	/** AVC444 用: 1 枚を復号して YUV420 の 3 面を読み出す(I420 / NV12 でなければ null) */
+	async decodeYuv(stream: Uint8Array, key: boolean): Promise<Yuv420 | null> {
+		const frame = await this.decode(stream, key);
+		if (!frame) return null;
+		try {
+			return (await videoFrameYuv(frame as VideoFrame)) ?? null;
+		} catch {
+			return null;
+		} finally {
+			frame.close();
+		}
+	}
+
 	private reset(codec: string): void {
 		this.shutdown();
 		this.codec = codec;
@@ -364,13 +419,19 @@ export class WebCodecsAvc implements AvcDecoder {
 			},
 			error: () => {
 				// 復号器が壊れたら、次の鍵フレームの SPS で作り直す
+				// GPU での復号が壊れたなら、作り直すときは GPU を頼まない(大きい絵や別のプロファイルで、GPU の復号器だけ失敗することがある)
+				this.hardware = false;
 				this.needKey = true;
 				this.codec = undefined;
 				for (const r of this.waiting.values()) r(null);
 				this.waiting.clear();
 			},
 		});
-		this.decoder.configure({ codec, optimizeForLatency: true });
+		this.decoder.configure({
+			codec,
+			optimizeForLatency: true,
+			hardwareAcceleration: this.hardware ? "prefer-hardware" : "no-preference",
+		});
 	}
 
 	close(): void {
