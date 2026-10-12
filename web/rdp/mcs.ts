@@ -46,10 +46,9 @@ function block(type: number, body: Uint8Array): Uint8Array {
 		.done();
 }
 
-/** earlyCapabilityFlags の SUPPORT_NETCHAR_AUTODETECT と、connectionType の LAN / AUTODETECT */
+/** earlyCapabilityFlags の SUPPORT_NETCHAR_AUTODETECT と、connectionType の LAN */
 const SUPPORT_NETCHAR_AUTODETECT = 0x0080;
 const CONNECTION_TYPE_LAN = 6;
-const CONNECTION_TYPE_AUTODETECT = 7;
 
 function clientCore(c: ClientCore): Uint8Array {
 	const layout = c.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT;
@@ -85,9 +84,10 @@ function clientCore(c: ClientCore): Uint8Array {
 					(c.gfx ? 0x0100 : 0),
 			)
 			.zeros(64) // clientDigProductId
-			// connectionType。測ってもらうなら AUTODETECT にし、サーバーが測った結果で画質を決める。
-			// 測らないなら LAN にする。LAN でないとコーデックを使わないサーバーがある
-			.u8(autodetect ? CONNECTION_TYPE_AUTODETECT : CONNECTION_TYPE_LAN)
+			// connectionType は、回線を測ってもらうときも LAN にする。AUTODETECT にすると、Windows は
+			// Client Info の performanceFlags(壁紙を出さないなど)を無視して、見た目を自分で決める。
+			// 回線の測定は SUPPORT_NETCHAR_AUTODETECT だけで続く。LAN でないとコーデックを使わないサーバーもある
+			.u8(CONNECTION_TYPE_LAN)
 			.u8(0) // pad
 			.u32(c.selectedProtocol)
 			.done(),

@@ -102,7 +102,7 @@ describe("MCS", () => {
 		);
 	});
 
-	test("回線の自動検出: connectionType 7、SUPPORT_NETCHAR_AUTODETECT、Message Channel のブロック", () => {
+	test("回線の自動検出: SUPPORT_NETCHAR_AUTODETECT と Message Channel のブロック。connectionType はどちらも LAN", () => {
 		const on = mcs.gccCreateRequest(core, [mcs.DRDYNVC]);
 		const off = mcs.gccCreateRequest({ ...core, autodetect: false }, [
 			mcs.DRDYNVC,
@@ -115,7 +115,7 @@ describe("MCS", () => {
 				gcc[at + 2 + 64],
 			];
 		};
-		expect(flags(on)).toEqual([0x00a7, 7]);
+		expect(flags(on)).toEqual([0x00a7, 6]);
 		expect(flags(off)).toEqual([0x0027, 6]);
 		expect(hex(on).endsWith("06c00800" + "00000000")).toBe(true);
 		expect(hex(off)).not.toContain("06c00800");
