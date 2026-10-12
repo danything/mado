@@ -1,5 +1,5 @@
 // Graphics Pipeline([MS-RDPEGFX]、動的チャネル Microsoft::Windows::RDS::Graphics)。
-// サーバーが面(surface)を作り、コーデック(H.264 の AVC420、ClearCodec、Planar、生)で描き、面を画面へ写す。
+// サーバーが面(surface)を作り、コーデック(H.264 の AVC420、ClearCodec、Planar、RemoteFX Progressive、生)で描き、面を画面へ写す。
 // サーバーからの PDU は ZGFX で包まれて来る。こちらからの PDU(Caps・Frame Acknowledge)は包まない。
 // 描画は GfxOps(ブラウザでは canvas、試験では偽物)に任せ、H.264 の復号は AvcDecoder(ブラウザでは VideoDecoder)に任せる。
 
@@ -7,6 +7,7 @@ import { decodePlanar } from "./bitmap";
 import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
+import { ProgressiveDecoder } from "./progressive";
 import { decodeStream } from "./rfx";
 import { Zgfx } from "./zgfx";
 
@@ -246,6 +247,7 @@ export function isKeyFrame(stream: Uint8Array): boolean {
 export class GfxClient implements DynamicHandler {
 	private zgfx = new Zgfx();
 	private clear = new ClearDecoder();
+	private progressive = new ProgressiveDecoder();
 	private channel?: DynamicChannel;
 	/** 処理の順序を保つ鎖(H.264 の復号は非同期) */
 	private chain: Promise<void> = Promise.resolve();
@@ -268,6 +270,7 @@ export class GfxClient implements DynamicHandler {
 		planar: 0,
 		uncompressed: 0,
 		rfx: 0,
+		progressive: 0,
 		skipped: 0,
 		solidFill: 0,
 		surfaceToSurface: 0,
@@ -331,7 +334,7 @@ export class GfxClient implements DynamicHandler {
 		const r = new Reader(p.body);
 		switch (p.cmd) {
 			case CMD.CAPSCONFIRM:
-			case CMD.DELETEENCODINGCONTEXT: // Progressive の文脈。使っていない
+			case CMD.DELETEENCODINGCONTEXT: // Progressive の文脈。タイルの状態は面ごとに持つので使わない(FreeRDP と同じ)
 				break;
 			case CMD.RESETGRAPHICS: {
 				const width = r.u32();
@@ -361,6 +364,7 @@ export class GfxClient implements DynamicHandler {
 				}
 				this.surfacePixels = pixels + width * height;
 				this.surfaces.set(id, { width, height, alpha });
+				this.progressive.deleteSurface(id);
 				this.ops.createSurface(id, width, height, alpha);
 				break;
 			}
@@ -369,6 +373,7 @@ export class GfxClient implements DynamicHandler {
 				const old = this.surfaces.get(id);
 				if (old) this.surfacePixels -= old.width * old.height;
 				this.surfaces.delete(id);
+				this.progressive.deleteSurface(id);
 				this.ops.deleteSurface(id);
 				break;
 			}
@@ -468,8 +473,7 @@ export class GfxClient implements DynamicHandler {
 				await this.wireToSurface(r);
 				break;
 			case CMD.WIRETOSURFACE_2:
-				// Progressive は宣言していないので来ないはず。来たら飛ばす
-				this.stats.skipped++;
+				this.wireToSurface2(r);
 				break;
 		}
 	}
@@ -479,6 +483,29 @@ export class GfxClient implements DynamicHandler {
 		if (b === undefined) return;
 		this.cacheBytes -= b;
 		this.cacheSlots.delete(slot);
+	}
+
+	/** WireToSurface2: 宣言しなくても、版 8 以上の Windows は Progressive で送ってくる(写真・新しく見えた部分など) */
+	private wireToSurface2(r: Reader): void {
+		const id = r.u16();
+		const codec = r.u16();
+		r.u32(); // codecContextId
+		r.u8(); // pixelFormat
+		const data = r.bytes(r.u32());
+		const surface = this.surfaces.get(id);
+		if (!surface) throw new Error(`GFX: 無い面 ${id}`);
+		if (codec !== CODEC.CAPROGRESSIVE) {
+			this.stats.skipped++;
+			return;
+		}
+		this.stats.progressive++;
+		for (const p of this.progressive.decode(
+			id,
+			data,
+			surface.width,
+			surface.height,
+		))
+			this.ops.putRgba(id, p.x, p.y, p.w, p.h, p.rgba);
 	}
 
 	private async wireToSurface(r: Reader): Promise<void> {
@@ -578,7 +605,7 @@ export class GfxClient implements DynamicHandler {
 				this.ops.setAlpha(id, dest, alphaCodec(data, w, h));
 				break;
 			default:
-				// AVC444 / Progressive は宣言していないので来ないはず
+				// AVC444 は宣言していないので来ないはず
 				this.stats.skipped++;
 		}
 	}

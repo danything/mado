@@ -264,6 +264,11 @@ export function reconstruct(buf: Int32Array, quant: number[]): void {
 		const end = band[0] + band[1];
 		for (let j = band[0]; j < end; j++) buf[j] = (buf[j] as number) << shift;
 	}
+	inverseDwt(buf);
+}
+
+/** 逆 DWT の 3 段(in place)。係数の並びは BANDS */
+export function inverseDwt(buf: Int32Array): void {
 	idwt(buf, 3840, 8);
 	idwt(buf, 3072, 16);
 	idwt(buf, 0, 32);
@@ -347,9 +352,9 @@ const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
 /** Y・Cb・Cr(5 ビットの小数つき、Y は -128 のオフセット)→ RGBA。16.16 の固定小数 + 5 ビット = 21 ビットの右シフト */
 export function yccToRgba(
-	y: Int32Array,
-	cb: Int32Array,
-	cr: Int32Array,
+	y: Int32Array | Int16Array,
+	cb: Int32Array | Int16Array,
+	cr: Int32Array | Int16Array,
 ): Uint8ClampedArray {
 	const out = new Uint8ClampedArray(TILE_PIXELS * 4);
 	// 1 画素を 32 ビット 1 回で書く(リトル エンディアンなら R が下位)

@@ -28,7 +28,8 @@ IronRDP(WASM)は v0.6.0 で外した。RDP は全部 `web/rdp/` の TypeScript �
 ## H.264(GFX)
 
 既定は旧ビットマップ / RemoteFX。フォームの「H.264(試験中)」をオンにし、ブラウザが H.264 を復号できるときだけ GFX(CAPVERSION 8.1 の AVC420)を宣言する。
-未対応: AVC444、Progressive、ClearCodec の NSCodec。Windows での確認はまだ。
+Windows は H.264 を使わないときも、ClearCodec(NSCodec を含む)と RemoteFX Progressive(写真・スクロールで新しく見えた部分)で送ってくる。未対応: AVC444。
+GPU の無い VM では、Windows は 8.1 を宣言しても版 8 を選び、H.264 を使わない。
 接続先の Windows でグループ ポリシーの「H.264/AVC 444 グラフィックス モードを優先する」「H.264/AVC ハードウェア エンコードを構成する」を有効にすると、H.264 で送らせやすい。
 
 ## 試験

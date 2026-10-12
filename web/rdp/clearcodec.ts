@@ -1,5 +1,5 @@
 // ClearCodec([MS-RDPEGFX] 2.2.4.1)。GFX で文字や UI の部品に使われる。
-// 残差(residual)→ 帯(bands、縦の棒 vBar のキャッシュ)→ サブコーデック(生 / RLEX。NSCodec は未対応)の順に重ねる。
+// 残差(residual)→ 帯(bands、縦の棒 vBar のキャッシュ)→ サブコーデック(生 / NSCodec / RLEX)の順に重ねる。
 // グリフのキャッシュと vBar のキャッシュはセッションを通して持つので、1 つの ClearDecoder を使い続ける。
 
 import { MAX_PIXELS } from "./bitmap";
@@ -27,7 +27,7 @@ export class ClearDecoder {
 		| { w: number; h: number; rgba: Uint8ClampedArray }
 		| undefined
 	)[] = new Array(GLYPH_STORAGE);
-	/** NSCodec のように未対応のサブコーデックが来た数(診断用) */
+	/** 知らないサブコーデックが来た数(診断用) */
 	unsupported = 0;
 
 	/** w x h の RGBA(上の行から、不透明)を返す */
@@ -183,8 +183,10 @@ export class ClearDecoder {
 				bgr = body;
 			} else if (id === 2) {
 				bgr = rlex(body, sw * sh);
+			} else if (id === 1) {
+				bgr = rgbaToBgr(nscodec(body, sw, sh));
 			} else {
-				// NSCodec(1)は未対応。この部分は描かない
+				// 知らないサブコーデック。この部分は描かない
 				this.unsupported++;
 				continue;
 			}
@@ -203,6 +205,109 @@ export class ClearDecoder {
 			}
 		}
 	}
+}
+
+function rgbaToBgr(rgba: Uint8ClampedArray): Uint8Array {
+	const n = rgba.length / 4;
+	const out = new Uint8Array(n * 3);
+	for (let i = 0; i < n; i++) {
+		out[i * 3] = rgba[i * 4 + 2] as number;
+		out[i * 3 + 1] = rgba[i * 4 + 1] as number;
+		out[i * 3 + 2] = rgba[i * 4] as number;
+	}
+	return out;
+}
+
+/**
+ * NSCodec([MS-RDPNSC] 2.2 / 3.1.8)。ClearCodec のサブコーデック 1 として来る。
+ * NSCODEC_BITMAP_STREAM: 面ごとの長さ(Y / Co / Cg / A の 4 つ)、ColorLossLevel、ChromaSubsamplingLevel、予約、各面。
+ * 面は元の大きさより短ければ RLE。色差を間引くときは、Y の幅を 8 の倍数に丸め、Co / Cg は縦横半分。
+ * 色差は planar の YCoCg と同じく、8 ビットのまま (ColorLossLevel - 1) ずらしてから符号付きに読む(FreeRDP の nsc.c と同じ)。
+ * 結果は w x h の RGBA(上の行から)
+ */
+export function nscodec(
+	data: Uint8Array,
+	w: number,
+	h: number,
+): Uint8ClampedArray {
+	if (w <= 0 || h <= 0 || w * h > MAX_PIXELS)
+		throw new Error("NSCodec: 大きさが不正");
+	const r = new Reader(data);
+	const counts = [r.u32(), r.u32(), r.u32(), r.u32()];
+	const cll = r.u8();
+	const subsample = r.u8() !== 0;
+	r.u16(); // Reserved
+	if (cll < 1 || cll > 7) throw new Error(`NSCodec: 色の削減が不正 (${cll})`);
+	const rw = (w + 7) & ~7; // 間引くときの Y の幅
+	const rh = (h + 1) & ~1;
+	const sizes = subsample
+		? [rw * h, (rw >> 1) * (rh >> 1), (rw >> 1) * (rh >> 1), w * h]
+		: [w * h, w * h, w * h, w * h];
+	const planes = counts.map((count, i) => {
+		const size = sizes[i] as number;
+		const body = r.bytes(count);
+		if (count === 0) return new Uint8Array(size).fill(0xff);
+		if (count < size) return nscRle(body, size);
+		return body.subarray(0, size);
+	}) as [Uint8Array, Uint8Array, Uint8Array, Uint8Array];
+	const [yp, cop, cgp, ap] = planes;
+	const shift = cll - 1;
+	const out = new Uint8ClampedArray(w * h * 4);
+	for (let y = 0; y < h; y++) {
+		const yRow = y * (subsample ? rw : w);
+		const cRow = subsample ? (y >> 1) * (rw >> 1) : y * w;
+		for (let x = 0; x < w; x++) {
+			const c = cRow + (subsample ? x >> 1 : x);
+			const yy = yp[yRow + x] as number;
+			const co = ((((cop[c] as number) << shift) & 0xff) << 24) >> 24;
+			const cg = ((((cgp[c] as number) << shift) & 0xff) << 24) >> 24;
+			const d = (y * w + x) * 4;
+			out[d] = yy + co - cg;
+			out[d + 1] = yy + cg;
+			out[d + 2] = yy - co - cg;
+			out[d + 3] = ap[y * w + x] as number;
+		}
+	}
+	return out;
+}
+
+/**
+ * NSCodec の面の RLE。値の 1 バイト、次も同じ値なら続く長さ(1 バイト + 2、0xFF なら 4 バイト)。
+ * 最後の 4 バイトは RLE にせずにそのまま(FreeRDP の nsc_rle_decode と同じ)
+ */
+export function nscRle(data: Uint8Array, size: number): Uint8Array {
+	const out = new Uint8Array(size);
+	let s = 0;
+	let d = 0;
+	const byte = () => {
+		if (s >= data.length) throw new Error("NSCodec: RLE の入力が足りない");
+		return data[s++] as number;
+	};
+	let left = size;
+	while (left > 4) {
+		const value = byte();
+		if (left === 5) {
+			out[d++] = value;
+			left--;
+		} else if (s < data.length && data[s] === value) {
+			s++;
+			let len = byte();
+			if (len < 0xff) len += 2;
+			else {
+				len = byte() | (byte() << 8) | (byte() << 16) | (byte() << 24);
+				len >>>= 0;
+			}
+			if (len > left) throw new Error("NSCodec: RLE があふれた");
+			out.fill(value, d, d + len);
+			d += len;
+			left -= len;
+		} else {
+			out[d++] = value;
+			left--;
+		}
+	}
+	for (let i = 0; i < left; i++) out[d++] = byte();
+	return out;
 }
 
 /** 長さ: 1 バイト、0xFF なら 2 バイト、0xFFFF なら 4 バイト */
