@@ -146,3 +146,16 @@ wslc run -d --name xrdp-gfx -p 13390:3389 mado-xrdp-gfx   # ubuntu / ubuntu、TL
 ```
 
 Windows Sandbox は使えない: Sandbox は自分の画面表示にリモートデスクトップのサービスを使っていて、3389 の待ち受け(RDP-Tcp)を上げるにはサービスの再起動が要り、そのとき Sandbox ごと閉じる。
+
+### Windows を相手にする試験(Hyper-V)
+
+Windows Sandbox は使えないので、Hyper-V に試験用の Windows を無人で立てる(`tools/hyperv-test/`)。
+
+```powershell
+pwsh -File tools/hyperv-test/new-test-vm.ps1 -Iso <Windows 11 の ISO>   # UAC で昇格。~/.mado-test/ に IP とパスワード
+wslc run --rm -v "${PWD}:/app" -w /app oven/bun:1 bun run build:web
+pwsh -File tools/hyperv-test/mini-mado.ps1 -Target <VM の IP>          # http://localhost:8790/(本物の Relay.cs をコンパイルして使う)
+```
+
+wslc のコンテナからは Hyper-V の Default Switch の VM に届かない(WSL のネットワークの都合)ので、ホストのブラウザから試す。
+これで、Windows が旧ビットマップ(planar、YCoCg・色の削減 3)で送ってきて、色差の読み方の誤りで色が崩れていたのを見つけた。
