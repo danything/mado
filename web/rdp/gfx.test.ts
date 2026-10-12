@@ -23,7 +23,7 @@ import {
 	splitPdus,
 } from "./gfx";
 import { type DecodeJob, decodeJob, type TilePool } from "./rfxpool";
-import type { Yuv420 } from "./yuv444";
+import type { Yuv420, Yuv444Target } from "./yuv444";
 import { segmentedUncompressed } from "./zgfx";
 
 const pdu = (cmd: number, body: Uint8Array) =>
@@ -1096,5 +1096,96 @@ describe("GfxClient の AVC444", () => {
 		);
 		await gfx.idle();
 		expect(String(errors[0])).toContain("AVC444");
+	});
+
+	/** GPU で組み立てる面を出す ops(偽物)。ok が false なら GPU を失ったことにする */
+	class GpuOps extends Recorder {
+		made = 0;
+		ok = true;
+		yuv444(id: number, width: number, height: number): Yuv444Target {
+			this.made++;
+			const calls = this.calls;
+			const self = this;
+			return {
+				width,
+				height,
+				luma: () => calls.push(`gpu luma ${id}`),
+				chroma: () => {
+					calls.push(`gpu chroma ${id}`);
+					return true;
+				},
+				draw(rects: Rect[], x: number, y: number) {
+					calls.push(
+						`gpu draw ${id} ${x},${y} ${rects.map((r) => `${r.right - r.left}x${r.bottom - r.top}`)}`,
+					);
+					return self.ok;
+				},
+				close: () => calls.push(`gpu close ${id}`),
+			};
+		}
+	}
+
+	const pdus = () =>
+		segmentedUncompressed(
+			concat(
+				create,
+				wire(
+					1,
+					CODEC.AVC444,
+					dest,
+					avc444(
+						0,
+						avc420(
+							[{ left: 0, top: 0, right: 8, bottom: 8 }],
+							concat(SPS, IDR),
+						),
+						avc420([{ left: 0, top: 0, right: 8, bottom: 8 }], P),
+					),
+				),
+			),
+		);
+
+	test("ops が GPU のものを出せば、それで組み立てて描く(putRgba は使わない)", async () => {
+		const ops = new GpuOps();
+		const gfx = new GfxClient(
+			ops,
+			new FakeYuvAvc([
+				flat(16, 16, 255, 128, 128),
+				flat(16, 32, 128, 128, 128),
+			]),
+		);
+		gfx.onOpen(channel());
+		gfx.onData(pdus());
+		await gfx.idle();
+		expect(ops.calls).toEqual([
+			"create 1 16x16",
+			"gpu luma 1",
+			"gpu chroma 1",
+			"gpu draw 1 0,0 8x8",
+		]);
+	});
+
+	test("GPU を失ったら CPU で組み立て直して描く", async () => {
+		const ops = new GpuOps();
+		ops.ok = false;
+		const gfx = new GfxClient(
+			ops,
+			new FakeYuvAvc([
+				flat(16, 16, 255, 128, 128),
+				flat(16, 32, 128, 128, 128),
+			]),
+		);
+		gfx.onOpen(channel());
+		gfx.onData(pdus());
+		await gfx.idle();
+		expect(ops.calls).toEqual([
+			"create 1 16x16",
+			"gpu luma 1",
+			"gpu chroma 1",
+			"gpu draw 1 0,0 8x8",
+			"gpu close 1",
+			"put 1 0,0 8x8 ffffffff",
+		]);
+		expect(ops.made).toBe(1);
 	});
 });

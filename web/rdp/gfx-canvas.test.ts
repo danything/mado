@@ -2,7 +2,8 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { concat, fromHex } from "./bytes";
-import { WebCodecsAvc } from "./gfx-canvas";
+import type { Display } from "./display";
+import { CanvasGfxOps, WebCodecsAvc } from "./gfx-canvas";
 
 const SPS = fromHex("000000016764001facd9");
 const IDR = fromHex("0000000165888400");
@@ -65,5 +66,29 @@ describe("WebCodecsAvc", () => {
 		avc.close();
 		expect(await avc.decode(concat(SPS, IDR), true)).toBeNull();
 		expect(made.length).toBe(0);
+	});
+});
+
+describe("CanvasGfxOps の AVC444", () => {
+	test("WebGL2 が無ければ GPU のものを出さない(CPU で組み立てる)。作るのは 1 回だけ試す", () => {
+		let tried = 0;
+		const ops = new CanvasGfxOps({} as Display, () => {
+			tried++;
+			return undefined;
+		});
+		expect(ops.yuv444(1, 16, 16)).toBeUndefined();
+		expect(ops.yuv444(2, 16, 16)).toBeUndefined();
+		expect(tried).toBe(1);
+	});
+
+	test("試験の環境(canvas が無い)では、そのまま CPU になる", () => {
+		const ops = new CanvasGfxOps({} as Display);
+		const warn = console.warn;
+		console.warn = () => {};
+		try {
+			expect(ops.yuv444(1, 16, 16)).toBeUndefined();
+		} finally {
+			console.warn = warn;
+		}
 	});
 });
