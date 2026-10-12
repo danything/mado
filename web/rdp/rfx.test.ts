@@ -4,12 +4,10 @@ import { describe, expect, test } from "bun:test";
 import { fromHex } from "./bytes";
 import {
 	decodeStream,
-	decodeStreamLazy,
 	decodeTile,
 	ENTROPY_RLGR1,
 	ENTROPY_RLGR3,
 	parseQuant,
-	type RfxTile,
 	reconstruct,
 	rlgrDecode,
 	yccToRgba,
@@ -204,34 +202,5 @@ describe("タイルとストリーム", () => {
 		const at = copy.findIndex((v, i) => v === 0xc3 && copy[i + 1] === 0xca);
 		copy[at + 6] = 5;
 		expect(() => decodeStream(copy)).toThrow("範囲外");
-	});
-});
-
-describe("decodeStreamLazy", () => {
-	test("decodeStream と同じタイルを、1 つずつ返す", () => {
-		const q = REAL_TILE.quant;
-		const tile = (x: number, y: number) => ({
-			x,
-			y,
-			y_: REAL_TILE.y,
-			cb: REAL_TILE.cb,
-			cr: REAL_TILE.cr,
-		});
-		const stream = rfxStream(
-			[{ x: 0, y: 0, w: 128, h: 64 }],
-			[tile(0, 0), tile(1, 0)],
-			{ quant: q },
-		);
-		const all = decodeStream(stream);
-		const it = decodeStreamLazy(stream);
-		const first = it.next();
-		expect(first.done).toBe(false);
-		expect((first.value as RfxTile).x).toBe(0);
-		const rest = [...it];
-		expect(rest.length).toBe(1);
-		expect(all.length).toBe(2);
-		expect([...(rest[0] as RfxTile).rgba]).toEqual([
-			...(all[1] as RfxTile).rgba,
-		]);
 	});
 });

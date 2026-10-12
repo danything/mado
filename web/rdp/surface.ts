@@ -1,13 +1,13 @@
 // Surface Commands([MS-RDPBCGR] 2.2.9.2)。Fast-Path の SURFCMDS の更新に、複数のコマンドが並ぶ:
 // Set Surface Bits / Stream Surface Bits(コーデックで符号化されたビットマップ)と Frame Marker。
 //
-// RemoteFX のタイルは独立で、同じ位置の新しいタイルは古いものを完全に置き換える。サーバーが復号より速く送ってくると
-// 溜まった更新を順に全部復号して遅れが膨らむので、SurfaceRenderer は復号を後回しにして、同じ位置は最新だけを復号する。
+// サーバーが復号より速く送ってくると、溜まった更新を順に全部復号して遅れが膨らむ。SurfaceRenderer は復号を後回しにして、
+// 同じ左上の古いもの(RemoteFX のタイル・旧ビットマップ)は、新しいものの描く範囲にすっぽり入るときだけ復号しない。
 // 旧ビットマップ(Windows が RemoteFX を使わないときの planar など)も同じ列に載せて、受けた順に描く。
 
 import type { BitmapRect } from "./bitmap";
 import { Reader } from "./bytes";
-import { decodeTile, parseQuant, type Rect, TILE } from "./rfx";
+import { decodeTile, parseTiles, type RawTile, type Rect, TILE } from "./rfx";
 import { type DecodeJob, decodeJob, SyncPool, type TilePool } from "./rfxpool";
 
 const CMD_SET_SURFACE_BITS = 0x0001;
@@ -16,12 +16,11 @@ const CMD_STREAM_SURFACE_BITS = 0x0006;
 
 const EX_COMPRESSED_BITMAP_HEADER_PRESENT = 0x01;
 
-/** Frame Marker の frameAction */
-export const FRAME_BEGIN = 0;
-export const FRAME_END = 1;
+/** Frame Marker の frameAction の End(0 は Begin) */
+const FRAME_END = 1;
 
 /** codecId 0 は「コーデックなし」(生のビットマップ)。RemoteFX の ID は能力セットで決める */
-export const CODEC_NONE = 0;
+const CODEC_NONE = 0;
 
 /** 1 つのビットマップの縦横の上限(安全のため) */
 const MAX_SIDE = 16384;
@@ -36,7 +35,7 @@ export type SurfaceDraw = (
 
 type ScreenSize = { width: number; height: number };
 
-export type SurfaceEvents = {
+type SurfaceEvents = {
 	draw: SurfaceDraw;
 	/** Frame Marker(0 = 始まり、1 = 終わり) */
 	frame?(action: number, frameId: number): void;
@@ -86,8 +85,15 @@ export function handleSurfaceCommands(
 					if (ev.rfx) ev.rfx(bits, left, top, right, bottom);
 					else {
 						const area = commandArea(left, top, right, bottom, screen);
-						for (const t of parseRfxTiles(bits))
-							drawTile(decodeRfxTile(t), t, left, top, area, ev.draw);
+						for (const t of parseTiles(bits))
+							drawTile(
+								decodeTile(t.mode, t.data, t.quant),
+								t,
+								left,
+								top,
+								area,
+								ev.draw,
+							);
 					}
 				} else if (codecId === CODEC_NONE) {
 					if (bpp !== 32)
@@ -162,108 +168,6 @@ function commandArea(
 		},
 		{ x: 0, y: 0, w: screen.width, h: screen.height },
 	);
-}
-
-// ---- RemoteFX のタイルの切り出し(復号はしない) ----
-
-const WBT_REGION = 0xccc6;
-const WBT_EXTENSION = 0xccc7;
-const CBT_REGION = 0xcac1;
-const CBT_TILESET = 0xcac2;
-const CBT_TILE = 0xcac3;
-const MAX_TILES = 1 << 12;
-const MAX_RECTS = 1 << 12;
-const MAX_QUANT = 16;
-
-/** 復号前のタイル: 位置(コマンドの左上からの画素)と、圧縮されたままの 3 成分 */
-export type RawTile = {
-	x: number;
-	y: number;
-	mode: number;
-	data: [Uint8Array, Uint8Array, Uint8Array];
-	quant: [number[], number[], number[]];
-	/** このタイルを描いてよい領域(Region の矩形)。空なら全体 */
-	rects: Rect[];
-};
-
-/** RemoteFX のストリームから、タイルの位置と圧縮データを取り出す(rfx.ts の decodeStream の、復号しない版) */
-export function parseRfxTiles(data: Uint8Array): RawTile[] {
-	const r = new Reader(data);
-	const tiles: RawTile[] = [];
-	let rects: Rect[] = [];
-	while (r.left >= 6) {
-		const type = r.u16();
-		const len = r.u32();
-		if (len < 6 || len - 6 > r.left)
-			throw new Error(`RemoteFX: ブロックの長さが不正 (${len})`);
-		const body = r.sub(len - 6);
-		if (type === WBT_REGION) rects = parseRegionRects(body);
-		else if (type === WBT_EXTENSION) parseTilesetTiles(body, rects, tiles);
-		else if (type < 0xccc0 || type > 0xccc7)
-			throw new Error(`RemoteFX: 知らないブロック 0x${type.toString(16)}`);
-	}
-	return tiles;
-}
-
-function parseRegionRects(r: Reader): Rect[] {
-	r.skip(2); // codecId, channelId
-	r.u8(); // regionFlags
-	const n = r.u16();
-	if (n > MAX_RECTS) throw new Error("RemoteFX: 矩形が多すぎる");
-	const rects: Rect[] = [];
-	for (let i = 0; i < n; i++)
-		rects.push({ x: r.u16(), y: r.u16(), w: r.u16(), h: r.u16() });
-	if (r.u16() !== CBT_REGION) throw new Error("RemoteFX: Region の種類が違う");
-	return rects;
-}
-
-function parseTilesetTiles(r: Reader, rects: Rect[], out: RawTile[]): void {
-	r.skip(2); // codecId, channelId
-	if (r.u16() !== CBT_TILESET)
-		throw new Error("RemoteFX: Tileset の種類が違う");
-	r.u16(); // idx
-	const props = r.u16();
-	const mode = (props >> 10) & 0xf;
-	const numQuant = r.u8();
-	const tileSize = r.u8();
-	const numTiles = r.u16();
-	r.u32(); // tilesDataSize
-	if (tileSize !== TILE)
-		throw new Error(`RemoteFX: タイルの大きさ ${tileSize}`);
-	if (numQuant > MAX_QUANT || numTiles > MAX_TILES)
-		throw new Error("RemoteFX: Tileset が大きすぎる");
-	const quants: number[][] = [];
-	for (let i = 0; i < numQuant; i++) quants.push(parseQuant(r.bytes(5)));
-	for (let i = 0; i < numTiles; i++) {
-		const type = r.u16();
-		const len = r.u32();
-		if (type !== CBT_TILE) throw new Error("RemoteFX: タイルの種類が違う");
-		if (len < 19 || len - 6 > r.left)
-			throw new Error(`RemoteFX: タイルの長さが不正 (${len})`);
-		const t = r.sub(len - 6);
-		const qy = t.u8();
-		const qcb = t.u8();
-		const qcr = t.u8();
-		const xIdx = t.u16();
-		const yIdx = t.u16();
-		const yLen = t.u16();
-		const cbLen = t.u16();
-		const crLen = t.u16();
-		const q = [qy, qcb, qcr].map((i) => quants[i]);
-		if (q.some((v) => !v)) throw new Error("RemoteFX: 量子化の番号が範囲外");
-		out.push({
-			x: xIdx * TILE,
-			y: yIdx * TILE,
-			mode,
-			data: [t.bytes(yLen), t.bytes(cbLen), t.bytes(crLen)],
-			quant: q as [number[], number[], number[]],
-			rects,
-		});
-	}
-}
-
-function decodeRfxTile(t: RawTile): Uint8ClampedArray {
-	return decodeTile(t.mode, t.data, t.quant);
 }
 
 /** 復号したタイルを、Region の矩形と画面で切って描く */
@@ -384,7 +288,7 @@ type Batch = {
 /** 溜めてよいタイルの数(これを超えたら、すぐ吐き出す) */
 const MAX_PENDING = 8192;
 
-export type SurfaceRendererOptions = {
+type SurfaceRendererOptions = {
 	draw: SurfaceDraw;
 	/** 終わったフレーム(Frame Marker の End)の描画が済んだら、frameId ごとに呼ぶ(Frame Acknowledge を返す) */
 	ack?(frameId: number): void;
@@ -449,7 +353,7 @@ export class SurfaceRenderer {
 			},
 			rfx: (bits, left, top, right, bottom) => {
 				const area = commandArea(left, top, right, bottom, screen);
-				for (const tile of parseRfxTiles(bits)) this.add(tile, left, top, area);
+				for (const tile of parseTiles(bits)) this.add(tile, left, top, area);
 				this.request();
 			},
 		});
@@ -586,11 +490,7 @@ export class SurfaceRenderer {
 		const batch: Batch = { jobs: entries, ended, after: [] };
 		this.batches.push(batch);
 		for (const e of entries) {
-			const job = jobOf(e);
-			(job.kind === "rfx"
-				? this.pool.decode(job.mode, job.data, job.quant)
-				: this.pool.decodeBitmap(job.rect)
-			).then(
+			this.pool.run(jobOf(e)).then(
 				(rgba) => {
 					e.rgba = rgba;
 					e.state = "done";

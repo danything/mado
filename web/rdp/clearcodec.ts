@@ -2,6 +2,7 @@
 // 残差(residual)→ 帯(bands、縦の棒 vBar のキャッシュ)→ サブコーデック(生 / RLEX。NSCodec は未対応)の順に重ねる。
 // グリフのキャッシュと vBar のキャッシュはセッションを通して持つので、1 つの ClearDecoder を使い続ける。
 
+import { MAX_PIXELS } from "./bitmap";
 import { Reader } from "./bytes";
 
 const FLAG_GLYPH_INDEX = 0x01;
@@ -13,7 +14,6 @@ const SHORT_VBAR_STORAGE = 16384;
 const GLYPH_STORAGE = 4000;
 /** グリフにしてよい大きさ(画素数) */
 const GLYPH_MAX_PIXELS = 1024 * 1024;
-const MAX_PIXELS = 1 << 24;
 
 /** BGR の 3 バイトずつの並び(縦の棒) */
 type VBar = Uint8Array;

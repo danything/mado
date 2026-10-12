@@ -1,5 +1,6 @@
 // ビットマップの更新([MS-RDPBCGR] 2.2.9.1.1.3.1.2)。矩形の並びを読み、生または Interleaved RLE([MS-RDPEGDI] 3.1.9)を RGBA に直す。
-// 色の深さは 15 / 16 / 24 / 32(32 は生のみ)。画面は 16 ビットで頼む(connect.ts の能力セット)。
+// 色の深さは 15 / 16 / 24 / 32。32 の圧縮は RDP 6.0 Planar(Windows が RemoteFX を使わないときの画面はこれ)。
+// 画面は 32 ビットで頼む(mcs.ts / pdu.ts の能力)。
 
 import { Reader } from "./bytes";
 
@@ -18,7 +19,7 @@ export type BitmapRect = {
 };
 
 /** 1 つの矩形の画素数の上限(普通は 64x64 など小さい) */
-const MAX_PIXELS = 1 << 24;
+export const MAX_PIXELS = 1 << 24;
 
 const BITMAP_COMPRESSION = 0x0001;
 const NO_BITMAP_COMPRESSION_HDR = 0x0400;

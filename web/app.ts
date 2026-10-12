@@ -210,7 +210,7 @@ function diagText(
 				.join(" ") || "-"
 		}`,
 		// 間引き・捨てたは、RemoteFX のタイルと旧ビットマップの両方を数える
-		`復号: 間引き=${client.surfaceStats.coalesced} 捨てた=${client.surfaceStats.skipped}`,
+		`復号: 間引き=${client.decodeStats.coalesced} 捨てた=${client.decodeStats.skipped}`,
 	];
 	if (gfx)
 		lines.push(

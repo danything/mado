@@ -2,18 +2,10 @@
 // 受け取るもの: { id, kind: "rfx", mode, data: [Y, Cb, Cr], quant } か { id, kind: "bitmap", rect }
 // → 返すもの: { id, rgba }(buffer を渡して返す)か { id, error }
 
-import { type BitmapJob, decodeBitmap } from "./bitmap";
-import { decodeTile } from "./rfx";
+import { type DecodeJob, decodeJob } from "./rfxpool";
 
-export type WorkerRequest =
-	| {
-			id: number;
-			kind: "rfx";
-			mode: number;
-			data: [Uint8Array, Uint8Array, Uint8Array];
-			quant: [number[], number[], number[]];
-	  }
-	| { id: number; kind: "bitmap"; rect: BitmapJob };
+/** 仕事(rfxpool.ts の DecodeJob)に、返事と対応づける id を付けたもの */
+export type WorkerRequest = DecodeJob & { id: number };
 
 export type WorkerReply =
 	| { id: number; rgba: Uint8ClampedArray }
@@ -28,10 +20,7 @@ const ctx = self as unknown as {
 ctx.onmessage = (e) => {
 	const req = e.data;
 	try {
-		const rgba =
-			req.kind === "rfx"
-				? decodeTile(req.mode, req.data, req.quant)
-				: decodeBitmap(req.rect);
+		const rgba = decodeJob(req);
 		ctx.postMessage({ id: req.id, rgba }, [rgba.buffer]);
 	} catch (err) {
 		ctx.postMessage({

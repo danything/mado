@@ -31,7 +31,7 @@ export interface Screen {
 }
 
 /** 静的チャネルに届いたメッセージ(断片は組み立て済み。drdynvc / cliprdr)を受け取る */
-export type ChannelHandler = (name: string, data: Uint8Array) => void;
+type ChannelHandler = (name: string, data: Uint8Array) => void;
 
 export class RdpClient {
 	private fast = new Reassembler();
@@ -44,7 +44,7 @@ export class RdpClient {
 	private closed = false;
 	/** Share Data に付ける shareId(再アクティベーションで変わる) */
 	private shareId: number;
-	/** RemoteFX のタイルを溜めて、同じ位置は最新だけを復号する */
+	/** RemoteFX のタイルと旧ビットマップを溜めて、覆われたものは復号せず、受けた順に描く */
 	private surface: SurfaceRenderer;
 	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
 	errorInfo = 0;
@@ -55,7 +55,7 @@ export class RdpClient {
 	constructor(
 		readonly session: Session,
 		private screen: Screen,
-		/** RemoteFX のタイルの復号の置き場。省略するとその場で復号する(ブラウザでは createPool() の Worker のプールを渡す) */
+		/** 画面の復号(RemoteFX・旧ビットマップ)の置き場。省略するとその場で復号する(ブラウザでは createPool() の Worker のプールを渡す) */
 		options: { pool?: TilePool } = {},
 	) {
 		this.width = session.width;
@@ -81,8 +81,8 @@ export class RdpClient {
 		);
 	}
 
-	/** 受けた RemoteFX の更新の統計(診断用): 後のタイルに置き換えられて復号しなかった数、捨てた数 */
-	get surfaceStats(): { coalesced: number; skipped: number } {
+	/** 画面の復号の統計(診断用。RemoteFX のタイルと旧ビットマップ): 後のものに覆われて復号しなかった数、壊れていて捨てた数 */
+	get decodeStats(): { coalesced: number; skipped: number } {
 		return { coalesced: this.surface.coalesced, skipped: this.surface.skipped };
 	}
 
@@ -225,23 +225,13 @@ export class RdpClient {
 		}
 		this.rfxCodecId = pdu.serverRfxCodecId(d.capabilities);
 		const s = this.session;
-		this.sendIo(
-			pdu.confirmActive(
-				s.userId,
-				d.shareId,
-				pdu.clientCapabilities({
-					width: this.width,
-					height: this.height,
-					keyboardLayout: s.keyboardLayout,
-				}),
-			),
-		);
-		const data2 = (type2: number, payload: Uint8Array) =>
-			this.sendIo(pdu.shareData(s.userId, d.shareId, type2, payload));
-		data2(pdu.PDUTYPE2.SYNCHRONIZE, pdu.synchronize(pdu.SERVER_ID));
-		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.COOPERATE));
-		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.REQUEST));
-		data2(pdu.PDUTYPE2.FONTLIST, pdu.fontList());
+		// Confirm Active と同期の 4 つ(つないだときと同じ。connect.ts も同じ関数を使う)
+		for (const p of pdu.activationPdus(s.userId, d.shareId, {
+			width: this.width,
+			height: this.height,
+			keyboardLayout: s.keyboardLayout,
+		}))
+			this.sendIo(p);
 		// 大きさが変わる前の画面(復号中のタイル)を、先に描き終えてから
 		const { width, height } = this;
 		this.surface.ordered(() => this.screen.resize(width, height));

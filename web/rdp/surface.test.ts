@@ -1,13 +1,13 @@
 // Surface Commands の試験: コマンドの切り出し、RemoteFX の矩形の切り取り、生のビットマップ、不正な入力。
 
 import { describe, expect, test } from "bun:test";
-import type { BitmapJob, BitmapRect } from "./bitmap";
+import type { BitmapRect } from "./bitmap";
 import { concat, Writer } from "./bytes";
+import { parseTiles } from "./rfx";
 import { REAL_TILE, rfxStream, rlgrEncode } from "./rfx.fixture";
 import { type DecodeJob, decodeJob, type TilePool } from "./rfxpool";
 import {
 	handleSurfaceCommands,
-	parseRfxTiles,
 	type SurfaceDraw,
 	SurfaceRenderer,
 } from "./surface";
@@ -461,8 +461,8 @@ describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だ
 		expect(r.pending).toBe(0);
 	});
 
-	test("parseRfxTiles は復号せずに位置と圧縮データを取り出す", () => {
-		const tiles = parseRfxTiles(
+	test("parseTiles は復号せずに位置と圧縮データを取り出す", () => {
+		const tiles = parseTiles(
 			rfxStream([{ x: 0, y: 0, w: 128, h: 64 }], [tile(64, 0), tile(0, 64)]),
 		);
 		expect(tiles.map((t) => [t.x, t.y])).toEqual([
@@ -485,18 +485,10 @@ describe("SurfaceRenderer(非同期のプール)", () => {
 	class ManualPool implements TilePool {
 		readonly async = true;
 		jobs: Job[] = [];
-		private run(job: DecodeJob): Promise<Uint8ClampedArray> {
+		run(job: DecodeJob): Promise<Uint8ClampedArray> {
 			return new Promise((resolve, reject) =>
 				this.jobs.push({ job, resolve, reject }),
 			);
-		}
-		decode(
-			...[mode, data, quant]: Parameters<TilePool["decode"]>
-		): Promise<Uint8ClampedArray> {
-			return this.run({ kind: "rfx", mode, data, quant });
-		}
-		decodeBitmap(rect: BitmapJob): Promise<Uint8ClampedArray> {
-			return this.run({ kind: "bitmap", rect });
 		}
 		finish(i: number): void {
 			const j = this.jobs[i] as Job;

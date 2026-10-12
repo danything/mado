@@ -6,12 +6,8 @@ import { Reader } from "./bytes";
 export const TILE = 64;
 const TILE_PIXELS = TILE * TILE;
 
-const WBT_SYNC = 0xccc0;
-const WBT_CODEC_VERSIONS = 0xccc1;
-const WBT_CHANNELS = 0xccc2;
-const WBT_CONTEXT = 0xccc3;
-const WBT_FRAME_BEGIN = 0xccc4;
-const WBT_FRAME_END = 0xccc5;
+/** WBT_SYNC(0xccc0)〜 WBT_EXTENSION(0xccc7)。復号に要るのは Region と Tileset(Extension)だけで、ほかは読み飛ばす */
+const WBT_FIRST = 0xccc0;
 const WBT_REGION = 0xccc6;
 const WBT_EXTENSION = 0xccc7;
 const CBT_REGION = 0xcac1;
@@ -28,14 +24,20 @@ const MAX_QUANT = 16;
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
-export type RfxTile = {
-	/** タイルの位置(画素。xIdx * 64, yIdx * 64) */
+/** 復号前のタイル: 位置(画素。xIdx * 64, yIdx * 64)と、圧縮されたままの 3 成分 */
+export type RawTile = {
 	x: number;
 	y: number;
-	/** 64 x 64、上の行から */
-	rgba: Uint8ClampedArray;
+	mode: number;
+	data: [Uint8Array, Uint8Array, Uint8Array];
+	quant: [number[], number[], number[]];
 	/** このタイルを描いてよい領域(Region の矩形)。空なら全体 */
 	rects: Rect[];
+};
+
+export type RfxTile = Pick<RawTile, "x" | "y" | "rects"> & {
+	/** 64 x 64、上の行から */
+	rgba: Uint8ClampedArray;
 };
 
 // ---- RLGR ----
@@ -397,17 +399,20 @@ export function decodeTile(
 
 // ---- ストリーム ----
 
-/** RemoteFX のデータ(1 つの Surface コマンドの bitmapData)から、描くべきタイルを取り出す */
+/** RemoteFX のデータ(1 つの Surface コマンドの bitmapData)から、描くべきタイルを取り出して復号する */
 export function decodeStream(data: Uint8Array): RfxTile[] {
-	return [...decodeStreamLazy(data)];
+	return parseTiles(data).map((t) => ({
+		x: t.x,
+		y: t.y,
+		rects: t.rects,
+		rgba: decodeTile(t.mode, t.data, t.quant),
+	}));
 }
 
-/**
- * decodeStream の遅延版。タイルを 1 つ復号するたびに返すので、呼び出し側が数十タイルごとに
- * 制御を返して(メインスレッドを塞がず)、復号と描画を交互に進められる
- */
-export function* decodeStreamLazy(data: Uint8Array): Generator<RfxTile> {
+/** RemoteFX のストリームから、タイルの位置と圧縮データを取り出す(復号はしない。復号は Worker でも、その場でもよい) */
+export function parseTiles(data: Uint8Array): RawTile[] {
 	const r = new Reader(data);
+	const tiles: RawTile[] = [];
 	let rects: Rect[] = [];
 	while (r.left >= 6) {
 		const type = r.u16();
@@ -415,24 +420,12 @@ export function* decodeStreamLazy(data: Uint8Array): Generator<RfxTile> {
 		if (len < 6 || len - 6 > r.left)
 			throw new Error(`RemoteFX: ブロックの長さが不正 (${len})`);
 		const body = r.sub(len - 6);
-		switch (type) {
-			case WBT_SYNC:
-			case WBT_CODEC_VERSIONS:
-			case WBT_CHANNELS:
-			case WBT_CONTEXT:
-			case WBT_FRAME_BEGIN:
-			case WBT_FRAME_END:
-				break; // 復号に要る情報は、Tileset が持っている
-			case WBT_REGION:
-				rects = parseRegion(body);
-				break;
-			case WBT_EXTENSION:
-				yield* tilesOf(body, rects);
-				break;
-			default:
-				throw new Error(`RemoteFX: 知らないブロック 0x${type.toString(16)}`);
-		}
+		if (type === WBT_REGION) rects = parseRegion(body);
+		else if (type === WBT_EXTENSION) parseTileset(body, rects, tiles);
+		else if (type < WBT_FIRST || type > WBT_EXTENSION)
+			throw new Error(`RemoteFX: 知らないブロック 0x${type.toString(16)}`);
 	}
+	return tiles;
 }
 
 function parseRegion(r: Reader): Rect[] {
@@ -447,13 +440,12 @@ function parseRegion(r: Reader): Rect[] {
 	return rects;
 }
 
-function* tilesOf(r: Reader, rects: Rect[]): Generator<RfxTile> {
+function parseTileset(r: Reader, rects: Rect[], out: RawTile[]): void {
 	r.skip(2); // codecId, channelId
 	if (r.u16() !== CBT_TILESET)
 		throw new Error("RemoteFX: Tileset の種類が違う");
 	r.u16(); // idx
-	const props = r.u16();
-	const mode = (props >> 10) & 0xf;
+	const mode = (r.u16() >> 10) & 0xf; // properties の et(エントロピーの方式)
 	const numQuant = r.u8();
 	const tileSize = r.u8();
 	const numTiles = r.u16();
@@ -471,21 +463,20 @@ function* tilesOf(r: Reader, rects: Rect[]): Generator<RfxTile> {
 		if (len < 19 || len - 6 > r.left)
 			throw new Error(`RemoteFX: タイルの長さが不正 (${len})`);
 		const t = r.sub(len - 6);
-		const qy = t.u8();
-		const qcb = t.u8();
-		const qcr = t.u8();
+		const q = [t.u8(), t.u8(), t.u8()].map((i) => quants[i]);
 		const xIdx = t.u16();
 		const yIdx = t.u16();
 		const yLen = t.u16();
 		const cbLen = t.u16();
 		const crLen = t.u16();
-		const q = [qy, qcb, qcr].map((i) => quants[i]);
 		if (q.some((v) => !v)) throw new Error("RemoteFX: 量子化の番号が範囲外");
-		const rgba = decodeTile(
+		out.push({
+			x: xIdx * TILE,
+			y: yIdx * TILE,
 			mode,
-			[t.bytes(yLen), t.bytes(cbLen), t.bytes(crLen)],
-			q as [number[], number[], number[]],
-		);
-		yield { x: xIdx * TILE, y: yIdx * TILE, rgba, rects };
+			data: [t.bytes(yLen), t.bytes(cbLen), t.bytes(crLen)],
+			quant: q as [number[], number[], number[]],
+			rects,
+		});
 	}
 }
