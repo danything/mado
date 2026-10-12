@@ -4,7 +4,7 @@
 // 描画は GfxOps に任せる。ブラウザでは canvas、試験では偽物を使う。H.264 の復号は AvcDecoder に任せる。ブラウザでは VideoDecoder を使う。
 
 import { FrameLatency, gfxTimestampMs } from "./autoscale";
-import { decodePlanar } from "./bitmap";
+import { bgraToRgba, decodePlanar } from "./bitmap";
 import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
@@ -14,9 +14,9 @@ import {
 	ProgressiveTiles,
 	parseProgressive,
 } from "./progressive";
-import { decodeStream } from "./rfx";
+import { cutTile, decodeStream } from "./rfx";
 import type { TilePool } from "./rfxpool";
-import { clampRects, type Yuv420, Yuv444, type Yuv444Target } from "./yuv444";
+import { type Yuv420, Yuv444, type Yuv444Target } from "./yuv444";
 import { Zgfx } from "./zgfx";
 
 export const GRAPHICS = "Microsoft::Windows::RDS::Graphics";
@@ -93,6 +93,29 @@ const MAX_SURFACE_PIXELS = 1 << 27;
 const MAX_CACHE_BYTES = 256 * 1024 * 1024;
 
 export type Rect = { left: number; top: number; right: number; bottom: number };
+
+/** 2 つの矩形の重なり。無ければ undefined */
+export function clipRect(a: Rect, b: Rect): Rect | undefined {
+	const left = Math.max(a.left, b.left);
+	const top = Math.max(a.top, b.top);
+	const right = Math.min(a.right, b.right);
+	const bottom = Math.min(a.bottom, b.bottom);
+	return right > left && bottom > top
+		? { left, top, right, bottom }
+		: undefined;
+}
+
+/** 描く範囲。矩形を w x h の面に収める。regions が空なら全体 */
+export function clampRects(regions: Rect[], w: number, h: number): Rect[] {
+	const all = { left: 0, top: 0, right: w, bottom: h };
+	if (!regions.length) return [all];
+	const out: Rect[] = [];
+	for (const r of regions) {
+		const c = clipRect(r, all);
+		if (c) out.push(c);
+	}
+	return out;
+}
 
 /** 面への描画。GFX の座標は面の左上が原点で、right / bottom は含まない */
 export interface GfxOps {
@@ -377,7 +400,6 @@ export class GfxClient implements DynamicHandler {
 	private surfacePixels = 0;
 	/** ZGFX の伸長に失敗した。履歴が壊れたので、以後の絵は正しくならない */
 	private broken = false;
-	private totalFrames = 0;
 	/** 受け取ったが、まだ描き終えていないフレーム(EndFrame)の数 */
 	private queuedFrames = 0;
 	/** いま描いているフレームの、サーバー側の時刻。StartFrame で来る */
@@ -390,7 +412,7 @@ export class GfxClient implements DynamicHandler {
 	private yuv444 = new Map<number, Yuv444Target>();
 	/** サーバーが選んだ能力の版と flags。CapsConfirm で来る */
 	confirmed?: { version: number; flags: number };
-	/** 診断用 */
+	/** 診断用。frames は描き終えたフレームの数で、Frame Acknowledge の totalFramesDecoded にも使う */
 	readonly stats = {
 		frames: 0,
 		avc: 0,
@@ -579,9 +601,7 @@ export class GfxClient implements DynamicHandler {
 				}
 				this.surfacePixels = pixels + width * height;
 				this.surfaces.set(id, { width, height, alpha });
-				this.progressiveTiles.deleteSurface(id);
-				this.progressiveFrame.deleteSurface(id);
-				this.dropYuv444(id);
+				this.forgetSurface(id);
 				this.ops.createSurface(id, width, height, alpha);
 				break;
 			}
@@ -590,22 +610,15 @@ export class GfxClient implements DynamicHandler {
 				const old = this.surfaces.get(id);
 				if (old) this.surfacePixels -= old.width * old.height;
 				this.surfaces.delete(id);
-				this.progressiveTiles.deleteSurface(id);
-				this.progressiveFrame.deleteSurface(id);
-				this.dropYuv444(id);
+				this.forgetSurface(id);
 				this.ops.deleteSurface(id);
 				break;
 			}
-			case CMD.MAPSURFACETOOUTPUT: {
-				const id = r.u16();
-				r.u16();
-				this.ops.mapSurface(id, r.u32(), r.u32());
-				break;
-			}
+			// 拡縮して写す版は、10.7 では SCALEDMAP_DISABLE で断っている。10.7 より前の版でも使われないはず。来たら等倍で写す
+			case CMD.MAPSURFACETOOUTPUT:
 			case CMD.MAPSURFACETOSCALEDOUTPUT: {
-				// 版 10.7 では SCALEDMAP_DISABLE で断っている。10.7 より前の版でも拡縮は使われないはず。来たら等倍で写す
 				const id = r.u16();
-				r.u16();
+				r.u16(); // reserved
 				this.ops.mapSurface(id, r.u32(), r.u32());
 				break;
 			}
@@ -626,10 +639,9 @@ export class GfxClient implements DynamicHandler {
 						performance.now(),
 					);
 				this.frameTimestamp = undefined;
-				this.totalFrames++;
 				this.stats.frames++;
 				this.channel?.send(
-					frameAcknowledge(frameId, this.totalFrames, this.queuedFrames),
+					frameAcknowledge(frameId, this.stats.frames, this.queuedFrames),
 				);
 				break;
 			}
@@ -772,14 +784,7 @@ export class GfxClient implements DynamicHandler {
 		switch (codec) {
 			case CODEC.UNCOMPRESSED: {
 				if (data.length < w * h * 4) throw new Error("GFX: 生の画素が短い");
-				const rgba = new Uint8ClampedArray(w * h * 4);
-				const argb = format === PIXEL_FORMAT_ARGB;
-				for (let i = 0; i < w * h; i++) {
-					rgba[i * 4] = data[i * 4 + 2] as number;
-					rgba[i * 4 + 1] = data[i * 4 + 1] as number;
-					rgba[i * 4 + 2] = data[i * 4] as number;
-					rgba[i * 4 + 3] = argb ? (data[i * 4 + 3] as number) : 255;
-				}
+				const rgba = bgraToRgba(data, w * h, format === PIXEL_FORMAT_ARGB);
 				this.stats.uncompressed++;
 				this.ops.putRgba(id, dest.left, dest.top, w, h, rgba);
 				break;
@@ -806,21 +811,15 @@ export class GfxClient implements DynamicHandler {
 				this.stats.rfx++;
 				for (const t of decodeStream(data)) {
 					const rects = t.rects.length ? t.rects : [{ x: 0, y: 0, w, h }];
-					for (const rc of rects) {
-						const x0 = Math.max(t.x, rc.x);
-						const y0 = Math.max(t.y, rc.y);
-						const x1 = Math.min(t.x + 64, rc.x + rc.w, w);
-						const y1 = Math.min(t.y + 64, rc.y + rc.h, h);
-						if (x1 <= x0 || y1 <= y0) continue;
-						const cw = x1 - x0;
-						const ch = y1 - y0;
-						const part = new Uint8ClampedArray(cw * ch * 4);
-						for (let y = 0; y < ch; y++) {
-							const s = ((y0 - t.y + y) * 64 + (x0 - t.x)) * 4;
-							part.set(t.rgba.subarray(s, s + cw * 4), y * cw * 4);
-						}
-						this.ops.putRgba(id, dest.left + x0, dest.top + y0, cw, ch, part);
-					}
+					for (const p of cutTile(t.rgba, t.x, t.y, rects, w, h))
+						this.ops.putRgba(
+							id,
+							dest.left + p.x,
+							dest.top + p.y,
+							p.w,
+							p.h,
+							p.rgba,
+						);
 				}
 				break;
 			}
@@ -893,7 +892,7 @@ export class GfxClient implements DynamicHandler {
 		const luma = lumaP && (await lumaP);
 		const chroma = chromaP && (await chromaP);
 		const t1 = performance.now();
-		this.stats.avc444DecodeMs += Math.round(t1 - t0);
+		this.stats.avc444DecodeMs += t1 - t0;
 		if ((m.luma && !luma) || (m.chroma && !chroma)) {
 			this.stats.skipped++;
 			// 鍵フレームを待つ間も null なので、すぐには諦めない
@@ -933,10 +932,13 @@ export class GfxClient implements DynamicHandler {
 			this.yuv444.set(id, st);
 			st.draw(apply(st), dest.left, dest.top, put);
 		}
-		this.stats.avc444ConvertMs += Math.round(performance.now() - t1);
+		this.stats.avc444ConvertMs += performance.now() - t1;
 	}
 
-	private dropYuv444(id: number): void {
+	/** 面を作り直したときや消したときに、その面について覚えていたものを捨てる */
+	private forgetSurface(id: number): void {
+		this.progressiveTiles.deleteSurface(id);
+		this.progressiveFrame.deleteSurface(id);
 		this.yuv444.get(id)?.close();
 		this.yuv444.delete(id);
 	}

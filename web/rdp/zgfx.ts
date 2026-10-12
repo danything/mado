@@ -216,8 +216,7 @@ export class Zgfx {
 				out.reserve(1);
 				const v = token.valueBase + r.bits(token.valueBits);
 				out.buf[out.len++] = v;
-				hist[this.index] = v;
-				this.index = this.index + 1 === HISTORY_SIZE ? 0 : this.index + 1;
+				this.push(v);
 				continue;
 			}
 			const distance = token.valueBase + r.bits(token.valueBits);
@@ -260,8 +259,7 @@ export class Zgfx {
 				for (let i = 0; i < count; i++) {
 					const v = bytes[at + i] as number;
 					out.buf[out.len++] = v;
-					hist[this.index] = v;
-					this.index = this.index + 1 === HISTORY_SIZE ? 0 : this.index + 1;
+					this.push(v);
 				}
 				r.skipBytes(count);
 			}
@@ -269,9 +267,10 @@ export class Zgfx {
 		return out.buf.slice(0, out.len);
 	}
 
+	/** 履歴の輪に 1 バイト足す */
 	private push(b: number): void {
 		this.history[this.index] = b;
-		this.index = (this.index + 1) % HISTORY_SIZE;
+		this.index = this.index + 1 === HISTORY_SIZE ? 0 : this.index + 1;
 	}
 }
 

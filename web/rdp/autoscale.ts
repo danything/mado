@@ -37,11 +37,7 @@ export class FrameLatency {
 		// 起動直後の時刻合わせなどで、どちらかの時計が飛んだ。前の遅れとは比べられないので測り直す
 		const last = this.samples.at(-1);
 		if (last && Math.abs(delay - last.delay) > CLOCK_JUMP_MS) this.samples = [];
-		while (
-			this.samples.length &&
-			this.samples[0] &&
-			mono - this.samples[0].at > BASE_WINDOW_MS
-		)
+		while (this.samples[0] && mono - this.samples[0].at > BASE_WINDOW_MS)
 			this.samples.shift();
 		this.samples.push({ at: mono, delay });
 		let base = delay;

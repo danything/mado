@@ -122,9 +122,8 @@ function decode(
 				default:
 					throw new Error(`ポインタの色の深さ ${bpp} は使えない`);
 			}
-			// 32 ビットはアルファで透明かが決まる。それ以外は AND マスクで決まる
+			// 32 ビットはアルファで透明かが決まる。それ以外は AND マスクで決まる。AND が 1 でも色があれば、反転の代わりに色を出す
 			if (bpp !== 32 && transparent && r === 0 && g === 0 && b === 0) a = 0;
-			else if (bpp !== 32 && transparent) a = 255;
 			out[d] = r;
 			out[d + 1] = g;
 			out[d + 2] = b;
