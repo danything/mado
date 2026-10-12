@@ -1,6 +1,7 @@
 // つなぐ手順の全部([MS-RDPBCGR] 1.3.1.1)。RDCleanPath → CredSSP → MCS → Client Info → ライセンス → 能力 → 同期。
 // 終わったら、画面の更新と入力を流せる状態(Session)を返す。
 
+import { AutoDetect } from "./autodetect";
 import { concat, Reader } from "./bytes";
 import { credssp } from "./credssp";
 import * as mcs from "./mcs";
@@ -33,6 +34,8 @@ export type ConnectOptions = {
 	allowTls?: boolean;
 	/** 試験用。LICENSE_REQUEST にダミーの NEW_LICENSE_REQUEST で答える(xrdp は中身を見ない)。本物のライセンス交渉(PLATFORM_CHALLENGE 以降)はしないので、xrdp 以外では先へ進めない */
 	dummyLicense?: boolean;
+	/** 回線の自動検出(サーバーが RTT と帯域を測って画質を変える)を頼む。既定で頼む */
+	autodetect?: boolean;
 };
 
 export type Session = {
@@ -53,6 +56,10 @@ export type Session = {
 	pending: x224.Pdu[];
 	/** 同期の途中で届いた静的チャネル(drdynvc など)のデータ */
 	pendingChannel: { channelId: number; data: Uint8Array }[];
+	/** メッセージ チャネル(回線の自動検出)の ID。サーバーが使わないときは無い */
+	messageChannelId?: number;
+	/** 回線の自動検出の受け手(つなぐ途中で答えたものを、つないだあとも続ける) */
+	autodetect?: AutoDetect;
 };
 
 export async function connect(o: ConnectOptions): Promise<Session> {
@@ -123,6 +130,7 @@ export async function establish(
 			clientName: "mado",
 			keyboardLayout,
 			gfx: o.gfx,
+			autodetect: o.autodetect,
 		},
 		channels,
 	);
@@ -150,7 +158,12 @@ export async function establish(
 		await join(id);
 		joined.set(c.name, id);
 	}
-	log(`Channel Join OK (user ${userId})`);
+	// メッセージ チャネルは静的チャネルのあと(サーバーが返したときだけ)
+	const messageChannelId = server.messageChannelId;
+	if (messageChannelId !== undefined) await join(messageChannelId);
+	log(
+		`Channel Join OK (user ${userId}${messageChannelId === undefined ? "" : `, message ${messageChannelId}`})`,
+	);
 
 	const send = (data: Uint8Array) =>
 		stream.write(
@@ -170,18 +183,31 @@ export async function establish(
 		),
 	);
 
-	// 6. ライセンス → Demand Active
-	const pending: x224.Pdu[] = [];
-	const pendingChannel: Session["pendingChannel"] = [];
+	// 6. ライセンス →(回線の自動検出)→ Demand Active
+	const inbox: Inbox = {
+		ioChannelId: server.ioChannelId,
+		pending: [],
+		pendingChannel: [],
+	};
+	let autodetect: AutoDetect | undefined;
+	if (messageChannelId !== undefined) {
+		const ad = new AutoDetect();
+		autodetect = ad;
+		inbox.message = {
+			id: messageChannelId,
+			handle: (data) => {
+				const reply = ad.handle(data);
+				if (reply)
+					stream.write(
+						x224.data(mcs.sendDataRequest(userId, messageChannelId, reply)),
+					);
+			},
+		};
+	}
 	let demand: pdu.DemandActive | undefined;
 	let licensed = false;
 	while (!demand) {
-		const data = await readIo(
-			stream,
-			server.ioChannelId,
-			pending,
-			pendingChannel,
-		);
+		const data = await readIo(stream, inbox);
 		if (isShareControl(data)) {
 			const sc = pdu.parseShareControl(data);
 			if (sc.type === pdu.PDUTYPE.DEMAND_ACTIVE)
@@ -226,12 +252,7 @@ export async function establish(
 
 	// サーバーの Synchronize / Control(Cooperate, Granted)/ Font Map を受けたら完了
 	for (let done = false; !done; ) {
-		const data = await readIo(
-			stream,
-			server.ioChannelId,
-			pending,
-			pendingChannel,
-		);
+		const data = await readIo(stream, inbox);
 		if (!isShareControl(data)) continue;
 		const sc = pdu.parseShareControl(data);
 		if (sc.type !== pdu.PDUTYPE.DATA) continue;
@@ -252,8 +273,10 @@ export async function establish(
 		keyboardLayout,
 		width: o.width,
 		height: o.height,
-		pending,
-		pendingChannel,
+		pending: inbox.pending,
+		pendingChannel: inbox.pendingChannel,
+		messageChannelId,
+		autodetect,
 	};
 }
 
@@ -279,21 +302,28 @@ async function readSlow(s: Transport): Promise<{ data: Uint8Array }> {
 	return p;
 }
 
-/** I/O チャネルの Send Data Indication を 1 つ読む。Fast-Path は溜めておく。ほかのチャネルのものも溜めておく */
-async function readIo(
-	s: Transport,
-	ioChannelId: number,
-	pending: x224.Pdu[],
-	pendingChannel: Session["pendingChannel"],
-): Promise<Uint8Array> {
+/** 接続の途中に届くものの行き先 */
+export type Inbox = {
+	ioChannelId: number;
+	/** Fast-Path の PDU(つないだあとで RdpClient が流す) */
+	pending: x224.Pdu[];
+	/** 静的チャネルのもの(同上) */
+	pendingChannel: Session["pendingChannel"];
+	/** メッセージ チャネル(回線の自動検出)。その場で答える(サーバーは答えるまでの時間を測る) */
+	message?: { id: number; handle: (data: Uint8Array) => void };
+};
+
+/** I/O チャネルの Send Data Indication を 1 つ読む。Fast-Path とほかのチャネルのものは溜め、メッセージ チャネルのものはその場で答える */
+export async function readIo(s: Transport, inbox: Inbox): Promise<Uint8Array> {
 	for (;;) {
 		const p = await x224.readPdu(s);
 		if (p.kind === "fastpath") {
-			pending.push(p);
+			inbox.pending.push(p);
 			continue;
 		}
 		const ind = mcs.parseSendDataIndication(p.data);
-		if (ind.channelId === ioChannelId) return ind.data;
-		pendingChannel.push(ind);
+		if (ind.channelId === inbox.ioChannelId) return ind.data;
+		if (ind.channelId === inbox.message?.id) inbox.message.handle(ind.data);
+		else inbox.pendingChannel.push(ind);
 	}
 }

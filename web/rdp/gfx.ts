@@ -58,6 +58,9 @@ const CAPS_FLAG_AVC420_ENABLED = 0x10;
 
 const PIXEL_FORMAT_ARGB = 0x21;
 
+/** H.264 の復号がこれだけ続けて失敗したら、復号器が使えないとみなす(30fps で 2 秒ほど) */
+const AVC_GIVE_UP = 60;
+
 /** キャッシュの枠の数の上限(SMALL_CACHE を付けないとき) */
 const MAX_CACHE_SLOTS = 25600;
 const MAX_SURFACE_SIDE = 8192;
@@ -144,22 +147,28 @@ function header(cmd: number, body: Uint8Array): Uint8Array {
 		.done();
 }
 
-/** CapsAdvertise: 版 8.1(AVC420)と版 8 */
-export function capsAdvertise(): Uint8Array {
+/** CapsAdvertise: 版 8.1 と版 8。avc なら版 8.1 で AVC420 を使えると伝える(H.264 を復号できないときは伝えない) */
+export function capsAdvertise(avc: boolean): Uint8Array {
 	const w = new Writer(32).u16(2);
-	w.u32(CAPVERSION_81).u32(4).u32(CAPS_FLAG_AVC420_ENABLED);
+	w.u32(CAPVERSION_81)
+		.u32(4)
+		.u32(avc ? CAPS_FLAG_AVC420_ENABLED : 0);
 	w.u32(CAPVERSION_8).u32(4).u32(0);
 	return header(CMD.CAPSADVERTISE, w.done());
 }
 
-/** Frame Acknowledge。queueDepth 0 は「分からない」 */
+/**
+ * Frame Acknowledge。queueDepth は、受け取ったがまだ描いていないフレームの数(0 は「分からない」)。
+ * サーバーはこれを見て送る頻度を決めるので、端末が遅ければ送る量が減る
+ */
 export function frameAcknowledge(
 	frameId: number,
 	totalFramesDecoded: number,
+	queueDepth = 0,
 ): Uint8Array {
 	return header(
 		CMD.FRAMEACKNOWLEDGE,
-		new Writer(12).u32(0).u32(frameId).u32(totalFramesDecoded).done(),
+		new Writer(12).u32(queueDepth).u32(frameId).u32(totalFramesDecoded).done(),
 	);
 }
 
@@ -262,6 +271,10 @@ export class GfxClient implements DynamicHandler {
 	/** ZGFX の伸長に失敗した。履歴が壊れたので、以後の絵は正しくならない */
 	private broken = false;
 	private totalFrames = 0;
+	/** 受け取って、まだ描き終えていないフレーム(EndFrame)の数 */
+	private queuedFrames = 0;
+	/** H.264 の復号が続けて失敗した数(1 枚でも出れば 0 に戻す) */
+	private avcFailures = 0;
 	/** 診断用 */
 	readonly stats = {
 		frames: 0,
@@ -287,15 +300,28 @@ export class GfxClient implements DynamicHandler {
 	onError?: (e: unknown) => void;
 	/** 回復できない失敗(ZGFX の履歴が壊れた)。以後のデータは捨てる。つなぎ直すしかない */
 	onFatal?: (e: unknown) => void;
+	/** H.264 の復号が続けて失敗した(復号器が使えない)。H.264 なしでつなぎ直すとよい。1 度だけ呼ぶ */
+	onAvcBroken?: () => void;
 
+	/** avc を渡したときだけ H.264 を使えると伝える */
 	constructor(
 		private ops: GfxOps,
 		private avc?: AvcDecoder,
 	) {}
 
+	/** サーバーが GFX のチャネルを開いた(開かなければ旧来の描画のまま) */
+	get active(): boolean {
+		return this.channel !== undefined;
+	}
+
+	/** H.264 を使えると伝えたか */
+	get avcEnabled(): boolean {
+		return this.avc !== undefined;
+	}
+
 	onOpen(channel: DynamicChannel): void {
 		this.channel = channel;
-		channel.send(capsAdvertise());
+		channel.send(capsAdvertise(this.avc !== undefined));
 	}
 
 	onClose(): void {
@@ -316,6 +342,7 @@ export class GfxClient implements DynamicHandler {
 			return;
 		}
 		for (const p of pdus) {
+			if (p.cmd === CMD.ENDFRAME) this.queuedFrames++;
 			this.chain = this.chain
 				.then(() => this.handle(p))
 				.catch((e) => {
@@ -393,11 +420,15 @@ export class GfxClient implements DynamicHandler {
 			case CMD.STARTFRAME:
 				break;
 			case CMD.ENDFRAME: {
+				// 先に数を戻す(下で例外になっても、溜まった数がずれないように)
+				this.queuedFrames = Math.max(0, this.queuedFrames - 1);
 				const frameId = r.u32();
 				this.ops.present();
 				this.totalFrames++;
 				this.stats.frames++;
-				this.channel?.send(frameAcknowledge(frameId, this.totalFrames));
+				this.channel?.send(
+					frameAcknowledge(frameId, this.totalFrames, this.queuedFrames),
+				);
 				break;
 			}
 			case CMD.SOLIDFILL: {
@@ -592,8 +623,11 @@ export class GfxClient implements DynamicHandler {
 				);
 				if (!frame) {
 					this.stats.skipped++;
+					// 鍵フレームを待つ間も null なので、すぐには諦めない
+					if (++this.avcFailures === AVC_GIVE_UP) this.onAvcBroken?.();
 					break;
 				}
+				this.avcFailures = 0;
 				try {
 					this.ops.drawVideo(id, frame, dest, m.regions);
 				} finally {

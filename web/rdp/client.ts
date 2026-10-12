@@ -1,5 +1,6 @@
 // つながったあとのセッション。届く PDU を読んで画面とポインタに流し、入力を送り、サーバーが画面を作り直す(Deactivate-Reactivate)のに付き合う。
 
+import { AutoDetect, type NetworkInfo } from "./autodetect";
 import { parseBitmapUpdate } from "./bitmap";
 import type { Session } from "./connect";
 import { Reassembler, UPDATE } from "./fastpath";
@@ -46,6 +47,8 @@ export class RdpClient {
 	private shareId: number;
 	/** RemoteFX のタイルと旧ビットマップを溜めて、覆われたものは復号せず、受けた順に描く */
 	private surface: SurfaceRenderer;
+	/** 回線の自動検出(メッセージ チャネル)。つなぐ途中で使ったものを続ける */
+	private autodetect: AutoDetect;
 	/** サーバーが切る理由(Set Error Info)。0 は異常なし */
 	errorInfo = 0;
 	/** 受けた更新の種類(Fast-Path の updateCode)ごとの数。診断用 */
@@ -62,6 +65,7 @@ export class RdpClient {
 		this.rfxCodecId = pdu.serverRfxCodecId(session.serverCapabilities);
 		this.height = session.height;
 		this.shareId = session.shareId;
+		this.autodetect = session.autodetect ?? new AutoDetect();
 		this.surface = new SurfaceRenderer({
 			draw: (x, y, w, h, rgba) => this.screen.draw(x, y, w, h, rgba),
 			ack: (frameId) => this.sendFrameAck(frameId),
@@ -84,6 +88,14 @@ export class RdpClient {
 	/** 画面の復号の統計(診断用。RemoteFX のタイルと旧ビットマップ): 後のものに覆われて復号しなかった数、壊れていて捨てた数 */
 	get decodeStats(): { coalesced: number; skipped: number } {
 		return { coalesced: this.surface.coalesced, skipped: this.surface.skipped };
+	}
+
+	/** サーバーが測った回線の様子(診断用)と、答えた測定の数。測っていなければ network は無い */
+	get network(): {
+		info?: NetworkInfo;
+		answered: { rtt: number; bandwidth: number };
+	} {
+		return { info: this.autodetect.network, answered: this.autodetect.stats };
 	}
 
 	/** 終わるまで読み続ける。正常な終わり(サーバーが切った・こちらが閉じた)は理由の文字列、通信の失敗は例外 */
@@ -153,13 +165,27 @@ export class RdpClient {
 	}
 
 	private handlePdu(p: x224.Pdu): void {
+		// 帯域の測定(つないだあと)は、届いたものを全部数える(ヘッダーの数バイトは数えない)
+		this.autodetect.received(p.data.length);
 		if (p.kind === "fastpath") {
 			for (const u of this.fast.push(p.data)) this.handleUpdate(u.code, u.data);
 			return;
 		}
 		const ind = mcs.parseSendDataIndication(p.data);
 		if (ind.channelId === this.session.ioChannelId) this.handleIo(ind.data);
+		else if (ind.channelId === this.session.messageChannelId)
+			this.handleMessage(ind.data);
 		else this.handleChannel(ind.channelId, ind.data);
+	}
+
+	/** メッセージ チャネル: 回線の自動検出に、その場で答える(サーバーは答えるまでの時間で RTT を測る) */
+	private handleMessage(data: Uint8Array): void {
+		const id = this.session.messageChannelId;
+		const reply = this.autodetect.handle(data);
+		if (reply && id !== undefined)
+			this.session.stream.write(
+				x224.data(mcs.sendDataRequest(this.session.userId, id, reply)),
+			);
 	}
 
 	private handleChannel(channelId: number, chunk: Uint8Array): void {

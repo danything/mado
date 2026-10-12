@@ -62,6 +62,8 @@ export class Display implements Screen {
 	}
 
 	resize(width: number, height: number): void {
+		// 大きさを入れ直すと canvas は消える。同じ大きさなら何もしない(Deactivate-Reactivate のあと、GFX は描き直しを送ってこない)
+		if (this.canvas.width === width && this.canvas.height === height) return;
 		this.canvas.width = width;
 		this.canvas.height = height;
 		this.fit();
