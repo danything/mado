@@ -86,11 +86,6 @@ export class RdpClient {
 		return { coalesced: this.surface.coalesced, skipped: this.surface.skipped };
 	}
 
-	/** @deprecated decodeStats の旧名(web/app.ts が移るまで) */
-	get surfaceStats(): { coalesced: number; skipped: number } {
-		return this.decodeStats;
-	}
-
 	/** 終わるまで読み続ける。正常な終わり(サーバーが切った・こちらが閉じた)は理由の文字列、通信の失敗は例外 */
 	async run(): Promise<string> {
 		const s = this.session;
@@ -230,23 +225,13 @@ export class RdpClient {
 		}
 		this.rfxCodecId = pdu.serverRfxCodecId(d.capabilities);
 		const s = this.session;
-		this.sendIo(
-			pdu.confirmActive(
-				s.userId,
-				d.shareId,
-				pdu.clientCapabilities({
-					width: this.width,
-					height: this.height,
-					keyboardLayout: s.keyboardLayout,
-				}),
-			),
-		);
-		const data2 = (type2: number, payload: Uint8Array) =>
-			this.sendIo(pdu.shareData(s.userId, d.shareId, type2, payload));
-		data2(pdu.PDUTYPE2.SYNCHRONIZE, pdu.synchronize(pdu.SERVER_ID));
-		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.COOPERATE));
-		data2(pdu.PDUTYPE2.CONTROL, pdu.control(pdu.CONTROL.REQUEST));
-		data2(pdu.PDUTYPE2.FONTLIST, pdu.fontList());
+		// Confirm Active と同期の 4 つ(つないだときと同じ。connect.ts も同じ関数を使う)
+		for (const p of pdu.activationPdus(s.userId, d.shareId, {
+			width: this.width,
+			height: this.height,
+			keyboardLayout: s.keyboardLayout,
+		}))
+			this.sendIo(p);
 		// 大きさが変わる前の画面(復号中のタイル)を、先に描き終えてから
 		const { width, height } = this;
 		this.surface.ordered(() => this.screen.resize(width, height));
