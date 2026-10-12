@@ -95,18 +95,15 @@ export class CanvasGfxOps implements GfxOps {
 		h: number,
 		draw: (ctx: Canvas2D) => void,
 	): void {
-		if (!s.alpha) {
-			draw(s.ctx);
-		} else {
-			// 透明を含む絵でも下の絵と混ぜない。copy は描いた外まで消すので、矩形で切ってから
-			s.ctx.save();
-			s.ctx.beginPath();
-			s.ctx.rect(x, y, w, h);
-			s.ctx.clip();
-			s.ctx.globalCompositeOperation = "copy";
-			draw(s.ctx);
-			s.ctx.restore();
-		}
+		// putImageData と同じく、下の絵と混ぜずに置き換える(まだ何も描いていない透明なところを写すときも)。
+		// copy は描いた外まで消すので、矩形で切ってから
+		s.ctx.save();
+		s.ctx.beginPath();
+		s.ctx.rect(x, y, w, h);
+		s.ctx.clip();
+		s.ctx.globalCompositeOperation = "copy";
+		draw(s.ctx);
+		s.ctx.restore();
 		this.touch(s, x, y, w, h);
 	}
 
@@ -129,6 +126,8 @@ export class CanvasGfxOps implements GfxOps {
 		rgba: Uint8ClampedArray,
 	): void {
 		const s = this.surface(id);
+		// アルファを持たない面(XRGB)では、NSCodec や Planar が持つアルファは使わない(FreeRDP と同じ)
+		if (!s.alpha) for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
 		s.ctx.putImageData(
 			new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h),
 			x,

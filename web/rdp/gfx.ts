@@ -9,10 +9,9 @@ import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
 import {
-	clipTile,
-	ProgressiveDecoder,
-	type ProgressivePart,
-	type ProgressiveTile,
+	ProgressiveFrame,
+	type ProgressiveMessage,
+	ProgressiveTiles,
 	parseProgressive,
 } from "./progressive";
 import { decodeStream } from "./rfx";
@@ -250,7 +249,7 @@ type GfxPdu = { cmd: number; body: Uint8Array };
 
 /** Worker に先に頼んだ Progressive の復号 */
 type Prefetched =
-	| { tiles: ProgressiveTile[]; rgba: Uint8ClampedArray[] }
+	| { msg: ProgressiveMessage; rgba: Uint8ClampedArray[] }
 	| { error: unknown };
 
 /** 伸長したデータに並ぶ PDU を切り出す */
@@ -359,7 +358,10 @@ export function isKeyFrame(stream: Uint8Array): boolean {
 export class GfxClient implements DynamicHandler {
 	private zgfx = new Zgfx();
 	private clear = new ClearDecoder();
-	private progressive = new ProgressiveDecoder();
+	/** Progressive のタイルの状態(Worker を使わないとき) */
+	private progressiveTiles = new ProgressiveTiles();
+	/** Progressive の、このフレームで復号したタイル(同じフレームの後の PDU の矩形にも描く) */
+	private progressiveFrame = new ProgressiveFrame();
 	private channel?: DynamicChannel;
 	/** 処理の順序を保つ鎖(H.264 の復号は非同期) */
 	private chain: Promise<void> = Promise.resolve();
@@ -520,18 +522,18 @@ export class GfxClient implements DynamicHandler {
 			if (r.u16() !== CODEC.CAPROGRESSIVE) return undefined;
 			r.u32(); // codecContextId
 			r.u8(); // pixelFormat
-			const tiles = parseProgressive(
+			const msg = parseProgressive(
 				surface,
 				r.bytes(r.u32()),
 				MAX_SURFACE_SIDE,
 				MAX_SURFACE_SIDE,
 			);
 			return Promise.all(
-				tiles.map((t) =>
+				msg.tiles.map((t) =>
 					pool.runOn((t.x + t.y) / 64, { kind: "progressive", tile: t.job }),
 				),
 			).then(
-				(rgba) => ({ tiles, rgba }),
+				(rgba) => ({ msg, rgba }),
 				(error: unknown) => ({ error }),
 			);
 		} catch (error) {
@@ -575,7 +577,8 @@ export class GfxClient implements DynamicHandler {
 				}
 				this.surfacePixels = pixels + width * height;
 				this.surfaces.set(id, { width, height, alpha });
-				this.progressive.deleteSurface(id);
+				this.progressiveTiles.deleteSurface(id);
+				this.progressiveFrame.deleteSurface(id);
 				this.yuv444.delete(id);
 				this.ops.createSurface(id, width, height, alpha);
 				break;
@@ -585,7 +588,8 @@ export class GfxClient implements DynamicHandler {
 				const old = this.surfaces.get(id);
 				if (old) this.surfacePixels -= old.width * old.height;
 				this.surfaces.delete(id);
-				this.progressive.deleteSurface(id);
+				this.progressiveTiles.deleteSurface(id);
+				this.progressiveFrame.deleteSurface(id);
 				this.yuv444.delete(id);
 				this.ops.deleteSurface(id);
 				break;
@@ -605,6 +609,7 @@ export class GfxClient implements DynamicHandler {
 			}
 			case CMD.STARTFRAME:
 				this.frameTimestamp = r.u32();
+				this.progressiveFrame.reset();
 				break;
 			case CMD.ENDFRAME: {
 				// 先に数を戻す(下で例外になっても、溜まった数がずれないように)
@@ -730,23 +735,23 @@ export class GfxClient implements DynamicHandler {
 		this.stats.progressive++;
 		// progressiveMs: その場で復号するときは復号の時間、Worker のときは描く順番が来てから待った時間
 		const t0 = performance.now();
-		const parts: ProgressivePart[] = [];
+		let msg: ProgressiveMessage;
+		let rgba: Uint8ClampedArray[];
 		if (pre) {
 			const done = await pre;
 			if ("error" in done) throw done.error;
-			for (const [i, t] of done.tiles.entries())
-				parts.push(
-					...clipTile(
-						t,
-						done.rgba[i] as Uint8ClampedArray,
-						surface.width,
-						surface.height,
-					),
-				);
-		} else
-			parts.push(
-				...this.progressive.decode(id, data, surface.width, surface.height),
-			);
+			({ msg, rgba } = done);
+		} else {
+			msg = parseProgressive(id, data, surface.width, surface.height);
+			rgba = msg.tiles.map((t) => this.progressiveTiles.decode(t.job));
+		}
+		const parts = this.progressiveFrame.draw(
+			id,
+			msg,
+			rgba,
+			surface.width,
+			surface.height,
+		);
 		this.stats.progressiveMs += performance.now() - t0;
 		for (const p of parts) this.ops.putRgba(id, p.x, p.y, p.w, p.h, p.rgba);
 	}
