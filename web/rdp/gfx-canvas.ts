@@ -65,6 +65,9 @@ export class CanvasGfxOps implements GfxOps {
 
 	resetOutput(width: number, height: number): void {
 		this.display.resize(width, height);
+		// 画面が消えたかもしれないので、残っている面は次の present で全部写し直す
+		for (const s of this.surfaces.values())
+			this.touch(s, 0, 0, s.width, s.height);
 	}
 
 	createSurface(id: number, width: number, height: number): void {

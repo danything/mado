@@ -28,7 +28,7 @@ Guacamole のようにサーバーで画面を描くのではなく、RDP は全
 | 部分 | 中身 |
 | --- | --- |
 | `server/` | **.NET 10(Native AOT)**。`CreateSlimBuilder` の Kestrel で、`UseWindowsService` でそのままサービスになる。OIDC・ACME・DER・RDCleanPath は手書き(ASP.NET Core の OIDC の仕組みは AOT に対応していない)。外から入れているのは Microsoft の `Microsoft.Extensions.Hosting.WindowsServices` だけ |
-| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、自前の RDP クライアント(`web/rdp/`: CredSSP / NTLM、MCS、旧ビットマップ・RemoteFX・試験中の H.264、入力、クリップボード、解像度の追従。中身と試験は [docs/rdp-client.md](docs/rdp-client.md))。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
+| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、自前の RDP クライアント(`web/rdp/`: CredSSP / NTLM、MCS、旧ビットマップ・RemoteFX・GFX(H.264 など)、入力、クリップボード、解像度の追従。中身と試験は [docs/rdp-client.md](docs/rdp-client.md))。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
 | `tray/` | タスクトレイ(`mado-tray.exe`、.NET の Native AOT)。Win32 の `Shell_NotifyIcon` を直接呼ぶ(WinForms は AOT に対応していない)。サインイン時に起動する |
 | `installer/` | MSI(WiX v5)。サービスの登録、タスクトレイとサインイン時の起動、ファイアウォール(TCP 80 / 443)、`C:\ProgramData\mado` の権限 |
 
@@ -79,7 +79,7 @@ IdP には戻り先 `https://<host>/callback` を登録する。Entra ID なら�
 ## 画面
 
 - **画面の大きさ**: 窓に合わせて RDP の解像度を決め、窓の大きさが変わったら追従する。画素数 75% / 50% にすると、解像度を下げて拡大表示する(描く量が減って軽い)
-- **H.264(試験中)**: オンにすると、ブラウザが H.264 を復号できるとき GFX で受ける。既定はオフ(旧ビットマップ / RemoteFX)
+- **送り方は自動**: GFX で受け、ブラウザが H.264 を復号できれば H.264 も使う。接続先が GFX を使えなければ旧ビットマップ / RemoteFX になり、途中で壊れたら一つ下の方式で裏でつなぎ直す。回線と端末の速さに合わせた画質・頻度の調整は接続先に任せる(往復時間・帯域の測定と、描き終えていないフレームの数を伝える)
 - **キーボード**: OS の配列から JIS / US を判定して接続先に伝える
 - ツールバー: Ctrl+Alt+Del / Windows キー / 診断(方式・更新の数・直近のエラーを左下に出す)/ 全画面 / 切断。クリップボードは文字列だけ行き来する
 

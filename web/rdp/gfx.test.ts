@@ -135,25 +135,27 @@ function avc420(regions: Rect[], stream: Uint8Array): Uint8Array {
 }
 
 describe("GFX の PDU", () => {
-	test("CapsAdvertise: 版 8.1(AVC420)と版 8", () => {
-		expect(hex(capsAdvertise())).toBe(
+	test("CapsAdvertise: 版 8.1(AVC420)と版 8。H.264 を使わないときは AVC420 を立てない", () => {
+		const caps = (avc420: string) =>
 			"1200" +
-				"0000" +
-				"22000000" +
-				"0200" +
-				"05010800" +
-				"04000000" +
-				"10000000" +
-				"04000800" +
-				"04000000" +
-				"00000000",
-		);
+			"0000" +
+			"22000000" +
+			"0200" +
+			"05010800" +
+			"04000000" +
+			avc420 +
+			"04000800" +
+			"04000000" +
+			"00000000";
+		expect(hex(capsAdvertise(true))).toBe(caps("10000000"));
+		expect(hex(capsAdvertise(false))).toBe(caps("00000000"));
 	});
 
-	test("Frame Acknowledge", () => {
+	test("Frame Acknowledge(queueDepth を付けられる)", () => {
 		expect(hex(frameAcknowledge(7, 3))).toBe(
 			"0d00" + "0000" + "14000000" + "00000000" + "07000000" + "03000000",
 		);
+		expect(hex(frameAcknowledge(7, 3, 2)).slice(16, 24)).toBe("02000000");
 	});
 
 	test("PDU の切り出しと、長さが不正なとき", () => {
@@ -296,6 +298,68 @@ describe("GfxClient の流れ", () => {
 			"video",
 			"delete",
 		]);
+	});
+
+	test("描き終えていないフレームの数を queueDepth で知らせる", async () => {
+		const gfx = new GfxClient(new Recorder(), new FakeAvc());
+		const ch = channel();
+		gfx.onOpen(ch);
+		const create = pdu(
+			CMD.CREATESURFACE,
+			new Writer().u16(1).u16(64).u16(64).u8(0x20).done(),
+		);
+		const video = wire(
+			1,
+			CODEC.AVC420,
+			{ left: 0, top: 0, right: 64, bottom: 64 },
+			avc420([], concat(SPS, IDR)),
+		);
+		const end = (id: number) => pdu(CMD.ENDFRAME, new Writer().u32(id).done());
+		// 復号を待つ間に 3 フレームが届く
+		gfx.onData(segmentedUncompressed(concat(create, video, end(1))));
+		gfx.onData(segmentedUncompressed(end(2)));
+		gfx.onData(segmentedUncompressed(end(3)));
+		await gfx.idle();
+		expect(ch.sent.slice(1).map(hex)).toEqual([
+			hex(frameAcknowledge(1, 1, 2)),
+			hex(frameAcknowledge(2, 2, 1)),
+			hex(frameAcknowledge(3, 3, 0)),
+		]);
+	});
+
+	test("H.264 の復号が続けて失敗したら 1 度だけ知らせる。H.264 なしなら AVC420 を宣言しない", async () => {
+		const failing: AvcDecoder = { decode: async () => null, close() {} };
+		const gfx = new GfxClient(new Recorder(), failing);
+		let broken = 0;
+		gfx.onAvcBroken = () => broken++;
+		gfx.onOpen(channel());
+		expect(gfx.avcEnabled).toBe(true);
+		const frames = [
+			pdu(
+				CMD.CREATESURFACE,
+				new Writer().u16(1).u16(64).u16(64).u8(0x20).done(),
+			),
+		];
+		for (let i = 0; i < 100; i++)
+			frames.push(
+				wire(
+					1,
+					CODEC.AVC420,
+					{ left: 0, top: 0, right: 64, bottom: 64 },
+					avc420([], P),
+				),
+			);
+		gfx.onData(segmentedUncompressed(concat(...frames)));
+		await gfx.idle();
+		expect(broken).toBe(1);
+
+		const plain = new GfxClient(new Recorder());
+		const ch = channel();
+		expect(plain.active).toBe(false);
+		plain.onOpen(ch);
+		expect(plain.active).toBe(true);
+		expect(plain.avcEnabled).toBe(false);
+		expect(hex(ch.sent[0] as Uint8Array)).toBe(hex(capsAdvertise(false)));
 	});
 
 	test("壊れた PDU は飛ばして続ける。無い面は例外、無いキャッシュは黙って飛ばす(上限で捨てたもの)", async () => {

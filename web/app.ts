@@ -28,7 +28,7 @@ const screen = $<HTMLElement>("#screen");
 const field = (name: string) =>
 	form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-/** 前回選んだつなぐ先・画面の大きさ・ユーザー名・H.264 の入り切り(パスワードは覚えない) */
+/** 前回選んだつなぐ先・画面の大きさ・ユーザー名(パスワードは覚えない) */
 const REMEMBER = "mado:last";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -53,7 +53,6 @@ try {
 		target?: string;
 		size?: string;
 		username?: string;
-		gfx?: boolean;
 	};
 	if (last.target && session.targets.includes(last.target))
 		select.value = last.target;
@@ -61,7 +60,6 @@ try {
 	if (last.size && [...sizes.options].some((o) => o.value === last.size))
 		sizes.value = last.size;
 	if (last.username) field("username").value = last.username;
-	(field("gfx") as HTMLInputElement).checked = last.gfx === true;
 } catch {}
 home.hidden = false;
 
@@ -76,62 +74,117 @@ let connecting: AbortController | undefined;
 /** 最後に、ブラウザのクリップボードとリモートの間でやりとりした文字列(往復を防ぐ) */
 let lastClipboard: string | undefined;
 
+/**
+ * 画面の送り方。上ほど遅延が小さく、送る量も少ない。
+ * - avc: GFX + H.264(ブラウザが H.264 を復号できるとき)
+ * - gfx: GFX(ClearCodec・Progressive など。H.264 なし)
+ * - bitmap: 旧来の描画(RemoteFX・ビットマップ)
+ * GFX を使えないサーバーは GFX のチャネルを開かないので、そのまま旧来の描画になる。
+ * つないだあとで壊れたら、一つ下に切り替えて裏でつなぎ直す
+ */
+type Mode = "avc" | "gfx" | "bitmap";
+const MODE_NAMES: Record<Mode, string> = {
+	avc: "GFX + H.264",
+	gfx: "GFX",
+	bitmap: "ビットマップ / RemoteFX",
+};
+
+/** つないだ相手と認証(つなぎ直しに使う。パスワードは画面を閉じるまでメモリにだけ置く) */
+type Login = {
+	target: string;
+	size: string;
+	username: string;
+	password: string;
+};
+
+/** 1 回つないで切れるまで。fallback があれば、その方式でつなぎ直す */
+type SessionEnd = { message: string; fallback?: Mode };
+
+/** 方式を切り替えた記録(診断用) */
+const switches: string[] = [];
+
 form.addEventListener("submit", async (e) => {
 	e.preventDefault();
-	const target = select.value;
-	const size = field("size").value;
-	const username = field("username").value;
-	const wantGfx = (field("gfx") as HTMLInputElement).checked;
+	const login: Login = {
+		target: select.value,
+		size: field("size").value,
+		username: field("username").value,
+		password: field("password").value,
+	};
 	try {
-		localStorage.setItem(
-			REMEMBER,
-			JSON.stringify({ target, size, username, gfx: wantGfx }),
-		);
+		const { target, size, username } = login;
+		localStorage.setItem(REMEMBER, JSON.stringify({ target, size, username }));
 	} catch {}
 	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
 	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
 	if (submit.getAttribute("aria-busy") === "true") return;
 	submit.setAttribute("aria-busy", "true");
 	status.textContent = "つないでいます…";
+	switches.length = 0;
+	// H.264 は、ブラウザが復号できるときだけ頼む
+	let mode: Mode = (await avcSupported()) ? "avc" : "gfx";
+	for (;;) {
+		const end = await runSession(login, mode);
+		if (!end.fallback) {
+			status.textContent = end.message;
+			break;
+		}
+		switches.push(
+			`${new Date().toLocaleTimeString()} ${MODE_NAMES[mode]} → ${MODE_NAMES[end.fallback]}(${end.message})`,
+		);
+		mode = end.fallback;
+	}
+	current = undefined;
+	display.clear();
+	submit.removeAttribute("aria-busy");
+	toolbar.hidden = true;
+	screen.classList.add("idle");
+	home.hidden = false;
+	field("password").value = "";
+});
+
+async function runSession(login: Login, mode: Mode): Promise<SessionEnd> {
 	const stops: (() => void)[] = [];
 	try {
 		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入り、サーバーが決める
 		const { token } = await getJson<{ token: string }>(
-			`/api/token?target=${encodeURIComponent(target)}`,
+			`/api/token?target=${encodeURIComponent(login.target)}`,
 		);
 		// 画面の場所を出してから大きさを測る(clientHeight を読むとレイアウトがその場で決まる)
 		home.hidden = true;
 		toolbar.hidden = false;
-		$<HTMLElement>("#current").textContent = target;
+		$<HTMLElement>("#current").textContent = login.target;
 		screen.classList.remove("idle");
-		const { width, height } = desktopSize(size);
-		// H.264 は、ブラウザが復号できるときだけ頼む
-		const gfx = wantGfx && (await avcSupported());
+		const { width, height } = desktopSize(login.size);
 		const abort = new AbortController();
 		connecting = abort;
 		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
 		const rdp = await connect({
 			url: session.ws,
 			token,
-			destination: target,
-			username,
-			password: field("password").value,
+			destination: login.target,
+			username: login.username,
+			password: login.password,
 			keyboardLayout: await detectKeyboardLayout(),
 			width: even(width),
 			height,
 			signal: abort.signal,
-			gfx,
+			gfx: mode !== "bitmap",
 		}).finally(() => {
 			clearTimeout(timer);
 			connecting = undefined;
 		});
 		const pool = createPool();
 		const client = new RdpClient(rdp, display, { pool });
-		const gfxClient = gfx
-			? new GfxClient(new CanvasGfxOps(display), new WebCodecsAvc())
-			: undefined;
-		/** H.264 の画面が回復できない形で壊れたときの理由(切断して、つなぎ直してもらう) */
-		let fatal: string | undefined;
+		const gfxClient =
+			mode === "bitmap"
+				? undefined
+				: new GfxClient(
+						new CanvasGfxOps(display),
+						mode === "avc" ? new WebCodecsAvc() : undefined,
+					);
+		/** 壊れて、一つ下の方式でつなぎ直すとき */
+		let fallback: SessionEnd | undefined;
 		if (gfxClient) {
 			gfxClient.onError = (e) => {
 				console.warn("GFX:", e);
@@ -139,7 +192,15 @@ form.addEventListener("submit", async (e) => {
 			};
 			gfxClient.onFatal = (e) => {
 				console.error("GFX:", e);
-				fatal = "H.264 の画面が壊れた。つなぎ直してください";
+				fallback = {
+					message: `GFX が壊れた: ${describe(e)}`,
+					fallback: "bitmap",
+				};
+				client.close();
+			};
+			gfxClient.onAvcBroken = () => {
+				console.warn("GFX: H.264 を復号できない");
+				fallback = { message: "H.264 を復号できない", fallback: "gfx" };
 				client.close();
 			};
 		}
@@ -150,7 +211,7 @@ form.addEventListener("submit", async (e) => {
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
 		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える
-		const scale = autoScale(size);
+		const scale = autoScale(login.size);
 		stops.push(
 			watchSize(screen, (w, h) =>
 				channels.displayControl.resize(
@@ -162,19 +223,13 @@ form.addEventListener("submit", async (e) => {
 		display.canvas.focus();
 		status.textContent = "";
 		const reason = await client.run();
-		status.textContent = `切れた: ${fatal ?? reason}`;
+		return fallback ?? { message: `切れた: ${reason}` };
 	} catch (err) {
-		status.textContent = `つなげなかった: ${describe(err)}`;
+		return { message: `つなげなかった: ${describe(err)}` };
+	} finally {
+		for (const stop of stops) stop();
 	}
-	for (const stop of stops) stop();
-	current = undefined;
-	display.clear();
-	submit.removeAttribute("aria-busy");
-	toolbar.hidden = true;
-	screen.classList.add("idle");
-	home.hidden = false;
-	field("password").value = "";
-});
+}
 
 // ---- 診断表示(ツールバーの「診断」) ----
 
@@ -201,8 +256,10 @@ function diagText(
 	gfx: GfxClient | undefined,
 	workers: boolean,
 ): string {
+	// GFX を頼んでも、サーバーがチャネルを開かなければ旧来の描画のまま
+	const mode: Mode = gfx?.active ? (gfx.avcEnabled ? "avc" : "gfx") : "bitmap";
 	const lines = [
-		`mado ${session.version}  方式: ${gfx ? "H.264(GFX)" : "ビットマップ / RemoteFX"}  復号の場所: ${workers ? "Worker" : "その場"}`,
+		`mado ${session.version}  方式: ${MODE_NAMES[mode]}  復号の場所: ${workers ? "Worker" : "その場"}`,
 		`画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}`,
 		`更新: ${
 			Object.entries(client.stats)
@@ -212,7 +269,8 @@ function diagText(
 		// 間引き・捨てたは、RemoteFX のタイルと旧ビットマップの両方を数える
 		`復号: 間引き=${client.decodeStats.coalesced} 捨てた=${client.decodeStats.skipped}`,
 	];
-	if (gfx)
+	if (switches.length) lines.push("切り替え:", ...switches);
+	if (gfx?.active)
 		lines.push(
 			`GFX: ${Object.entries(gfx.stats)
 				.map(([k, v]) => `${k}=${v}`)
