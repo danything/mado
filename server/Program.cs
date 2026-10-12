@@ -3,12 +3,13 @@
 //   https://<host>/             画面。web/ の RDP クライアントを bun でビルドして exe に埋め込んである
 //   https://<host>/login        OIDC のログインへ
 //   https://<host>/callback     OIDC から戻ってくる口
+//   https://<host>/logout       ログアウト
 //   https://<host>/api/session  ログイン中の名前・版・つなぐ先
 //   https://<host>/api/token    ?target=<name>。つなぐ直前に取る使い捨ての中継のトークン
 //   wss://<host>/ws             RDCleanPath の中継。Relay.cs
 //   https://<host>/wt (UDP)     同じ中継を WebTransport(HTTP/3)で。WebTransportRelay.cs と Quic/
 //   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
-//   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態
+//   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態。POST /update で更新をすぐ確かめる
 
 using System.Collections.Concurrent;
 using System.Net;
@@ -29,7 +30,8 @@ catch (Exception e) when (e is ConfigException or IOException or UnauthorizedAcc
     return 1;
 }
 
-var log = new FileLog(Path.Combine(Path.GetDirectoryName(config.File)!, "logs", "mado.log"));
+var logDir = Path.Combine(Path.GetDirectoryName(config.File)!, "logs");
+var log = new FileLog(Path.Combine(logDir, "mado.log"));
 var version = "v" + (typeof(Config).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
     .Split('+')[0] ?? "0.0.0");
 log.Write($"mado {version}: {config.File} を読んだ({config.Host}、つなぐ先 {string.Join(' ', config.Targets.Select(t => $"{t.Name}={t.Host}:{t.Port}"))})");
@@ -53,8 +55,9 @@ var acme = new Acme(config.Host, config.Acme.Email, config.Acme.Staging, config.
 SslStreamCertificateContext? current = null;
 int? certDaysLeft = null;
 var sessions = 0;
+void CountSession(int d) => Interlocked.Add(ref sessions, d);
 var startedAt = DateTimeOffset.UtcNow.ToString("o");
-var updater = new Updater(config.Update.Repo, version, config.DataDir, http, log.Write);
+var updater = new Updater(config.Update.Repo, version, config.DataDir, logDir, http, log.Write);
 // 自分で版を上げるのはサービスとして動いているときだけ。手元の dotnet run には入れる MSI が無い
 var canUpdate = config.Update.Enabled && OperatingSystem.IsWindows()
     && Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService();
@@ -66,14 +69,15 @@ var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
 });
 builder.Host.UseWindowsService(o => o.ServiceName = "mado");
 builder.Logging.ClearProviders();
+// 待ち受けるアドレス。null は全部。WebTransport も同じ
+var listenIp = config.Listen.Hostname is "::" or "0.0.0.0" or "" ? null : IPAddress.Parse(config.Listen.Hostname);
 builder.WebHost.ConfigureKestrel(k =>
 {
-    var any = config.Listen.Hostname is "::" or "0.0.0.0" or "" ? null : IPAddress.Parse(config.Listen.Hostname);
     void Listen(int port, Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions>? configure = null)
     {
         // IPv6Any はデュアルスタックなので IPv4 も受ける
-        if (any is null) k.ListenAnyIP(port, configure ?? (_ => { }));
-        else k.Listen(any, port, configure ?? (_ => { }));
+        if (listenIp is null) k.ListenAnyIP(port, configure ?? (_ => { }));
+        else k.Listen(listenIp, port, configure ?? (_ => { }));
     }
     Listen(config.Listen.Http);
     if (secure)
@@ -93,6 +97,7 @@ app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSecond
 
 IResult Text(int status, string body) => Results.Text(body, "text/plain; charset=utf-8", statusCode: status);
 User? SessionOf(HttpContext ctx) => signer.Verify(ctx.Request.Cookies[SessionCookie], ApiJson.Default.User);
+IResult NeedLogin() => Results.Json(new LoginRequired("/login?to=/"), ApiJson.Default.LoginRequired, statusCode: 401);
 CookieOptions Cookie(int maxAge) => new()
 {
     HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax, Path = "/", MaxAge = TimeSpan.FromSeconds(maxAge),
@@ -106,12 +111,11 @@ var tokens = new RelayTokens(signer, RelayTokenSeconds);
 WebTransportServer? wt = null;
 if (config.WebTransportPort != 0)
 {
-    var ip = config.Listen.Hostname is "::" or "0.0.0.0" or "" ? null : IPAddress.Parse(config.Listen.Hostname);
     // CONNECT でトークンを使う。Cookie が無いので sub は見ない(WebTransportRelay.cs)
     var handler = new WebTransportRelay(origin, token =>
         tokens.Consume(token, null) is { } t && TargetOf(t.Target) is { } target ? (target, t.Name ?? t.Sub) : null,
-        log.Write, d => Interlocked.Add(ref sessions, d), app.Lifetime.ApplicationStopping);
-    wt = WebTransportServer.TryCreate(handler, ip, (ushort)config.WebTransportPort, log.Write);
+        log.Write, CountSession, app.Lifetime.ApplicationStopping);
+    wt = WebTransportServer.TryCreate(handler, listenIp, (ushort)config.WebTransportPort, log.Write);
     app.Lifetime.ApplicationStopping.Register(() => wt?.Dispose());
 }
 var wtUrl = $"https://{config.Host}{(config.WebTransportPort == 443 ? "" : $":{config.WebTransportPort}")}{WebTransportRelay.Path}";
@@ -197,7 +201,7 @@ app.MapGet("/logout", (HttpContext ctx) =>
 app.MapGet("/api/session", (HttpContext ctx) =>
 {
     ctx.Response.Headers.CacheControl = "no-store";
-    if (SessionOf(ctx) is not { } s) return Results.Json(new LoginRequired("/login?to=/"), ApiJson.Default.LoginRequired, statusCode: 401);
+    if (SessionOf(ctx) is not { } s) return NeedLogin();
     var ws = (origin.StartsWith("https") ? "wss" : "ws") + origin[(origin.IndexOf(':'))..] + "/ws";
     return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(t => t.Name)], ws, wt is { IsListening: true } ? wtUrl : null), ApiJson.Default.SessionInfo);
 });
@@ -205,7 +209,7 @@ app.MapGet("/api/session", (HttpContext ctx) =>
 app.MapGet("/api/token", (HttpContext ctx) =>
 {
     ctx.Response.Headers.CacheControl = "no-store";
-    if (SessionOf(ctx) is not { } s) return Results.Json(new LoginRequired("/login?to=/"), ApiJson.Default.LoginRequired, statusCode: 401);
+    if (SessionOf(ctx) is not { } s) return NeedLogin();
     if (TargetOf(ctx.Request.Query["target"]) is not { } target) return Text(404, "そのつなぐ先は無い");
     var token = tokens.Issue(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name));
     return Results.Json(new TokenInfo(token), ApiJson.Default.TokenInfo);
@@ -218,23 +222,13 @@ app.Map("/ws", async (HttpContext ctx) =>
     if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていない").ExecuteAsync(ctx); return; }
     if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で来て").ExecuteAsync(ctx); return; }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-    Interlocked.Increment(ref sessions);
-    log.Write($"ws open: {user.Name}");
-    try
-    {
-        await Relay.Run(ws, auth => tokens.Consume(auth, user.Sub) is { } t ? TargetOf(t.Target) : null, m => log.Write($"{user.Name}: {m}"), ctx.RequestAborted);
-    }
-    finally
-    {
-        Interlocked.Decrement(ref sessions);
-        log.Write($"ws close: {user.Name}");
-    }
+    await Relay.Serve("ws", user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? TargetOf(t.Target) : null,
+        log.Write, CountSession, ctx.RequestAborted);
 });
 
 app.MapGet("/{**path}", async (HttpContext ctx) =>
 {
-    if (!WebAssets.Has(ctx.Request.Path.Value ?? "/")) { await Text(404, "not found").ExecuteAsync(ctx); return; }
-    await WebAssets.Serve(ctx);
+    if (!await WebAssets.TryServe(ctx)) await Text(404, "not found").ExecuteAsync(ctx);
 });
 
 if (secure)

@@ -36,15 +36,15 @@ internal static class WebAssets
         _ => "application/octet-stream",
     };
 
-    public static bool Has(string path) => files.ContainsKey(path == "/" ? "/index.html" : path);
-
-    public static async Task Serve(HttpContext ctx)
+    /// <summary>あれば返して true。無ければ何もせず false</summary>
+    public static async Task<bool> TryServe(HttpContext ctx)
     {
         var path = ctx.Request.Path.Value is "/" or null ? "/index.html" : ctx.Request.Path.Value;
-        var (body, type) = files[path];
-        ctx.Response.ContentType = type;
+        if (!files.TryGetValue(path, out var file)) return false;
+        ctx.Response.ContentType = file.Type;
         ctx.Response.Headers.CacheControl = path == "/index.html" ? "no-cache" : "public, max-age=31536000, immutable";
-        ctx.Response.ContentLength = body.Length;
-        await ctx.Response.Body.WriteAsync(body);
+        ctx.Response.ContentLength = file.Body.Length;
+        await ctx.Response.Body.WriteAsync(file.Body);
+        return true;
     }
 }

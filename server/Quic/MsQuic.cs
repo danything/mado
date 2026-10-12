@@ -18,7 +18,6 @@ internal static unsafe class MsQuic
 
     public const uint ParamGlobalLibraryVersion = 0x01000004;
     public const uint ParamConfigurationSettings = 0x03000000;
-    public const uint ParamConnSettings = 0x05000004;
     public const uint ParamStreamId = 0x08000000;
 
     public const ushort CongestionCubic = 0;
@@ -76,10 +75,6 @@ internal static unsafe class MsQuic
         if (Failed(status)) throw new QuicNativeException(what, status);
     }
 
-    /// <summary>
-    /// QUIC_ADDR を作る。中身は sockaddr_in / sockaddr_in6。null は全アドレス(AF_UNSPEC で IPv4 と IPv6 の両方)。
-    /// AF_INET6 の値は OS で違う(Windows 23、Linux 10)
-    /// </summary>
     /// <summary>QUIC_ADDR(sockaddr_in / sockaddr_in6)から IP を読む。IPv4 を IPv6 に写したものは IPv4 にする</summary>
     public static IPAddress? ReadAddress(byte* addr)
     {
@@ -94,6 +89,10 @@ internal static unsafe class MsQuic
         return null;
     }
 
+    /// <summary>
+    /// QUIC_ADDR を作る。null は全アドレス(AF_UNSPEC で IPv4 と IPv6 の両方)。
+    /// AF_INET6 の値は OS で違う(Windows 23、Linux 10、macOS 30)
+    /// </summary>
     public static void WriteAddress(byte* addr, IPAddress? ip, ushort port)
     {
         new Span<byte>(addr, 32).Clear();
@@ -257,19 +256,11 @@ internal unsafe struct QuicListenerEvent
 internal unsafe struct QuicConnectionEvent
 {
     public const int Connected = 0;
-    public const int ShutdownInitiatedByTransport = 1;
-    public const int ShutdownInitiatedByPeer = 2;
     public const int ShutdownComplete = 3;
     public const int PeerStreamStarted = 6;
     public const int DatagramReceived = 11;
-    public const int DatagramSendStateChanged = 12;
 
     [FieldOffset(0)] public int Type;
-    // SHUTDOWN_INITIATED_BY_TRANSPORT
-    [FieldOffset(8)] public int TransportStatus;
-    [FieldOffset(16)] public ulong TransportErrorCode;
-    // SHUTDOWN_INITIATED_BY_PEER
-    [FieldOffset(8)] public ulong PeerErrorCode;
     // SHUTDOWN_COMPLETE: HandshakeCompleted:1 PeerAcknowledgedShutdown:1 AppCloseInProgress:1
     [FieldOffset(8)] public byte ShutdownCompleteBits;
     // PEER_STREAM_STARTED
@@ -277,9 +268,6 @@ internal unsafe struct QuicConnectionEvent
     [FieldOffset(16)] public int PeerStreamFlags;
     // DATAGRAM_RECEIVED
     [FieldOffset(8)] public QuicBuffer* DatagramBuffer;
-    // DATAGRAM_SEND_STATE_CHANGED
-    [FieldOffset(8)] public void* DatagramClientContext;
-    [FieldOffset(16)] public int DatagramSendState;
 }
 
 [StructLayout(LayoutKind.Explicit)]
@@ -509,8 +497,9 @@ internal sealed unsafe class QuicConnection
     public Action<QuicConnection>? OnConnected;
     public Action<QuicConnection, QuicStream, bool>? OnPeerStream; // bool は単方向か
     public DatagramHandler? OnDatagram;
-    public Action<QuicConnection, string>? OnShutdown; // 理由
     public Action<QuicConnection>? OnClosed;
+    /// <summary>上の層のコールバックが投げた例外。接続はそのまま続ける</summary>
+    public Action<Exception>? OnError;
 
     public delegate void DatagramHandler(QuicConnection c, ReadOnlySpan<byte> data);
 
@@ -531,18 +520,6 @@ internal sealed unsafe class QuicConnection
 
     /// <summary>受けた接続に設定と証明書を付ける。listener のコールバックの中で呼ぶ</summary>
     internal int SetConfiguration(nint configuration) => MsQuic.Api->ConnectionSetConfiguration(Handle, configuration);
-
-    public QuicSettings ReadSettings()
-    {
-        QuicSettings s;
-        uint len = (uint)sizeof(QuicSettings);
-        lock (Gate)
-        {
-            if (_closed) return default;
-            MsQuic.Check(MsQuic.Api->GetParam(Handle, MsQuic.ParamConnSettings, &len, &s), "GetParam(CONN_SETTINGS)");
-        }
-        return s;
-    }
 
     /// <summary>自分から stream を開く</summary>
     public QuicStream OpenStream(bool unidirectional)
@@ -566,18 +543,6 @@ internal sealed unsafe class QuicConnection
         }
     }
 
-    /// <summary>QUIC の datagram を送る。送り終わるまでバッファを保つ</summary>
-    public void SendDatagram(ReadOnlySpan<byte> data)
-    {
-        lock (Gate)
-        {
-            if (_closed) return;
-            var block = SendBlock.Create(data, null);
-            int st = MsQuic.Api->DatagramSend(Handle, SendBlock.Buffer(block), 1, 0, (void*)block);
-            if (MsQuic.Failed(st)) SendBlock.Complete(block, canceled: true);
-        }
-    }
-
     public void Shutdown(ulong errorCode)
     {
         lock (Gate)
@@ -593,7 +558,7 @@ internal sealed unsafe class QuicConnection
         lock (self.Gate)
         {
             try { self.Dispatch(ev); }
-            catch (Exception e) { self.OnShutdown?.Invoke(self, $"コールバックで例外: {e.Message}"); }
+            catch (Exception e) { self.OnError?.Invoke(e); }
         }
         return MsQuic.StatusSuccess;
     }
@@ -605,12 +570,6 @@ internal sealed unsafe class QuicConnection
             case QuicConnectionEvent.Connected:
                 OnConnected?.Invoke(this);
                 break;
-            case QuicConnectionEvent.ShutdownInitiatedByTransport:
-                OnShutdown?.Invoke(this, $"transport status=0x{ev->TransportStatus:x} code=0x{ev->TransportErrorCode:x}");
-                break;
-            case QuicConnectionEvent.ShutdownInitiatedByPeer:
-                OnShutdown?.Invoke(this, $"peer code=0x{ev->PeerErrorCode:x}");
-                break;
             case QuicConnectionEvent.PeerStreamStarted:
             {
                 var s = new QuicStream(this);
@@ -619,15 +578,11 @@ internal sealed unsafe class QuicConnection
                 s.LoadId();
                 bool uni = (ev->PeerStreamFlags & MsQuic.StreamOpenUnidirectional) != 0;
                 if (OnPeerStream != null) OnPeerStream(this, s, uni);
-                else s.Abort(0x100);
+                else s.Abort(H3.NoError);
                 break;
             }
             case QuicConnectionEvent.DatagramReceived:
                 OnDatagram?.Invoke(this, new ReadOnlySpan<byte>(ev->DatagramBuffer->Buffer, (int)ev->DatagramBuffer->Length));
-                break;
-            case QuicConnectionEvent.DatagramSendStateChanged:
-                // 3 以上(LOST_DISCARDED、ACKNOWLEDGED、ACKNOWLEDGED_SPURIOUS、CANCELED)で終わり
-                if (ev->DatagramSendState >= 3) SendBlock.Complete((nint)ev->DatagramClientContext, canceled: false);
                 break;
             case QuicConnectionEvent.ShutdownComplete:
             {
@@ -674,7 +629,6 @@ internal sealed unsafe class QuicStream
     }
 
     internal nint Context => GCHandle.ToIntPtr(_self);
-    public bool IsClosed => _closed;
 
     internal void Attach(nint handle) => Handle = handle;
 
@@ -691,9 +645,8 @@ internal sealed unsafe class QuicStream
         lock (Connection.Gate)
         {
             if (_closed) return;
-            var block = SendBlock.Create(data, null);
-            int st = MsQuic.Api->StreamSend(Handle, SendBlock.Buffer(block), 1, fin ? MsQuic.SendFlagFin : 0, (void*)block);
-            if (MsQuic.Failed(st)) { SendBlock.Complete(block, canceled: true); throw new QuicNativeException("StreamSend", st); }
+            int st = StartSend(data, fin, null);
+            if (MsQuic.Failed(st)) throw new QuicNativeException("StreamSend", st);
         }
     }
 
@@ -707,15 +660,19 @@ internal sealed unsafe class QuicStream
         lock (Connection.Gate)
         {
             if (_closed) return Task.FromException(new IOException("stream が閉じている"));
-            var block = SendBlock.Create(data, tcs);
-            int st = MsQuic.Api->StreamSend(Handle, SendBlock.Buffer(block), 1, fin ? MsQuic.SendFlagFin : 0, (void*)block);
-            if (MsQuic.Failed(st))
-            {
-                SendBlock.Complete(block, canceled: true);
-                return Task.FromException(new QuicNativeException("StreamSend", st));
-            }
+            int st = StartSend(data, fin, tcs);
+            if (MsQuic.Failed(st)) return Task.FromException(new QuicNativeException("StreamSend", st));
         }
         return tcs.Task;
+    }
+
+    /// <summary>Gate を持って呼ぶ。失敗したらバッファはここで返す</summary>
+    int StartSend(ReadOnlySpan<byte> data, bool fin, TaskCompletionSource? waiter)
+    {
+        var block = SendBlock.Create(data, waiter);
+        int st = MsQuic.Api->StreamSend(Handle, SendBlock.Buffer(block), 1, fin ? MsQuic.SendFlagFin : 0, (void*)block);
+        if (MsQuic.Failed(st)) SendBlock.Complete(block, canceled: true);
+        return st;
     }
 
     /// <summary>送信側を正しく閉じる(FIN)</summary>
@@ -763,9 +720,9 @@ internal sealed unsafe class QuicStream
             try { self.Dispatch(ev); }
             catch (Exception)
             {
-                // 上の層の誤り。stream を打ち切って続ける(H3_INTERNAL_ERROR)
+                // 上の層の誤り。stream を打ち切って続ける
                 if (ev->Type != QuicStreamEvent.ShutdownComplete && !self._closed)
-                    MsQuic.Api->StreamShutdown(self.Handle, MsQuic.StreamShutdownAbort, 0x102);
+                    MsQuic.Api->StreamShutdown(self.Handle, MsQuic.StreamShutdownAbort, H3.InternalError);
             }
         }
         return MsQuic.StatusSuccess;

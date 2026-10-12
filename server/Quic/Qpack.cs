@@ -8,7 +8,7 @@ internal sealed class QpackException(string message) : Exception(message);
 
 internal static class Qpack
 {
-    /// <summary>静的表(RFC 9204 付録 A)。番号は 0 から。</summary>
+    /// <summary>静的表(RFC 9204 付録 A)。番号は 0 から</summary>
     public static readonly (string Name, string Value)[] StaticTable =
     [
         (":authority", ""),
@@ -143,7 +143,7 @@ internal static class Qpack
         w.Byte((byte)v);
     }
 
-    /// <summary>文字列。先頭バイトの huffmanBit が立っていれば Huffman 符号。長さは prefixBits の前置き整数。</summary>
+    /// <summary>文字列。長さは prefixBits の前置きの整数で、そのすぐ上の bit が立っていれば Huffman 符号</summary>
     static string ReadString(ReadOnlySpan<byte> s, ref int pos, int prefixBits)
     {
         if (pos >= s.Length) throw new QpackException("文字列が途中で切れた");
@@ -158,7 +158,7 @@ internal static class Qpack
 
     static string Latin1(ReadOnlySpan<byte> b) => Encoding.Latin1.GetString(b);
 
-    /// <summary>HEADERS フレームの中身(field section)を読む。</summary>
+    /// <summary>HEADERS フレームの中身(field section)を読む</summary>
     public static List<(string Name, string Value)> Decode(ReadOnlySpan<byte> block)
     {
         int pos = 0;
@@ -333,7 +333,7 @@ internal static class Huffman
         return out_.ToArray();
     }
 
-    /// <summary>試験用の符号化。</summary>
+    /// <summary>符号化。試験だけで使う</summary>
     public static byte[] Encode(ReadOnlySpan<byte> src)
     {
         var w = new List<byte>();

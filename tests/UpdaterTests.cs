@@ -82,7 +82,7 @@ public class UpdaterTests
         var gh = new FakeGitHub("v9.0.0", msi, () => sign(Updater.Message(goodSig ? "v9.0.0" : "v8.0.0", sha)));
         var dir = Path.Combine(Directory.CreateTempSubdirectory("mado-update-").FullName, "data");
         var launched = new List<string>();
-        var u = new Updater("x/y", "v0.5.0", dir, new HttpClient(gh), _ => { }, (msiPath, _) => launched.Add(msiPath), pub);
+        var u = new Updater("x/y", "v0.5.0", dir, Path.Combine(Path.GetDirectoryName(dir)!, "logs"), new HttpClient(gh), _ => { }, (msiPath, _) => launched.Add(msiPath), pub);
         return (u, gh, launched, dir);
     }
 
@@ -127,7 +127,8 @@ public class UpdaterTests
     {
         var (pub, sign) = NewKey();
         var gh = new FakeGitHub("v0.5.0", "MSI"u8.ToArray(), () => "");
-        var u = new Updater("x/y", "v0.5.0", Directory.CreateTempSubdirectory("mado-update-").FullName, new HttpClient(gh), _ => { }, (_, _) => throw new InvalidOperationException(), pub);
+        var tmp = Directory.CreateTempSubdirectory("mado-update-").FullName;
+        var u = new Updater("x/y", "v0.5.0", tmp, Path.Combine(tmp, "logs"), new HttpClient(gh), _ => { }, (_, _) => throw new InvalidOperationException(), pub);
         await Assert.That((await u.Check()).Available).IsFalse();
         await Assert.That(await u.Apply(() => true)).IsFalse();
     }
