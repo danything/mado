@@ -155,7 +155,7 @@ export class Display implements Screen {
 	}
 }
 
-/** canvas のキー・マウスを RDP の入力にする。戻り値で解除 */
+/** 修飾キーの種類と、そのキーのコード */
 const MODIFIERS: {
 	flag: "shiftKey" | "ctrlKey" | "altKey";
 	codes: string[];
@@ -192,6 +192,7 @@ export function syncModifiers(
 	return out;
 }
 
+/** canvas のキー・マウスを RDP の入力にする。戻り値で解除 */
 export function bindInput(
 	canvas: HTMLCanvasElement,
 	client: RdpClient,
