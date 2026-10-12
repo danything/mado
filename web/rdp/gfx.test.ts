@@ -642,3 +642,68 @@ describe("レビューの指摘(#33)", () => {
 		expect(gfx.stats.cacheMiss).toBe(1);
 	});
 });
+
+describe("WireToSurface2", () => {
+	test("Progressive は面に描く(タイルの位置は面の座標)。ほかのコーデックは飛ばす", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(ops);
+		gfx.onOpen(channel());
+		const blk = (t: number, b: Uint8Array) =>
+			new Writer()
+				.u16(t)
+				.u32(b.length + 6)
+				.bytes(b)
+				.done();
+		// 空のタイル(係数が全部 0 = 灰色)を 1 つ、(4, 2) からの 8x8 の矩形で切る
+		const tile = blk(
+			0xccc5,
+			new Writer().u8(0).u8(0).u8(0).u16(0).u16(0).u8(0).u32(0).u32(0).done(),
+		);
+		const region = blk(
+			0xccc4,
+			new Writer()
+				.u8(64)
+				.u16(1)
+				.u8(1)
+				.u8(0)
+				.u8(1)
+				.u16(1)
+				.u32(tile.length)
+				.u16(4)
+				.u16(2)
+				.u16(8)
+				.u16(8)
+				.bytes(new Uint8Array(5).fill(0x66))
+				.bytes(tile)
+				.done(),
+		);
+		const w2 = (codec: number, data: Uint8Array) =>
+			pdu(
+				CMD.WIRETOSURFACE_2,
+				new Writer()
+					.u16(1)
+					.u16(codec)
+					.u32(7)
+					.u8(0x20)
+					.u32(data.length)
+					.bytes(data)
+					.done(),
+			);
+		gfx.onData(
+			segmentedUncompressed(
+				concat(
+					pdu(
+						CMD.CREATESURFACE,
+						new Writer().u16(1).u16(16).u16(16).u8(0x20).done(),
+					),
+					w2(CODEC.CAPROGRESSIVE, region),
+					w2(CODEC.AVC444, new Uint8Array(4)),
+				),
+			),
+		);
+		await gfx.idle();
+		expect(ops.calls).toEqual(["create 1 16x16", "put 1 4,2 8x8 808080ff"]);
+		expect(gfx.stats.progressive).toBe(1);
+		expect(gfx.stats.skipped).toBe(1);
+	});
+});
