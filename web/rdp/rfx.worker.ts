@@ -1,10 +1,10 @@
-// 画面の復号を受け持つ Web Worker の入口(rfxpool.ts がまとめて使う)。RemoteFX のタイル、旧ビットマップ(planar / Interleaved RLE)、Progressive のタイル。
-// 受け取るもの: rfxpool.ts の DecodeJob に id を付けたもの → 返すもの: { id, rgba }(buffer ごと渡す)か { id, error }
-// Progressive はタイルの状態を Worker の中に持つので、同じタイルはいつも同じ Worker に来る(rfxpool.ts の runOn)
+// 画面の復号を受け持つ Web Worker の入口。rfxpool.ts がまとめて使う。RemoteFX のタイル、旧ビットマップ(planar / Interleaved RLE)、Progressive のタイルを復号する。
+// rfxpool.ts の DecodeJob に id を付けたものを受け取り、{ id, rgba } か { id, error } を返す。rgba は buffer ごと渡す。
+// Progressive はタイルの状態を Worker の中に持つ。そのため rfxpool.ts の runOn で、同じタイルはいつも同じ Worker に送られる。
 
 import { type DecodeJob, decodeJob } from "./rfxpool";
 
-/** 仕事(rfxpool.ts の DecodeJob)に、返事と対応づける id を付けたもの */
+/** rfxpool.ts の DecodeJob に、返事と対応づけるための id を付けたもの */
 export type WorkerRequest = DecodeJob & { id: number };
 
 export type WorkerReply =

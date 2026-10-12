@@ -1,4 +1,4 @@
-// NTLMv2([MS-NLMP])。CredSSP の中でだけ使う。Kerberos はやらない(ローカル アカウントと NTLM だけ)。
+// NTLMv2([MS-NLMP])。CredSSP の中で使う。Kerberos には対応せず、ローカル アカウントと NTLM で認証する。
 // NEGOTIATE → CHALLENGE → AUTHENTICATE(MIC 付き)のあと、署名と封印(RC4)で pubKeyAuth と資格情報を包む。
 
 import { concat, equal, Reader, utf16le, Writer } from "./bytes";
@@ -39,7 +39,7 @@ const NEGOTIATE_FLAGS =
 	F.KEY_EXCH |
 	F.SIGN;
 
-/** Windows 10 の版(中身は見られない。形だけ) */
+/** Windows 10 の版。中身は見られないので、形だけ合わせる */
 const VERSION = Uint8Array.of(10, 0, 0x61, 0x4a, 0, 0, 0, 15);
 
 const AV_EOL = 0;
@@ -62,7 +62,7 @@ const SERVER_SEAL = magic(
 
 export type Identity = { user: string; domain: string; password: string };
 
-/** 「DOMAIN\user」はドメインとユーザーに分ける。「user@domain」はそのまま(UPN はドメイン欄を空にして送る) */
+/** 「DOMAIN\user」はドメインとユーザーに分ける。「user@domain」は UPN なので、ドメイン欄を空にしてそのまま送る */
 export function identity(username: string, password: string): Identity {
 	const i = username.indexOf("\\");
 	if (i >= 0)
@@ -165,7 +165,7 @@ export class Ntlm {
 		const timestamp = ts
 			? new Reader(ts.value).u64()
 			: (this.opts.now ?? fileTime());
-		// サーバーが時刻をくれたら MIC を付ける(MsvAvFlags の 0x2)
+		// サーバーが時刻を送ってきたら、MsvAvFlags の 0x2 を立てて MIC を付ける
 		const useMic = !!ts;
 		const authPairs = pairs.filter((p) => p.id !== AV_FLAGS);
 		if (useMic)
@@ -185,7 +185,7 @@ export class Ntlm {
 			.done();
 		const ntProof = hmacMd5(key, ch.serverChallenge, temp);
 		const ntResponse = concat(ntProof, temp);
-		// MIC を付けるときは LM の応答は 0 を 24 バイト
+		// MIC を付けるときは、LM の応答を 24 バイトの 0 にする
 		const lmResponse = useMic
 			? new Uint8Array(24)
 			: concat(
@@ -228,8 +228,8 @@ export class Ntlm {
 		];
 		const w = new Writer(512).bytes(SIGNATURE).u32(3);
 		let off = 64 + 8 + 16;
-		// ヘッダーの欄の並び: LM, NT, Domain, User, Workstation, EncryptedRandomSessionKey
-		// 中身の並びは Domain, User, Workstation, LM, NT, Key(sspi-rs と同じ)
+		// ヘッダーの欄は LM, NT, Domain, User, Workstation, EncryptedRandomSessionKey の順。
+		// 中身は sspi-rs と同じく Domain, User, Workstation, LM, NT, Key の順に置く
 		const order = [2, 3, 4, 0, 1, 5];
 		const offsets: number[] = [];
 		for (const i of order) {
@@ -256,7 +256,7 @@ export class Ntlm {
 		return msg;
 	}
 
-	/** EncryptMessage と同じ: 署名(16 バイト)+ 封印した中身 */
+	/** EncryptMessage と同じく、16 バイトの署名のあとに封印した中身を続ける */
 	seal(data: Uint8Array): Uint8Array {
 		const seal = this.sendSeal;
 		if (!seal) throw new Error("NTLM: 認証の前に封印しようとした");
@@ -289,7 +289,7 @@ export class Ntlm {
 	}
 }
 
-/** 1601 年からの 100 ナノ秒 */
+/** 1601 年からの経過時間。単位は 100 ナノ秒 */
 function fileTime(): bigint {
 	return (BigInt(Date.now()) + 11644473600000n) * 10000n;
 }

@@ -1,4 +1,4 @@
-// 入力([MS-RDPBCGR] 2.2.8.1.2 Fast-Path Input)。KeyboardEvent.code → スキャンコード、マウス、同期。
+// 入力([MS-RDPBCGR] 2.2.8.1.2 Fast-Path Input)。KeyboardEvent.code からのスキャンコード、マウス、同期を作る。
 
 import { concat, Writer } from "./bytes";
 
@@ -14,7 +14,7 @@ const EVENT = {
 const KBD_RELEASE = 0x01;
 const KBD_EXTENDED = 0x02;
 
-/** KeyboardEvent.code → [スキャンコード, 拡張(E0)か]。物理キーの位置で決まるので、配列(JIS / US)の違いはサーバーの配列が吸収する */
+/** KeyboardEvent.code → [スキャンコード, E0 の拡張か]。物理キーの位置で決まる。JIS と US の違いはサーバー側の配列で吸収する */
 const SCANCODES: Record<string, [number, boolean]> = {
 	Escape: [0x01, false],
 	Digit1: [0x02, false],
@@ -133,7 +133,7 @@ export function scancode(code: string): [number, boolean] | undefined {
 	return SCANCODES[code];
 }
 
-/** キーボード イベント(Fast-Path の 1 イベント)。知らないキーは undefined */
+/** Fast-Path のキーボード イベントを 1 つ作る。知らないキーは undefined */
 export function keyEvent(code: string, down: boolean): Uint8Array | undefined {
 	const sc = SCANCODES[code];
 	if (!sc) return undefined;
@@ -141,7 +141,7 @@ export function keyEvent(code: string, down: boolean): Uint8Array | undefined {
 	return Uint8Array.of(flags | (EVENT.SCANCODE << 5), sc[0]);
 }
 
-/** Unicode 1 文字(IME で確定した文字など、スキャンコードで表せないもの) */
+/** Unicode の 1 文字。IME で確定した文字など、スキャンコードで表せないものに使う */
 export function unicodeEvent(char: number, down: boolean): Uint8Array {
 	return new Writer(3)
 		.u8((down ? 0 : KBD_RELEASE) | (EVENT.UNICODE << 5))
@@ -160,7 +160,7 @@ export const PTR = {
 	BUTTON3: 0x4000,
 } as const;
 
-/** MouseEvent.button(0 左・1 中・2 右)→ ポインタ フラグ。戻る / 進む(3・4)は拡張のイベント */
+/** MouseEvent.button をポインタ フラグにする。0 が左、1 が中、2 が右。戻る / 進む(3 と 4)は拡張のイベントで送る */
 const BUTTON_FLAG = [PTR.BUTTON1, PTR.BUTTON3, PTR.BUTTON2];
 
 export function mouseMove(x: number, y: number): Uint8Array {
@@ -187,14 +187,14 @@ export function mouseButton(
 	return mouse((down ? PTR.DOWN : 0) | flag, x, y);
 }
 
-/** ホイール。delta は WheelEvent.deltaY(下へ回すと正)。RDP は 1 ノッチ = 120 で、上へ回すと正 */
+/** ホイール。delta は WheelEvent.deltaY で、下へ回すと正。RDP は 1 ノッチが 120 で、上へ回すと正 */
 export function mouseWheel(delta: number, horizontal = false): Uint8Array {
-	// 100 ピクセルで 1 ノッチ(120)。1 回の上限は 255
+	// 100 ピクセルを 1 ノッチ(120)とする。1 回の上限は 255
 	const rotation = Math.min(
 		255,
 		Math.max(1, Math.round(Math.abs(delta) / 100)) * 120,
 	);
-	// 縦は、下へ回す(正)と RDP では負。横は右へ回す(正)が正
+	// 縦は向きが逆で、下へ回すと RDP では負になる。横は右へ回すと正のまま
 	const negative = horizontal ? delta < 0 : delta > 0;
 	const flags =
 		(horizontal ? PTR.HWHEEL : PTR.WHEEL) |
@@ -213,7 +213,7 @@ function mouse(flags: number, x: number, y: number): Uint8Array {
 
 const clamp = (v: number) => Math.max(0, Math.min(0xffff, Math.round(v)));
 
-/** Num / Caps / Scroll Lock の状態を伝える(つないだ直後に 0 で) */
+/** Num / Caps / Scroll Lock の状態を伝える。つないだ直後に 0 で送る */
 export function syncEvent(flags = 0): Uint8Array {
 	return Uint8Array.of(flags | (EVENT.SYNC << 5));
 }
@@ -223,7 +223,7 @@ export function fastPathInput(events: Uint8Array[]): Uint8Array {
 	if (events.length === 0 || events.length > 15)
 		throw new RangeError("Fast-Path Input は 1〜15 イベント");
 	const body = concat(...events);
-	// 長さは PDU 全体(ヘッダー 1 + 長さ 1〜2 + 本体)
+	// 長さは PDU 全体。ヘッダー 1 バイト、長さ 1〜2 バイト、本体を足したもの
 	const short = 2 + body.length;
 	const length =
 		short < 0x80

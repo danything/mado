@@ -1,12 +1,12 @@
-// RemoteFX([MS-RDPRFX])。ストリーム(Sync / Codec Versions / Channels / Context / Frame Begin / Region / Tileset / Frame End)を読み、
-// 64x64 のタイルを復号して RGBA にする。タイルの復号は RLGR → サブバンドの並べ → LL3 の差分 → 逆量子化 → 逆 DWT(3 段)→ YCbCr → RGB。
+// RemoteFX([MS-RDPRFX])。Sync、Codec Versions、Channels、Context、Frame Begin、Region、Tileset、Frame End のストリームを読み、
+// 64x64 のタイルを復号して RGBA にする。タイルは RLGR、サブバンドの並べ替え、LL3 の差分、逆量子化、3 段の逆 DWT、YCbCr から RGB への変換の順に復号する。
 
 import { Reader } from "./bytes";
 
 export const TILE = 64;
 const TILE_PIXELS = TILE * TILE;
 
-/** WBT_SYNC(0xccc0)〜 WBT_EXTENSION(0xccc7)。復号に要るのは Region と Tileset(Extension)だけで、ほかは読み飛ばす */
+/** WBT_SYNC(0xccc0)〜 WBT_EXTENSION(0xccc7)。復号に使うのは Region と Tileset(Extension)で、ほかは読み飛ばす */
 const WBT_FIRST = 0xccc0;
 const WBT_REGION = 0xccc6;
 const WBT_EXTENSION = 0xccc7;
@@ -17,32 +17,32 @@ const CBT_TILE = 0xcac3;
 export const ENTROPY_RLGR1 = 0x01;
 export const ENTROPY_RLGR3 = 0x04;
 
-/** 1 つのメッセージのタイル数の上限(8K でも 2000 余り)。空のタイルでも 64x64x4 バイトずつ確保するので、最悪でも 64MB に収める */
+/** 1 つのメッセージのタイル数の上限。8K の画面でも 2000 余り。空のタイルでも 64x64x4 バイトずつ確保するので、最悪でも 64MB に収まるようにする */
 const MAX_TILES = 1 << 12;
 const MAX_RECTS = 1 << 12;
 const MAX_QUANT = 16;
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
-/** 復号前のタイル: 位置(画素。xIdx * 64, yIdx * 64)と、圧縮されたままの 3 成分 */
+/** 復号前のタイル。位置(画素で xIdx * 64, yIdx * 64)と、圧縮されたままの 3 成分を持つ */
 export type RawTile = {
 	x: number;
 	y: number;
 	mode: number;
 	data: [Uint8Array, Uint8Array, Uint8Array];
 	quant: [number[], number[], number[]];
-	/** このタイルを描いてよい領域(Region の矩形)。空なら全体 */
+	/** このタイルを描いてよい領域。Region の矩形で、空なら全体 */
 	rects: Rect[];
 };
 
 export type RfxTile = Pick<RawTile, "x" | "y" | "rects"> & {
-	/** 64 x 64、上の行から */
+	/** 64 x 64 で、上の行から並ぶ */
 	rgba: Uint8ClampedArray;
 };
 
 // ---- RLGR ----
 
-/** kp / krp の上限(k / kr は最大 10)。FreeRDP も 80 */
+/** kp / krp の上限。k / kr は最大 10 になる。FreeRDP も 80 */
 const KPMAX = 80;
 const LSGR = 3;
 const UP_GR = 4;
@@ -50,7 +50,7 @@ const DN_GR = 6;
 const UQ_GR = 3;
 const DQ_GR = 3;
 
-/** ビット列の読み手。32 ビットの窓を一度に取って、1 ビットずつ読まずに済ませる */
+/** ビット列の読み手。32 ビットの窓をまとめて取るので、1 ビットずつ読まずに済む */
 class Bits {
 	pos = 0;
 	/** 入力を読み尽くしたあとに読もうとした */
@@ -60,7 +60,7 @@ class Bits {
 		this.total = data.length * 8;
 	}
 
-	/** pos から 32 ビット(入力を超えたぶんは 0) */
+	/** pos から 32 ビットを返す。入力を超えた分は 0 */
 	private window(): number {
 		const d = this.data;
 		const i = this.pos >> 3;
@@ -101,13 +101,13 @@ class Bits {
 				this.pos += run + 1;
 				return ones + run;
 			}
-			// 窓が全部 1(入力の中の 32 ビット)。続きを数える
+			// 窓が全部 1 で、入力の中の 32 ビット。続きを数える
 			ones += 32;
 			this.pos += 32;
 		}
 	}
 
-	/** n ビット(0 〜 31)を数として読む。入力を超えたぶんは 0 */
+	/** n ビット(0 〜 31)を数として読む。入力を超えた分は 0 */
 	bits(n: number): number {
 		if (n === 0) return 0;
 		if (n > 16) return this.bits(n - 16) * 65536 + this.bits(16);
@@ -141,10 +141,10 @@ class Bits {
 	}
 }
 
-/** 符号なしの 2 つ折り(0, 1, 2, 3, 4 → 0, -1, 1, -2, 2) */
+/** 符号なしの値を 2 つ折りで符号つきに戻す。0, 1, 2, 3, 4 は 0, -1, 1, -2, 2 になる */
 const unfold = (n: number) => (n & 1 ? -((n + 1) >> 1) : n >> 1);
 
-/** RLGR1 / RLGR3 の復号。out を先頭から埋め、読み切れなかった残りは 0。使ったビット数を返す */
+/** RLGR1 / RLGR3 の復号。out を先頭から埋め、読み切れなかった残りは 0 にする。使ったビット数を返す */
 export function rlgrDecode(
 	data: Uint8Array,
 	mode: number,
@@ -164,7 +164,7 @@ export function rlgrDecode(
 
 	while (n < total && bits.left > 0) {
 		if (k) {
-			// ランレングス モード: 0 の並びを、「0 の接頭辞 + k ビット」で表す
+			// ランレングス モード。0 の並びを「0 の接頭辞と k ビット」で表す
 			let run = 0;
 			for (;;) {
 				if (bits.over) return bits.used;
@@ -174,10 +174,10 @@ export function rlgrDecode(
 				k = kp >> LSGR;
 			}
 			run += bits.bits(k);
-			n += Math.min(run, total - n); // 0 は out が 0 で埋まっている
+			n += Math.min(run, total - n); // out は 0 で埋まっているので、0 は書かなくてよい
 			if (n >= total) return bits.used;
 			const negative = bits.bit() === 1;
-			// Golomb-Rice の 1 つの符号(kr / krp を更新する)
+			// Golomb-Rice の符号を 1 つ読み、kr / krp を更新する
 			const vk = bits.unary();
 			const code = vk * (1 << kr) + (kr ? bits.bits(kr) : 0);
 			if (code > 0x7fffffff)
@@ -204,7 +204,7 @@ export function rlgrDecode(
 				k = kp >> LSGR;
 				out[n++] = unfold(code);
 			} else {
-				// RLGR3: 1 つの符号に 2 つの値(ビット数 + 下位のビット)
+				// RLGR3 は 1 つの符号に 2 つの値が入る。ビット数と下位のビット
 				const idx = code === 0 ? 0 : 32 - Math.clz32(code);
 				const v1 = bits.bits(idx);
 				const v2 = code - v1;
@@ -221,7 +221,7 @@ export function rlgrDecode(
 
 // ---- 逆量子化・逆 DWT・色変換 ----
 
-/** 係数の並び(1 成分 4096): HL1 LH1 HH1 | HL2 LH2 HH2 | HL3 LH3 HH3 | LL3 */
+/** 係数の並び。1 成分は 4096 個で、HL1 LH1 HH1 | HL2 LH2 HH2 | HL3 LH3 HH3 | LL3 の順 */
 const BANDS: [offset: number, size: number][] = [
 	[0, 1024], // HL1
 	[1024, 1024], // LH1
@@ -235,7 +235,7 @@ const BANDS: [offset: number, size: number][] = [
 	[4032, 64], // LL3
 ];
 
-/** Quant の 5 バイト(4 ビットずつ、LL3 LH3 / HL3 HH3 / LH2 HL2 / HH2 LH1 / HL1 HH1)→ BANDS の順の値 */
+/** Quant の 5 バイトを BANDS の順の値にする。4 ビットずつ LL3 LH3 / HL3 HH3 / LH2 HL2 / HH2 LH1 / HL1 HH1 が入っている */
 export function parseQuant(b: Uint8Array): number[] {
 	const n = (i: number) =>
 		i & 1 ? (b[i >> 1] as number) >> 4 : (b[i >> 1] as number) & 15;
@@ -252,7 +252,7 @@ export function parseQuant(b: Uint8Array): number[] {
 	return [hl1, lh1, hh1, hl2, lh2, hh2, hl3, lh3, hh3, ll3];
 }
 
-/** 1 成分の 4096 係数を、逆量子化・逆 DWT して、4096 の画素値(5 ビットの小数つき)にする(in place) */
+/** 1 成分の 4096 係数を逆量子化と逆 DWT にかけ、4096 の画素値にする。値は 5 ビットの小数つきで、その場で書き換える */
 export function reconstruct(buf: Int32Array, quant: number[]): void {
 	// LL3 は隣との差分で入っている
 	for (let i = 4033; i < 4096; i++)
@@ -267,19 +267,19 @@ export function reconstruct(buf: Int32Array, quant: number[]): void {
 	inverseDwt(buf);
 }
 
-/** 逆 DWT の 3 段(in place)。係数の並びは BANDS */
+/** 逆 DWT の 3 段。その場で書き換える。係数の並びは BANDS */
 export function inverseDwt(buf: Int32Array): void {
 	idwt(buf, 3840, 8);
 	idwt(buf, 3072, 16);
 	idwt(buf, 0, 32);
 }
 
-/** 逆 DWT の作業場所(1 回に 1 つのタイルしか動かないので、使い回す) */
+/** 逆 DWT の作業場所。一度に 1 つのタイルしか動かないので使い回す */
 const TMP = new Int32Array(4096);
 
 /**
- * 1 段の逆 DWT。buf[at..] に HL LH HH LL(各 n*n)が並んでいて、2n x 2n の画素で置き換える。
- * 水平・垂直とも、行の中を連続して舐める形にしてある(列ごとに飛ばない)
+ * 1 段の逆 DWT。buf[at..] に HL LH HH LL(各 n*n)が並んでいるのを、2n x 2n の画素で置き換える。
+ * 水平も垂直も、行の中を連続して舐めるように書いてある。列ごとに飛ばない
  */
 function idwt(buf: Int32Array, at: number, n: number): void {
 	const tmp = TMP;
@@ -290,12 +290,12 @@ function idwt(buf: Int32Array, at: number, n: number): void {
 	const ll = at + nn * 3;
 	const w = n * 2;
 	const hi = nn * 2;
-	// 水平: 低域(LL, HL)→ tmp[0..]、高域(LH, HH)→ tmp[hi..]。各行は 2n 画素
+	// 水平。低域(LL, HL)は tmp[0..] へ、高域(LH, HH)は tmp[hi..] へ。各行は 2n 画素
 	for (let y = 0; y < n; y++) {
 		horiz(buf, ll + y * n, hl + y * n, tmp, y * w, n);
 		horiz(buf, lh + y * n, hh + y * n, tmp, hi + y * w, n);
 	}
-	// 垂直: 行ごとに、偶数行 E[y] = lo[y] - ((hi[y-1] + hi[y] + 1) >> 1)、奇数行 = (hi[y] << 1) + ((E[y] + E[y+1]) >> 1)
+	// 垂直。行ごとに、偶数行 E[y] = lo[y] - ((hi[y-1] + hi[y] + 1) >> 1)、奇数行 = (hi[y] << 1) + ((E[y] + E[y+1]) >> 1)
 	for (let y = 0; y < n; y++) {
 		const lo = y * w;
 		const h1 = hi + y * w;
@@ -306,7 +306,7 @@ function idwt(buf: Int32Array, at: number, n: number): void {
 				(tmp[lo + x] as number) -
 				(((tmp[h0 + x] as number) + (tmp[h1 + x] as number) + 1) >> 1);
 		if (y > 0) {
-			// 1 つ前の奇数行(E[y-1] と E[y] の間)
+			// 1 つ前の奇数行。E[y-1] と E[y] の間にある
 			const odd = even - w;
 			const prev = odd - w;
 			const hp = h0;
@@ -325,7 +325,7 @@ function idwt(buf: Int32Array, at: number, n: number): void {
 			((tmp[hLast + x] as number) << 1) + (buf[lastEven + x] as number);
 }
 
-/** 水平方向の 1 行: 低域 l[0..n) と高域 h[0..n) から、dst[d..d+2n)。偶数 = l - ((h[x-1] + h[x] + 1) >> 1)、奇数 = (h << 1) + ((偶数 + 次の偶数) >> 1) */
+/** 水平方向の 1 行。低域 l[0..n) と高域 h[0..n) から dst[d..d+2n) を作る。偶数 = l - ((h[x-1] + h[x] + 1) >> 1)、奇数 = (h << 1) + ((偶数 + 次の偶数) >> 1) */
 function horiz(
 	src: Int32Array,
 	l: number,
@@ -350,14 +350,14 @@ function horiz(
 
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
-/** Y・Cb・Cr(5 ビットの小数つき、Y は -128 のオフセット)→ RGBA。16.16 の固定小数 + 5 ビット = 21 ビットの右シフト */
+/** Y・Cb・Cr を RGBA にする。入力は 5 ビットの小数つきで、Y は -128 のオフセット。16.16 の固定小数と 5 ビットを合わせて 21 ビット右へずらす */
 export function yccToRgba(
 	y: Int32Array | Int16Array,
 	cb: Int32Array | Int16Array,
 	cr: Int32Array | Int16Array,
 ): Uint8ClampedArray {
 	const out = new Uint8ClampedArray(TILE_PIXELS * 4);
-	// 1 画素を 32 ビット 1 回で書く(リトル エンディアンなら R が下位)
+	// 1 画素を 32 ビットで 1 回に書く。リトル エンディアンなら R が下位
 	const out32 = LITTLE_ENDIAN ? new Uint32Array(out.buffer) : undefined;
 	for (let i = 0; i < TILE_PIXELS; i++) {
 		const yy = ((y[i] as number) + 4096) << 16;
@@ -381,14 +381,14 @@ export function yccToRgba(
 	return out;
 }
 
-/** 1 つのタイルの作業用の係数(使い回す。rlgrDecode が先頭で 0 に埋め直す) */
+/** 1 つのタイルの作業用の係数。使い回し、rlgrDecode が先頭で 0 に埋め直す */
 const PLANES = [
 	new Int32Array(4096),
 	new Int32Array(4096),
 	new Int32Array(4096),
 ] as [Int32Array, Int32Array, Int32Array];
 
-/** 1 つのタイル: 3 成分のデータ(Y / Cb / Cr)と量子化の値 → RGBA */
+/** 1 つのタイルの 3 成分のデータ(Y / Cb / Cr)と量子化の値から RGBA を作る */
 export function decodeTile(
 	mode: number,
 	data: [Uint8Array, Uint8Array, Uint8Array],
@@ -404,7 +404,7 @@ export function decodeTile(
 
 // ---- ストリーム ----
 
-/** RemoteFX のデータ(1 つの Surface コマンドの bitmapData)から、描くべきタイルを取り出して復号する */
+/** RemoteFX のデータ(1 つの Surface コマンドの bitmapData)から、描くタイルを取り出して復号する */
 export function decodeStream(data: Uint8Array): RfxTile[] {
 	return parseTiles(data).map((t) => ({
 		x: t.x,
@@ -414,7 +414,7 @@ export function decodeStream(data: Uint8Array): RfxTile[] {
 	}));
 }
 
-/** RemoteFX のストリームから、タイルの位置と圧縮データを取り出す(復号はしない。復号は Worker でも、その場でもよい) */
+/** RemoteFX のストリームから、タイルの位置と圧縮データを取り出す。復号はしない。復号は Worker でもその場でもよい */
 export function parseTiles(data: Uint8Array): RawTile[] {
 	const r = new Reader(data);
 	const tiles: RawTile[] = [];
@@ -450,7 +450,7 @@ function parseTileset(r: Reader, rects: Rect[], out: RawTile[]): void {
 	if (r.u16() !== CBT_TILESET)
 		throw new Error("RemoteFX: Tileset の種類が違う");
 	r.u16(); // idx
-	const mode = (r.u16() >> 10) & 0xf; // properties の et(エントロピーの方式)
+	const mode = (r.u16() >> 10) & 0xf; // properties の et。エントロピーの方式
 	const numQuant = r.u8();
 	const tileSize = r.u8();
 	const numTiles = r.u16();

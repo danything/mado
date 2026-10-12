@@ -1,4 +1,4 @@
-// バイト列の読み書き。RDP は基本リトル エンディアン、TPKT・X.224・MCS(BER / PER)はビッグ エンディアン。
+// バイト列の読み書き。RDP はおおむねリトル エンディアンで、TPKT、X.224、MCS(BER / PER)はビッグ エンディアン。
 
 export class Reader {
 	pos = 0;
@@ -154,7 +154,7 @@ export class Writer {
 		if (nul) this.u16(0);
 		return this;
 	}
-	/** 固定長の UTF-16LE 欄(残りは 0 で埋める。長すぎれば切る。最後の 1 文字ぶんは NUL に残す) */
+	/** 固定長の UTF-16LE の欄。残りは 0 で埋め、長すぎれば切る。最後の 1 文字分は NUL のために空けておく */
 	utf16Fixed(s: string, bytes: number): this {
 		const max = bytes / 2 - 1;
 		const t = s.slice(0, max);
@@ -162,7 +162,7 @@ export class Writer {
 		this.zeros(bytes - t.length * 2);
 		return this;
 	}
-	/** あとで書き込む場所(n バイト)を 0 で取っておき、その位置を返す(NTLM の MIC など) */
+	/** NTLM の MIC のように、あとで書き込む n バイトを 0 で取っておき、その位置を返す */
 	mark(n: number): number {
 		const at = this.pos;
 		this.zeros(n);

@@ -1,7 +1,7 @@
-// Graphics Pipeline([MS-RDPEGFX]、動的チャネル Microsoft::Windows::RDS::Graphics)。
-// サーバーが面(surface)を作り、コーデック(H.264 の AVC420 / AVC444、ClearCodec、Planar、RemoteFX Progressive、生)で描き、面を画面へ写す。
-// サーバーからの PDU は ZGFX で包まれて来る。こちらからの PDU(Caps・Frame Acknowledge)は包まない。
-// 描画は GfxOps(ブラウザでは canvas、試験では偽物)に任せ、H.264 の復号は AvcDecoder(ブラウザでは VideoDecoder)に任せる。
+// Graphics Pipeline。[MS-RDPEGFX] の動的チャネル Microsoft::Windows::RDS::Graphics で話す。
+// サーバーは面(surface)を作り、そこへコーデックで描いて、面を画面へ写す。コーデックは H.264(AVC420 / AVC444)、ClearCodec、Planar、RemoteFX Progressive、生の画素。
+// サーバーからの PDU は ZGFX で包まれて来る。こちらから送る Caps と Frame Acknowledge は包まない。
+// 描画は GfxOps に任せる。ブラウザでは canvas、試験では偽物を使う。H.264 の復号は AvcDecoder に任せる。ブラウザでは VideoDecoder を使う。
 
 import { FrameLatency, gfxTimestampMs } from "./autoscale";
 import { decodePlanar } from "./bitmap";
@@ -60,13 +60,13 @@ export const CODEC = {
 } as const;
 
 /**
- * 能力の版([MS-RDPEGFX] 2.2.3)。版 8.1 は AVC420 を使えるかを AVC420_ENABLED で、版 10 以上は使えないことを AVC_DISABLED で伝える。
- * 版 10 以上で AVC_DISABLED を付けないと AVC444 / AVC444v2 も使えることになる。
- * GPU の無い Windows 11 は 8.1 の AVC420 では H.264 を使わず版 8 を選んだ。版 10 以上なら H.264(AVC444)を使う
+ * 能力の版([MS-RDPEGFX] 2.2.3)。版 8.1 では AVC420 を使えることを AVC420_ENABLED で伝え、版 10 以上では使えないことを AVC_DISABLED で伝える。
+ * 版 10 以上で AVC_DISABLED を付けなければ、AVC444 / AVC444v2 も使えることになる。
+ * GPU の無い Windows 11 は、8.1 の AVC420 では H.264 を使わず版 8 を選んだ。版 10 以上なら AVC444 で H.264 を使う。
  */
 const CAPVERSION_8 = 0x00080004;
 const CAPVERSION_81 = 0x00080105;
-/** 版 10.0 〜 10.7。10.1 だけ capsData が 16 バイト(予約で 0) */
+/** 版 10.0 〜 10.7。capsData は 10.1 のときだけ 16 バイトで、中身は予約の 0 */
 const CAPVERSION_10 = [
 	0x000a0002, 0x000a0100, 0x000a0200, 0x000a0301, 0x000a0400, 0x000a0502,
 	0x000a0600, 0x000a0701,
@@ -75,26 +75,26 @@ const CAPVERSION_101 = 0x000a0100;
 const CAPVERSION_107 = 0x000a0701;
 const CAPS_FLAG_AVC420_ENABLED = 0x10;
 const CAPS_FLAG_AVC_DISABLED = 0x20;
-/** 版 10.7: MapSurfaceToScaledOutput / Window を送らせない(拡縮して写すことはしない) */
+/** 版 10.7 では MapSurfaceToScaledOutput / Window を送らせない。拡縮して写すことはしない */
 const CAPS_FLAG_SCALEDMAP_DISABLE = 0x80;
 
 const PIXEL_FORMAT_ARGB = 0x21;
 
-/** H.264 の復号がこれだけ続けて失敗したら、復号器が使えないとみなす(30fps で 2 秒ほど) */
+/** H.264 の復号がこの回数続けて失敗したら、復号器は使えないとみなす。30fps で 2 秒ほど */
 const AVC_GIVE_UP = 60;
 
-/** キャッシュの枠の数の上限(SMALL_CACHE を付けないとき) */
+/** キャッシュの枠の数の上限。SMALL_CACHE を付けないときの値 */
 const MAX_CACHE_SLOTS = 25600;
 const MAX_SURFACE_SIDE = 8192;
-/** 面の数と、全部の面の画素数の合計の上限(4 バイト / 画素で 512MB) */
+/** 面の数の上限と、全部の面の画素数の合計の上限。4 バイト / 画素で 512MB */
 const MAX_SURFACES = 64;
 const MAX_SURFACE_PIXELS = 1 << 27;
-/** 画像キャッシュの合計の上限(4 バイト / 画素)。超えたら古いものから捨てる */
+/** 画像キャッシュの合計の上限。4 バイト / 画素で数える。超えたら古いものから捨てる */
 const MAX_CACHE_BYTES = 256 * 1024 * 1024;
 
 export type Rect = { left: number; top: number; right: number; bottom: number };
 
-/** 面への描画。GFX の座標は面の左上から、right / bottom は含まない */
+/** 面への描画。GFX の座標は面の左上が原点で、right / bottom は含まない */
 export interface GfxOps {
 	/** 画面(出力)の大きさ。ResetGraphics で来る */
 	resetOutput(width: number, height: number): void;
@@ -123,13 +123,13 @@ export interface GfxOps {
 	evict(slot: number): void;
 	/** 面の矩形のアルファだけを置き換える(ALPHA コーデック) */
 	setAlpha(id: number, rect: Rect, alpha: Uint8Array): void;
-	/** 復号した H.264 の 1 枚(destRect の大きさ)のうち、regions(destRect からの相対)だけを面へ */
+	/** 復号した H.264 の 1 枚(destRect の大きさ)のうち、regions の部分だけを面へ描く。regions は destRect からの相対 */
 	drawVideo(id: number, frame: unknown, dest: Rect, regions: Rect[]): void;
-	/** フレームの終わり: 変わったところを画面へ写す */
+	/** フレームの終わり。変わったところを画面へ写す */
 	present(): void;
 }
 
-/** H.264(Annex B)の復号。結果の 1 枚を返す(何も出なければ null)。使い終わった 1 枚は ops.drawVideo のあとで close する */
+/** H.264(Annex B)を復号して 1 枚を返す。何も出なければ null。返した 1 枚は ops.drawVideo のあとで close する */
 export interface AvcDecoder {
 	decode(
 		annexB: Uint8Array,
@@ -138,8 +138,8 @@ export interface AvcDecoder {
 		height: number,
 	): Promise<VideoFrameLike | null>;
 	/**
-	 * AVC444 用: 復号した 1 枚を YUV420 の 3 面で返す(何も出なければ null)。decode と同じ流れ(同じ復号器)で復号する。
-	 * これがあるときだけ版 10 以上(AVC444 を使える)を宣言する
+	 * AVC444 用。復号した 1 枚を YUV420 の 3 面で返し、何も出なければ null を返す。decode と同じ復号器で、同じ流れとして復号する。
+	 * これがあるときだけ、AVC444 を使える版 10 以上を宣言する
 	 */
 	decodeYuv?(
 		annexB: Uint8Array,
@@ -153,8 +153,8 @@ export interface AvcDecoder {
 export type VideoFrameLike = { close(): void };
 
 /**
- * H.264 を使えるか(VideoDecoder が無い・H.264 を復号できないブラウザでは undefined)。
- * hardware は GPU で復号できるとき(待ち時間と CPU の負荷が小さい)
+ * H.264 を使えるか。VideoDecoder が無いブラウザや H.264 を復号できないブラウザでは undefined。
+ * hardware は GPU で復号できるとき。待ち時間も CPU の負荷も小さい
  */
 export async function avcSupport(): Promise<{ hardware: boolean } | undefined> {
 	const VD = (globalThis as { VideoDecoder?: typeof VideoDecoder })
@@ -189,9 +189,9 @@ function header(cmd: number, body: Uint8Array): Uint8Array {
 }
 
 /**
- * CapsAdvertise(FreeRDP の rdpgfx_send_supported_caps と同じ組み合わせ): 版 8 と 8.1(avc420 なら AVC420_ENABLED)、
- * それに版 10.0 〜 10.7。版 10 以上は、AVC444 を使える(avc444)ときは何も付けず、H.264 を使わないときは AVC_DISABLED を付ける。
- * AVC420 だけ使えるときは版 10 以上を宣言しない(AVC444 で送られても困る)
+ * CapsAdvertise。組み合わせは FreeRDP の rdpgfx_send_supported_caps と同じ。版 8 と 8.1 を送り、avc420 なら 8.1 に AVC420_ENABLED を付ける。
+ * 版 10.0 〜 10.7 も送る。AVC444 を使えるなら何も付けず、H.264 を使わないなら AVC_DISABLED を付ける。
+ * AVC420 しか使えないときは版 10 以上を宣言しない。AVC444 で送られると困る
  */
 export function capsAdvertise(avc420: boolean, avc444 = false): Uint8Array {
 	const sets: [number, number][] = [
@@ -214,7 +214,7 @@ export function capsAdvertise(avc420: boolean, avc444 = false): Uint8Array {
 	return header(CMD.CAPSADVERTISE, w.done());
 }
 
-/** CapsConfirm: サーバーが選んだ版と flags */
+/** CapsConfirm。サーバーが選んだ版と flags */
 export function parseCapsConfirm(body: Uint8Array): {
 	version: number;
 	flags: number;
@@ -225,14 +225,14 @@ export function parseCapsConfirm(body: Uint8Array): {
 	return { version, flags: len >= 4 ? r.u32() : 0 };
 }
 
-/** 版の名前(0x000A0701 → "10.7") */
+/** 版の名前。0x000A0701 なら "10.7" */
 export function capsVersionName(version: number): string {
 	return `${version >>> 16}.${(version >>> 8) & 0xff}`;
 }
 
 /**
- * Frame Acknowledge。queueDepth は、受け取ったがまだ描いていないフレームの数(0 は「分からない」)。
- * サーバーはこれを見て送る頻度を決めるので、端末が遅ければ送る量が減る
+ * Frame Acknowledge。queueDepth は、受け取ったがまだ描いていないフレームの数。0 は「分からない」の意味。
+ * サーバーはこれを見て送る頻度を決める。端末が遅ければ送る量が減る
  */
 export function frameAcknowledge(
 	frameId: number,
@@ -277,7 +277,7 @@ type Avc420 = {
 	stream: Uint8Array;
 };
 
-/** RDPGFX_AVC420_BITMAP_STREAM: メタブロック(領域の矩形と品質)+ H.264 の Annex B */
+/** RDPGFX_AVC420_BITMAP_STREAM。メタブロック(領域の矩形と品質)の後に H.264 の Annex B が続く */
 export function parseAvc420(data: Uint8Array): Avc420 {
 	const r = new Reader(data);
 	const n = r.u32();
@@ -295,8 +295,8 @@ export function parseAvc420(data: Uint8Array): Avc420 {
 type Avc444 = { luma?: Avc420; chroma?: Avc420 };
 
 /**
- * RDPGFX_AVC444_BITMAP_STREAM(AVC444v2 も同じ形): 先頭の u32 の下 30 ビットが 1 つ目の AVC420(メタブロックを含む)の長さ、
- * 上 2 ビット(LC)が中身。0 = 1 つ目が主の絵・2 つ目が補助の絵、1 = 主の絵だけ、2 = 補助の絵だけ(どちらも 1 つ目に)
+ * RDPGFX_AVC444_BITMAP_STREAM。AVC444v2 も同じ形。先頭の u32 の下 30 ビットは 1 つ目の AVC420 の長さで、メタブロックも含む。
+ * 上 2 ビット(LC)は中身を表す。0 なら 1 つ目が主の絵で 2 つ目が補助の絵。1 なら主の絵だけ、2 なら補助の絵だけで、どちらも 1 つ目に入る
  */
 export function parseAvc444(data: Uint8Array): Avc444 {
 	const r = new Reader(data);
@@ -316,7 +316,7 @@ export function parseAvc444(data: Uint8Array): Avc444 {
 	}
 }
 
-/** Annex B の NAL を順に(開始符号 00 00 01 / 00 00 00 01 の後ろ) */
+/** Annex B の NAL を順に返す。開始符号 00 00 01 / 00 00 00 01 の後ろから */
 function* nalUnits(stream: Uint8Array): Generator<Uint8Array> {
 	let i = 0;
 	let start = -1;
@@ -354,39 +354,39 @@ export function isKeyFrame(stream: Uint8Array): boolean {
 
 // ---- 受ける側 ----
 
-/** GFX のチャネルの受け手。PDU を順に処理し(H.264 の復号を待つあいだも順序を保つ)、フレームの終わりで応答する */
+/** GFX のチャネルの受け手。PDU を順に処理し、フレームの終わりで応答する。H.264 の復号を待つあいだも順序は崩さない */
 export class GfxClient implements DynamicHandler {
 	private zgfx = new Zgfx();
 	private clear = new ClearDecoder();
-	/** Progressive のタイルの状態(Worker を使わないとき) */
+	/** Progressive のタイルの状態。Worker を使わないときに使う */
 	private progressiveTiles = new ProgressiveTiles();
-	/** Progressive の、このフレームで復号したタイル(同じフレームの後の PDU の矩形にも描く) */
+	/** Progressive の、このフレームで復号したタイル。同じフレームの後の PDU の矩形にも描く */
 	private progressiveFrame = new ProgressiveFrame();
 	private channel?: DynamicChannel;
-	/** 処理の順序を保つ鎖(H.264 の復号は非同期) */
+	/** 処理の順序を保つための鎖。H.264 の復号は非同期なので要る */
 	private chain: Promise<void> = Promise.resolve();
 	private surfaces = new Map<
 		number,
 		{ width: number; height: number; alpha: boolean }
 	>();
-	/** キャッシュの番号 → 大きさ(バイト)。入れた順(古いものから捨てる) */
+	/** キャッシュの番号から大きさ(バイト)への表。入れた順に並ぶので、古いものから捨てられる */
 	private cacheSlots = new Map<number, number>();
 	private cacheBytes = 0;
 	private surfacePixels = 0;
 	/** ZGFX の伸長に失敗した。履歴が壊れたので、以後の絵は正しくならない */
 	private broken = false;
 	private totalFrames = 0;
-	/** 受け取って、まだ描き終えていないフレーム(EndFrame)の数 */
+	/** 受け取ったが、まだ描き終えていないフレーム(EndFrame)の数 */
 	private queuedFrames = 0;
-	/** いま描いているフレームの、サーバーの時刻(StartFrame) */
+	/** いま描いているフレームの、サーバー側の時刻。StartFrame で来る */
 	private frameTimestamp?: number;
-	/** フレームが作られてから描き終えるまでの遅れのうち、溜まった分(回線・端末の混み具合) */
+	/** フレームが作られてから描き終えるまでの遅れのうち、溜まった分。回線や端末の混み具合を表す */
 	readonly latency = new FrameLatency();
-	/** H.264 の復号が続けて失敗した数(1 枚でも出れば 0 に戻す) */
+	/** H.264 の復号が続けて失敗した回数。1 枚でも出れば 0 に戻す */
 	private avcFailures = 0;
-	/** AVC444 の YUV444(面ごと。主の絵と補助の絵が別々に来るので前のものを持つ) */
+	/** AVC444 の YUV444 を面ごとに持つ。主の絵と補助の絵は別々に来るので、前のものを取っておく */
 	private yuv444 = new Map<number, Yuv444>();
-	/** サーバーが選んだ能力の版と flags(CapsConfirm) */
+	/** サーバーが選んだ能力の版と flags。CapsConfirm で来る */
 	confirmed?: { version: number; flags: number };
 	/** 診断用 */
 	readonly stats = {
@@ -396,7 +396,7 @@ export class GfxClient implements DynamicHandler {
 		/** AVC444 の復号を待った時間と、YUV444 を組み立てて RGBA にした時間の合計(ms) */
 		avc444DecodeMs: 0,
 		avc444ConvertMs: 0,
-		/** ClearCodec・Progressive・Planar の復号にかかった時間の合計(ms。メインスレッド) */
+		/** ClearCodec、Progressive、Planar の復号にかかった時間の合計(ms)。メインスレッドでの時間 */
 		clearMs: 0,
 		progressiveMs: 0,
 		planarMs: 0,
@@ -413,18 +413,18 @@ export class GfxClient implements DynamicHandler {
 		cacheMiss: 0,
 	};
 
-	/** ClearCodec で描けなかった部分(NSCodec など)の数(診断用) */
+	/** ClearCodec で描けなかった部分の数。NSCodec などが来たときに増える。診断用 */
 	get clearUnsupported(): number {
 		return this.clear.unsupported;
 	}
-	/** PDU 1 つの失敗(そのフレームの一部を飛ばして続ける) */
+	/** PDU 1 つの失敗。そのフレームの一部を飛ばして続ける */
 	onError?: (e: unknown) => void;
-	/** 回復できない失敗(ZGFX の履歴が壊れた)。以後のデータは捨てる。つなぎ直すしかない */
+	/** 回復できない失敗。ZGFX の履歴が壊れたときに呼ぶ。以後のデータは捨てるので、つなぎ直すしかない */
 	onFatal?: (e: unknown) => void;
-	/** H.264 の復号が続けて失敗した(復号器が使えない)。H.264 なしでつなぎ直すとよい。1 度だけ呼ぶ */
+	/** H.264 の復号が続けて失敗し、復号器が使えないとき。H.264 なしでつなぎ直すとよい。1 度だけ呼ぶ */
 	onAvcBroken?: () => void;
 
-	/** Progressive のタイルを復号する Worker(無ければ、その場で復号する) */
+	/** Progressive のタイルを復号する Worker。無ければその場で復号する */
 	private pool?: TilePool;
 
 	/** avc を渡したときだけ H.264 を使えると伝える。pool を渡すと、Progressive は Worker で並列に復号する */
@@ -436,7 +436,7 @@ export class GfxClient implements DynamicHandler {
 		if (pool?.async) this.pool = pool;
 	}
 
-	/** サーバーが GFX のチャネルを開いた(開かなければ旧来の描画のまま) */
+	/** サーバーが GFX のチャネルを開いたか。開かなければ旧来の描画のまま */
 	get active(): boolean {
 		return this.channel !== undefined;
 	}
@@ -451,12 +451,12 @@ export class GfxClient implements DynamicHandler {
 		return this.avc !== undefined;
 	}
 
-	/** AVC444 も使えると伝えたか(版 10 以上) */
+	/** AVC444 も使えると伝えたか。版 10 以上のとき */
 	get avc444Enabled(): boolean {
 		return this.avc?.decodeYuv !== undefined;
 	}
 
-	/** サーバーが選んだ版(診断用。例 "10.7 flags=0x80") */
+	/** サーバーが選んだ版。診断用で、例えば "10.7 flags=0x80" */
 	get confirmedVersion(): string | undefined {
 		const c = this.confirmed;
 		return c && `${capsVersionName(c.version)} flags=0x${c.flags.toString(16)}`;
@@ -478,7 +478,7 @@ export class GfxClient implements DynamicHandler {
 		try {
 			pdus = splitPdus(this.zgfx.decompress(data));
 		} catch (e) {
-			// 伸長の途中で失敗すると、履歴が中途半端なまま残り、以後の一致がずれる
+			// 伸長の途中で失敗すると、履歴が中途半端なまま残る。以後の一致がずれる
 			this.broken = true;
 			this.stats.skipped++;
 			(this.onFatal ?? this.onError)?.(e);
@@ -486,7 +486,7 @@ export class GfxClient implements DynamicHandler {
 		}
 		for (const p of pdus) {
 			if (p.cmd === CMD.ENDFRAME) this.queuedFrames++;
-			// Progressive は届いた順にすぐ Worker へ渡す(前のフレームを描いている間に復号が進む)。描くのは順番どおり
+			// Progressive は届いた順にすぐ Worker へ渡す。前のフレームを描いている間に復号が進む。描くのは順番どおり
 			const pre = this.pool && this.prefetch(this.pool, p);
 			this.chain = this.chain
 				.then(() => this.handle(p, pre))
@@ -503,8 +503,8 @@ export class GfxClient implements DynamicHandler {
 	}
 
 	/**
-	 * Worker で復号するものを先に頼む。面を作る・消すときは、タイルの状態を捨てるよう全部の Worker へ(後のタイルより先に届く)。
-	 * 面の大きさはまだ分からない(CreateSurface を処理する前のこともある)ので、面で切るのは描くとき
+	 * Worker で復号するものを先に頼む。面を作るときと消すときは、タイルの状態を捨てるよう全部の Worker へ伝える。後のタイルより先に届く。
+	 * 面の大きさはまだ分からないことがある。CreateSurface を処理する前かもしれない。だから面の大きさで切るのは描くとき
 	 */
 	private prefetch(pool: TilePool, p: GfxPdu): Promise<Prefetched> | undefined {
 		const r = new Reader(p.body);
@@ -547,7 +547,7 @@ export class GfxClient implements DynamicHandler {
 			case CMD.CAPSCONFIRM:
 				this.confirmed = parseCapsConfirm(p.body);
 				break;
-			case CMD.DELETEENCODINGCONTEXT: // Progressive の文脈。タイルの状態は面ごとに持つので使わない(FreeRDP と同じ)
+			case CMD.DELETEENCODINGCONTEXT: // Progressive の文脈。タイルの状態は面ごとに持つので使わない。FreeRDP も同じ
 				break;
 			case CMD.RESETGRAPHICS: {
 				const width = r.u32();
@@ -571,7 +571,7 @@ export class GfxClient implements DynamicHandler {
 					(!old && this.surfaces.size >= MAX_SURFACES) ||
 					pixels + width * height > MAX_SURFACE_PIXELS
 				) {
-					// 作らない。この面を指すコマンドは「無い面」で飛ばされる
+					// 作らない。この面を指すコマンドは「無い面」として飛ばす
 					this.stats.skipped++;
 					break;
 				}
@@ -601,7 +601,7 @@ export class GfxClient implements DynamicHandler {
 				break;
 			}
 			case CMD.MAPSURFACETOSCALEDOUTPUT: {
-				// 版 10.7 は SCALEDMAP_DISABLE で断っている(10.7 より前の版でも拡縮は使われないはず)。来たら等倍で写す
+				// 版 10.7 では SCALEDMAP_DISABLE で断っている。10.7 より前の版でも拡縮は使われないはず。来たら等倍で写す
 				const id = r.u16();
 				r.u16();
 				this.ops.mapSurface(id, r.u32(), r.u32());
@@ -612,11 +612,11 @@ export class GfxClient implements DynamicHandler {
 				this.progressiveFrame.reset();
 				break;
 			case CMD.ENDFRAME: {
-				// 先に数を戻す(下で例外になっても、溜まった数がずれないように)
+				// 先に数を戻す。下で例外になっても、溜まった数がずれない
 				this.queuedFrames = Math.max(0, this.queuedFrames - 1);
 				const frameId = r.u32();
 				this.ops.present();
-				// 遅れは「描き終えた」時刻で測る。画面へ写すのは描画の周期の終わりになることがあるが、その差(1 周期まで)は溜まった遅れには効かない
+				// 遅れは描き終えた時刻で測る。画面へ写すのは描画の周期の終わりになることもあるが、その差は 1 周期までなので、溜まった遅れには効かない
 				if (this.frameTimestamp !== undefined)
 					this.latency.add(
 						gfxTimestampMs(this.frameTimestamp),
@@ -666,7 +666,7 @@ export class GfxClient implements DynamicHandler {
 					Math.max(0, rect.bottom - rect.top) *
 					4;
 				this.forgetCache(slot);
-				// 合計の上限を超えるなら、古いものから捨てる(後で指されたら、その描画は飛ばす)
+				// 合計の上限を超えるなら、古いものから捨てる。後で指されたら、その描画は飛ばす
 				for (const [old] of this.cacheSlots) {
 					if (this.cacheBytes + bytes <= MAX_CACHE_BYTES) break;
 					this.forgetCache(old);
@@ -683,7 +683,7 @@ export class GfxClient implements DynamicHandler {
 				const id = r.u16();
 				const n = r.u16();
 				if (!this.cacheSlots.has(slot)) {
-					// 上限で捨てたもの(またはサーバーの誤り)。その描画だけ飛ばす
+					// 上限で捨てたものか、サーバーの誤り。その描画だけ飛ばす
 					this.stats.cacheMiss++;
 					break;
 				}
@@ -716,7 +716,7 @@ export class GfxClient implements DynamicHandler {
 		this.cacheSlots.delete(slot);
 	}
 
-	/** WireToSurface2: 宣言しなくても、版 8 以上の Windows は Progressive で送ってくる(写真・新しく見えた部分など) */
+	/** WireToSurface2。宣言しなくても、版 8 以上の Windows は写真や新しく見えた部分などを Progressive で送ってくる */
 	private async wireToSurface2(
 		r: Reader,
 		pre?: Promise<Prefetched>,
@@ -733,7 +733,7 @@ export class GfxClient implements DynamicHandler {
 			return;
 		}
 		this.stats.progressive++;
-		// progressiveMs: その場で復号するときは復号の時間、Worker のときは描く順番が来てから待った時間
+		// progressiveMs は、その場で復号するときは復号の時間、Worker で復号するときは描く順番が来てから待った時間
 		const t0 = performance.now();
 		let msg: ProgressiveMessage;
 		let rgba: Uint8ClampedArray[];
@@ -783,7 +783,7 @@ export class GfxClient implements DynamicHandler {
 				break;
 			}
 			case CODEC.PLANAR: {
-				// GFX の Planar は上の行から(旧ビットマップは下から)
+				// GFX の Planar は上の行から並ぶ。旧ビットマップは下の行から
 				this.stats.planar++;
 				const t0 = performance.now();
 				const rgba = decodePlanar(data, w, h, true);
@@ -800,7 +800,7 @@ export class GfxClient implements DynamicHandler {
 				break;
 			}
 			case CODEC.CAVIDEO: {
-				// RemoteFX: タイルの位置と領域は destRect からの相対
+				// RemoteFX。タイルの位置と領域は destRect からの相対
 				this.stats.rfx++;
 				for (const t of decodeStream(data)) {
 					const rects = t.rects.length ? t.rects : [{ x: 0, y: 0, w, h }];
@@ -859,7 +859,7 @@ export class GfxClient implements DynamicHandler {
 	}
 
 	/**
-	 * AVC444 / AVC444v2: 主の絵と補助の絵を同じ復号器で順に復号し(1 本の H.264 の流れ。FreeRDP と同じ)、面ごとの YUV444 に重ねて描く。
+	 * AVC444 / AVC444v2。主の絵と補助の絵を同じ復号器で順に復号する。FreeRDP と同じく 1 本の H.264 の流れとして扱う。結果は面ごとの YUV444 に重ねて描く。
 	 * 片方だけ来たときは、もう片方は前のものを使う
 	 */
 	private async avc444(
@@ -879,9 +879,9 @@ export class GfxClient implements DynamicHandler {
 			st = new Yuv444(w, h);
 			this.yuv444.set(id, st);
 		}
-		// 片方が出なくても、もう片方は復号器に渡す(参照の鎖を切らない)
+		// 片方が出なくても、もう片方は復号器に渡す。参照の鎖を切らないため
 		const t0 = performance.now();
-		// 2 つとも先に復号器へ渡してから待つ(1 つ目の出力を待ってから 2 つ目を渡すと、その分だけ遅れる)。渡す順は主・副のまま
+		// 2 つとも先に復号器へ渡してから待つ。1 つ目の出力を待ってから 2 つ目を渡すと、その分遅れる。渡す順は主、副のまま
 		const lumaP =
 			m.luma && decodeYuv(m.luma.stream, isKeyFrame(m.luma.stream), w, h);
 		const chromaP =
@@ -923,7 +923,7 @@ export class GfxClient implements DynamicHandler {
 	}
 }
 
-/** ALPHA コーデック([MS-RDPEGFX] 2.2.4.3): 署名 "AL"、圧縮の有無、生または (値, 長さ) の並び */
+/** ALPHA コーデック([MS-RDPEGFX] 2.2.4.3)。署名 "AL" と圧縮の有無に続いて、生の値か (値, 長さ) の並びが来る */
 export function alphaCodec(data: Uint8Array, w: number, h: number): Uint8Array {
 	const r = new Reader(data);
 	if (r.u16() !== 0x414c) throw new Error("ALPHA: 署名が違う");

@@ -1,12 +1,12 @@
 // mado: OIDC でログインして、ブラウザから RDP する小さなゲートウェイ。Windows のサービスとして動く。
 //
-//   https://<host>/             画面(自前の RDP クライアント。web/ を bun でビルドして exe に埋め込んだもの)
+//   https://<host>/             画面。web/ の RDP クライアントを bun でビルドして exe に埋め込んである
 //   https://<host>/login        OIDC のログインへ
 //   https://<host>/callback     OIDC から戻ってくる口
 //   https://<host>/api/session  ログイン中の名前・版・つなぐ先
-//   https://<host>/api/token    つなぐ直前に取る、使い捨ての中継のトークン(?target=<name>)
-//   wss://<host>/ws             RDCleanPath の中継(Relay.cs)
-//   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認(80 番。ほかは https へ)
+//   https://<host>/api/token    ?target=<name>。つなぐ直前に取る使い捨ての中継のトークン
+//   wss://<host>/ws             RDCleanPath の中継。Relay.cs
+//   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
 //   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態
 
 using System.Collections.Concurrent;
@@ -41,7 +41,7 @@ var secure = config.Tls == "acme";
 
 const string SessionCookie = "mado";
 const string PendingCookie = "mado_login";
-// ログインしていられる時間。切れたら OIDC に行き直す(Entra 側にセッションがあれば一瞬で戻る)
+// ログインしていられる時間。切れたら OIDC に行き直す。Entra 側にセッションが残っていればすぐ戻ってくる
 const int SessionSeconds = 8 * 60 * 60;
 // /api/token が出す中継のトークンの寿命。ページが受け取ってすぐ使う
 const int RelayTokenSeconds = 60;
@@ -53,7 +53,7 @@ int? certDaysLeft = null;
 var sessions = 0;
 var startedAt = DateTimeOffset.UtcNow.ToString("o");
 var updater = new Updater(config.Update.Repo, version, config.DataDir, http, log.Write);
-// サービスとして動いているときだけ自分で上げる(手元で dotnet run しているときは入れる MSI が無い)
+// 自分で版を上げるのはサービスとして動いているときだけ。手元の dotnet run には入れる MSI が無い
 var canUpdate = config.Update.Enabled && OperatingSystem.IsWindows()
     && Microsoft.Extensions.Hosting.WindowsServices.WindowsServiceHelpers.IsWindowsService();
 
@@ -69,7 +69,7 @@ builder.WebHost.ConfigureKestrel(k =>
     var any = config.Listen.Hostname is "::" or "0.0.0.0" or "" ? null : IPAddress.Parse(config.Listen.Hostname);
     void Listen(int port, Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions>? configure = null)
     {
-        // IPv6Any は IPv4 も受ける(デュアルスタック)
+        // IPv6Any はデュアルスタックなので IPv4 も受ける
         if (any is null) k.ListenAnyIP(port, configure ?? (_ => { }));
         else k.Listen(any, port, configure ?? (_ => { }));
     }
@@ -77,7 +77,7 @@ builder.WebHost.ConfigureKestrel(k =>
     if (secure)
         Listen(config.Listen.Https, lo => lo.UseHttps(new TlsHandshakeCallbackOptions
         {
-            // 証明書は取り直したら差し替える(つながっている RDP は切れない。新しい接続から新しい証明書)
+            // 証明書を取り直したら差し替える。新しい証明書は次の接続から使われ、つながっている RDP は切れない
             OnConnection = _ => ValueTask.FromResult(new SslServerAuthenticationOptions
             {
                 ServerCertificateContext = current ?? throw new InvalidOperationException("証明書がまだ無い"),
@@ -97,7 +97,7 @@ CookieOptions Cookie(int maxAge) => new()
 };
 Target? TargetOf(string? name) => config.Targets.FirstOrDefault(t => t.Name == name);
 
-// 使ったトークン(jti → 期限)。使い回しを弾く
+// 使ったトークンの jti と期限。使い回しを弾く
 var used = new ConcurrentDictionary<string, long>();
 Target? Consume(string? token, string sub)
 {
@@ -109,13 +109,13 @@ Target? Consume(string? token, string sub)
     return TargetOf(t.Target);
 }
 
-// どのポートに来たかで分ける: 80 は ACME と https への案内、状態の口は状態だけ、ほかは本体
+// 来たポートで分ける。80 番は ACME と https への転送、状態のポートは状態だけ、それ以外は本体
 app.Use(async (ctx, next) =>
 {
     var port = ctx.Connection.LocalPort;
     if (config.StatusPort != 0 && port == config.StatusPort)
     {
-        // Host を確かめる(DNS リバインディングで、よその名前のまま 127.0.0.1 に来るのを弾く)
+        // Host を確かめる。DNS リバインディングで、よその名前のまま 127.0.0.1 に来るのを弾く
         var host = ctx.Request.Host.Value;
         if (host != $"127.0.0.1:{port}" && host != $"localhost:{port}") { await Text(403, "host が違う").ExecuteAsync(ctx); return; }
         if (ctx.Request.Path == "/status" && HttpMethods.IsGet(ctx.Request.Method))
@@ -123,8 +123,8 @@ app.Use(async (ctx, next) =>
             await Results.Json(new Status(version, origin, startedAt, sessions, certDaysLeft, updater.State), ApiJson.Default.Status).ExecuteAsync(ctx);
             return;
         }
-        // 今すぐ新しい版を確かめて、あれば入れる(タスクトレイから)。ほかのサイトのページから投げさせないため、
-        // `x-mado: 1` のヘッダーを求める(足すと CORS の事前確認が要り、それには答えない)
+        // タスクトレイから呼ぶ。新しい版をすぐ確かめて、あれば入れる。
+        // `x-mado: 1` のヘッダーを求める。このヘッダーを付けると CORS の事前確認が要り、それには答えないので、ほかのサイトのページからは呼べない
         if (ctx.Request.Path == "/update" && HttpMethods.IsPost(ctx.Request.Method))
         {
             if (ctx.Request.Headers["x-mado"] != "1") { await Text(403, "x-mado: 1 が要る").ExecuteAsync(ctx); return; }
@@ -173,7 +173,7 @@ app.MapGet("/callback", async (HttpContext ctx) =>
         log.Write($"login: {user.Name} ({user.Sub})");
         return Results.Redirect(pending.To);
     }
-    // どんな失敗でも理由をログに残して返す(ログ無しの 500 にしない)
+    // 何で失敗しても理由をログに残して返す。ログの無い 500 にはしない
     catch (Exception e)
     {
         log.Write($"login failed: {e.Message}");
@@ -232,8 +232,8 @@ app.MapGet("/{**path}", async (HttpContext ctx) =>
 
 if (secure)
 {
-    // 証明書: 取ってから待ち受け始めるのではなく、80 番で確認に答えられるように先に動かし、取れたら https に使う。
-    // 12 時間ごとに残りを見る(30 日を切ったら取り直す)
+    // 証明書を取るには 80 番で確認に答える必要があるので、先に待ち受けを始めて、取れたら https に使う。
+    // 12 時間ごとに残りの日数を見て、30 日を切ったら取り直す
     async Task Renew()
     {
         try
@@ -266,7 +266,8 @@ else
 if (canUpdate)
 {
     updater.Cleanup();
-    // 起動直後は避けて 5 分後に 1 回、あとは check_hours ごと。つないでいて入れられなかったときは 10 分ごとに試す
+    // 起動直後は避けて、5 分後に 1 回確かめる。あとは check_hours ごと。
+    // 誰かがつないでいて入れられなかったときは 10 分ごとに試し直す
     async Task TryUpdate()
     {
         if ((await updater.Check()).Available) await updater.Apply(() => sessions == 0);

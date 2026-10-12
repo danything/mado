@@ -1,16 +1,16 @@
-// mado の /ws(WebSocket)を、RDP の流れとして読み書きする。メッセージの切れ目は RDP の PDU の切れ目と関係ないので、
-// 届いたものを溜めておき、要るだけ切り出す。
+// mado の /ws(WebSocket)を RDP のバイト列として読み書きする。
+// WebSocket のメッセージの切れ目は RDP の PDU の切れ目と関係ない。届いたものを溜めておき、要る分だけ切り出す。
 
 import { concat } from "./bytes";
 
-/** CredSSP などが使う口だけ。試験では WebSocket の代わりに TCP を入れる */
+/** CredSSP などが使う読み書きの口。試験では WebSocket の代わりに TCP をつなぐ */
 export interface ByteStream {
 	peek(n: number): Promise<Uint8Array>;
 	read(n: number): Promise<Uint8Array>;
 	write(b: Uint8Array): void;
 }
 
-/** 通信が閉じた・切れた */
+/** 通信が閉じたか、切れた */
 export class StreamClosed extends Error {}
 
 /** 閉じられる ByteStream */

@@ -1,16 +1,16 @@
-// ビットマップの更新([MS-RDPBCGR] 2.2.9.1.1.3.1.2)。矩形の並びを読み、生または Interleaved RLE([MS-RDPEGDI] 3.1.9)を RGBA に直す。
-// 色の深さは 15 / 16 / 24 / 32。32 の圧縮は RDP 6.0 Planar(Windows が RemoteFX を使わないときの画面はこれ)。
-// 画面は 32 ビットで頼む(mcs.ts / pdu.ts の能力)。
+// ビットマップの更新([MS-RDPBCGR] 2.2.9.1.1.3.1.2)。矩形の並びを読み、生のものや Interleaved RLE([MS-RDPEGDI] 3.1.9)のものを RGBA に直す。
+// 色の深さは 15 / 16 / 24 / 32。32 の圧縮は RDP 6.0 Planar で、Windows は RemoteFX を使わないときの画面をこれで送る。
+// 画面は 32 ビットで頼む。mcs.ts と pdu.ts の能力を参照。
 
 import { Reader } from "./bytes";
 
 export type BitmapRect = {
 	left: number;
 	top: number;
-	/** 含む(右端の列) */
+	/** 右端の列も含む */
 	right: number;
 	bottom: number;
-	/** 復号する大きさ(右端が 4 の倍数に揃えられていて、right - left + 1 より大きいことがある) */
+	/** 復号する大きさ。右端が 4 の倍数に揃えてあり、right - left + 1 より大きいことがある */
 	width: number;
 	height: number;
 	bpp: number;
@@ -18,13 +18,13 @@ export type BitmapRect = {
 	data: Uint8Array;
 };
 
-/** 1 つの矩形の画素数の上限(普通は 64x64 など小さい) */
+/** 1 つの矩形の画素数の上限。普通は 64x64 などの小さいもの */
 export const MAX_PIXELS = 1 << 24;
 
 const BITMAP_COMPRESSION = 0x0001;
 const NO_BITMAP_COMPRESSION_HDR = 0x0400;
 
-/** TS_UPDATE_BITMAP_DATA(updateType から) */
+/** TS_UPDATE_BITMAP_DATA。updateType から読む */
 export function parseBitmapUpdate(payload: Uint8Array): BitmapRect[] {
 	const r = new Reader(payload);
 	r.u16(); // updateType
@@ -59,13 +59,13 @@ export function parseBitmapUpdate(payload: Uint8Array): BitmapRect[] {
 	return out;
 }
 
-/** 復号に要るもの(位置は要らない)。Worker へはこれだけを渡す */
+/** 復号に要るもの。位置は要らない。Worker へはこれだけを渡す */
 export type BitmapJob = Pick<
 	BitmapRect,
 	"width" | "height" | "bpp" | "compressed" | "data"
 >;
 
-/** 矩形を RGBA(上の行から、width x height)にする */
+/** 矩形を RGBA にする。上の行から並ぶ width x height */
 export function decodeBitmap(b: BitmapJob | BitmapRect): Uint8ClampedArray {
 	if (b.bpp === 8) throw new Error("8 ビット色の画面は使えない");
 	if (b.width * b.height > MAX_PIXELS)
@@ -183,7 +183,7 @@ export function rleDecompress(
 	};
 	const firstLine = () => d < rowDelta;
 
-	/** 1 画素ぶんを d に書く: 上の行と fg の XOR(最初の行は fg そのもの) */
+	/** 1 画素分を d に書く。上の行と fg の XOR で、最初の行は fg そのもの */
 	const writeFg = () => {
 		for (let i = 0; i < bpp; i++)
 			put(firstLine() ? (fg[i] as number) : above(i) ^ (fg[i] as number), i);
@@ -199,7 +199,7 @@ export function rleDecompress(
 		s += bpp;
 		return p;
 	};
-	/** 命令の追加バイト(長さ・マスク)を、入力の範囲を見て読む */
+	/** 命令の追加バイト(長さやマスク)を、入力の範囲を確かめながら読む */
 	const byteAt = (i: number): number => {
 		if (i >= src.length) throw new Error("RLE: 入力が足りない");
 		return src[i] as number;
@@ -355,20 +355,20 @@ export function rleDecompress(
 	return out;
 }
 
-// ---- RDP 6.0 Planar([MS-RDPEGDI] 2.2.2.5.1。32bpp の圧縮) ----
+// ---- RDP 6.0 Planar([MS-RDPEGDI] 2.2.2.5.1、32bpp の圧縮) ----
 
 const PLANAR_CLL = 0x07;
 const PLANAR_CS = 0x08;
 const PLANAR_RLE = 0x10;
 const PLANAR_NA = 0x20;
 
-/** 面を伸ばす作業用(使い回す。出力の RGBA だけは毎回新しく作る) */
+/** 面を伸ばす作業用。使い回す。出力の RGBA だけは毎回新しく作る */
 let scratch = new Uint8Array(0);
 
 /**
  * RLE で圧縮された 1 つの面(w x h バイト)を plane[off .. off + w * h) に伸ばす。src の at から読み、読み終えた位置を返す。
- * 走査線ごとに、制御バイト(上位 4 ビット = 生バイト数、下位 4 ビット = 繰り返し)の列。
- * 最初の行は値そのもの、2 行目からは上の行との差分(符号付き)。繰り返しは直前の値(差分の行では直前の差分)
+ * 走査線ごとに制御バイトが並ぶ。上位 4 ビットは生のバイトの数で、下位 4 ビットは繰り返しの数。
+ * 最初の行は値そのもので、2 行目からは上の行との符号付きの差分。繰り返すのは直前の値で、差分の行では直前の差分になる
  */
 function planeRle(
 	src: Uint8Array,
@@ -383,7 +383,7 @@ function planeRle(
 	for (let y = 0; y < h; y++) {
 		const end = off + (y + 1) * w;
 		let d = end - w;
-		// 直前の値(最初の行)/ 直前の差分(2 行目から)
+		// 最初の行では直前の値、2 行目からは直前の差分
 		let last = 0;
 		while (d < end) {
 			if (s >= n) throw new Error("Planar: 入力が足りない");
@@ -398,7 +398,7 @@ function planeRle(
 				raw = 0;
 			}
 			if (d + raw > end) {
-				// 生の値が行からあふれる。前と同じく、あふれる手前まで読めなければ「足りない」
+				// 生の値が行からあふれる。前と同じく、あふれる手前まで読めなければ「足りない」とする
 				if (s + (end - d) + 1 > n) throw new Error("Planar: 入力が足りない");
 				throw new Error("Planar: 1 行があふれた");
 			}
@@ -431,7 +431,7 @@ function planeRle(
 	return s;
 }
 
-/** 色差の 8 ビットの値 → 符号付きの色差(色の削減のレベルごと。表にして使い回す) */
+/** 色差の 8 ビットの値から符号付きの色差を引く表。色の削減のレベルごとに作って使い回す */
 const chromaTables: Int16Array[] = [];
 function chromaTable(cll: number): Int16Array {
 	let t = chromaTables[cll];
@@ -447,8 +447,8 @@ function chromaTable(cll: number): Int16Array {
 const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
 
 /**
- * Planar の 32bpp を RGBA(上の行から)にする。面は [アルファ]、赤、緑、青(CLL が 0 でないときは Y、Co、Cg)の順。
- * 行は下から上へ並ぶ(ほかの旧ビットマップと同じ)。色の間引き(CS)は未対応
+ * Planar の 32bpp を、上の行から並ぶ RGBA にする。面はアルファ(無いこともある)、赤、緑、青の順。CLL が 0 でなければ赤、緑、青の代わりに Y、Co、Cg が来る。
+ * 行はほかの旧ビットマップと同じく下から上へ並ぶ。色の間引き(CS)には対応していない
  */
 export function decodePlanar(
 	data: Uint8Array,
@@ -466,7 +466,7 @@ export function decodePlanar(
 	const noAlpha = (header & PLANAR_NA) !== 0;
 	const count = noAlpha ? 3 : 4;
 	const size = w * h;
-	// 色の面 3 つ(アルファは読むだけ。旧ビットマップの画面は不透明として描く)の、入力の中か作業用の中での位置
+	// 色の 3 面が、入力の中と作業用の中のどこにあるか。アルファは読むだけで、旧ビットマップの画面は不透明として描く
 	let src: Uint8Array;
 	const offs = [0, 0, 0];
 	if (rle) {
@@ -489,8 +489,8 @@ export function decodePlanar(
 	const o2 = offs[2] as number;
 	const out = new Uint8ClampedArray(size * 4);
 	const out32 = LITTLE_ENDIAN ? new Uint32Array(out.buffer) : undefined;
-	// YCoCg: Co と Cg は、8 ビットのまま (cll - 1) ビット左へずらしてから、符号付き 8 ビットとして読む(ずらしたあふれは捨てる)。
-	// FreeRDP の YCoCgToRGB と同じ順。符号付きにしてからずらすと、濃い色で符号が逆になり、赤と青が入れ替わって見えた
+	// YCoCg。Co と Cg は 8 ビットのまま (cll - 1) ビット左へずらし、あふれは捨ててから符号付き 8 ビットとして読む。
+	// FreeRDP の YCoCgToRGB と同じ順にする。符号付きにしてからずらしていたときは、濃い色で符号が逆になり、赤と青が入れ替わって見えた
 	const chroma = cll ? chromaTable(cll) : undefined;
 	for (let y = 0; y < h; y++) {
 		const row = (topDown ? y : h - 1 - y) * w;

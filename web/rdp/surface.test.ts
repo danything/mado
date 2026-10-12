@@ -1,4 +1,4 @@
-// Surface Commands の試験: コマンドの切り出し、RemoteFX の矩形の切り取り、生のビットマップ、不正な入力。
+// Surface Commands の試験。コマンドの切り出し、RemoteFX の矩形の切り取り、生のビットマップ、不正な入力を見る。
 
 import { describe, expect, test } from "bun:test";
 import type { BitmapRect } from "./bitmap";
@@ -155,7 +155,7 @@ describe("Surface Commands", () => {
 });
 
 describe("SurfaceRenderer(復号を後回しにして、同じ位置は最新だけ)", () => {
-	// 別の見た目のタイル: Y の LL3(4032 番)に値を置いた
+	// 見た目の違うタイル。Y の LL3(4032 番)に値を置いた
 	const dc = (v: number) => {
 		const y = new Int32Array(4096);
 		y[4032] = v;

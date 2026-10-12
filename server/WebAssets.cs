@@ -3,8 +3,8 @@ using System.Reflection;
 namespace Mado;
 
 /// <summary>
-/// 画面(web/ を bun build したもの)を exe の中から配る。名前に内容のハッシュが入るもの(index-xxxx.js など)は
-/// 長く覚えさせ、index.html は毎回取り直させる。
+/// web/ を bun build した画面を、exe の中から配る。index-xxxx.js のように名前に内容のハッシュが入るものは
+/// ブラウザに長く覚えさせ、index.html は毎回取り直させる。
 /// </summary>
 internal static class WebAssets
 {

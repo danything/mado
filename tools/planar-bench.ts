@@ -1,7 +1,7 @@
-// 旧ビットマップの planar(32bpp の圧縮)の復号の速さ。
+// 旧ビットマップの planar を復号する速さを計る。planar は 32bpp の圧縮形式。
 //   bun tools/planar-bench.ts [記録した受信データ]
-// 記録(試験用の mini-mado で取った WebSocket の受信データ)を渡すと、その中の旧ビットマップの矩形を全部復号する。
-// 渡さなければ、合成した 64x64 の planar(YCoCg・色の削減 3・アルファなし・RLE なし)で計る。
+// 試験用の mini-mado で記録した WebSocket の受信データを渡すと、その中の旧ビットマップの矩形を全部復号する。
+// 渡さなければ、合成した 64x64 の planar で計る。YCoCg、色の削減 3、アルファなし、RLE なし。
 
 import * as fs from "node:fs";
 import { type BitmapRect, decodeBitmap, parseBitmapUpdate } from "../web/rdp/bitmap";

@@ -6,7 +6,8 @@ import { keyboardSubType, keyboardType } from "./mcs";
 /** MCS のユーザー ID のうち、サーバー(Share Control の出し元)は 1002 */
 export const SERVER_ID = 0x03ea;
 
-// ---- Basic Security Header(TLS の上でも、Client Info とライセンスだけは付く) ----
+// ---- Basic Security Header ----
+// TLS の上でも、Client Info とライセンスの PDU には付く
 
 export const SEC_LICENSE_PKT = 0x0080;
 export const SEC_INFO_PKT = 0x0040;
@@ -32,10 +33,10 @@ const INFO_LOGONNOTIFY = 0x40;
 const INFO_ENABLEWINDOWSKEY = 0x100;
 const INFO_LOGONERRORS = 0x10000;
 
-/** 描画の重いものを切る(壁紙・ウィンドウのドラッグ中の中身・メニューのアニメーション)。文字の縁は滑らかに */
+/** 重い描画を切る。壁紙、ドラッグ中のウィンドウの中身、メニューのアニメーションを止め、文字の縁は滑らかにする */
 const PERF_FLAGS = 0x1 | 0x2 | 0x4 | 0x80;
 
-/** Client Info PDU の中身(Security Header は含まない)。パスワードは CredSSP に渡したのと同じもの */
+/** Client Info PDU の中身。Security Header は含まない。パスワードは CredSSP に渡したものと同じ */
 export function clientInfo(info: ClientInfo): Uint8Array {
 	const z = (s: string) => new Writer(s.length * 2 + 2).utf16(s, true).done();
 	const domain = z(info.domain);
@@ -83,7 +84,7 @@ export function clientInfo(info: ClientInfo): Uint8Array {
 	);
 }
 
-/** TS_TIME_ZONE_INFORMATION(172 バイト)。名前と切り替えの日付は空。Bias だけブラウザの値 */
+/** TS_TIME_ZONE_INFORMATION(172 バイト)。名前と切り替えの日付は空にし、Bias にブラウザの値を入れる */
 function timeZone(): Uint8Array {
 	return new Writer(172)
 		.i32(new Date().getTimezoneOffset())
@@ -102,8 +103,9 @@ const LICENSE_ERROR_ALERT = 0xff;
 const STATUS_VALID_CLIENT = 7;
 
 /**
- * ライセンスの PDU を読む(Security Header のあと)。「ライセンス不要」なら "valid"、ライセンスの交渉(LICENSE_REQUEST)を求められたら "request"、
- * それ以外のエラーは例外。Windows は前者を返す。後者を返すのは xrdp など
+ * Security Header のあとのライセンスの PDU を読む。
+ * 「ライセンス不要」なら "valid" を返す。Windows はこちら。
+ * LICENSE_REQUEST で交渉を求められたら "request" を返す。xrdp などはこちら。ほかのエラーは例外にする
  */
 export function checkLicense(b: Uint8Array): "valid" | "request" {
 	const r = new Reader(b);
@@ -120,8 +122,8 @@ export function checkLicense(b: Uint8Array): "valid" | "request" {
 }
 
 /**
- * 試験用: LICENSE_REQUEST への NEW_LICENSE_REQUEST。pre-master secret は暗号化せず乱数のまま入れる。
- * xrdp は中身を見ないので通るが、本物のライセンス サーバーには通らない
+ * 試験用。LICENSE_REQUEST に NEW_LICENSE_REQUEST で答える。pre-master secret は暗号化せず、乱数のまま入れる。
+ * xrdp は中身を見ないので通る。本物のライセンス サーバーには通らない
  */
 export function dummyNewLicenseRequest(): Uint8Array {
 	const blob = (type: number, data: Uint8Array) =>
@@ -195,7 +197,7 @@ export function shareControl(
 		.done();
 }
 
-/** Share Data PDU を Share Control で包む。uncompressedLength は pduType2 以降の 4 バイトぶんを足した長さ */
+/** Share Data PDU を Share Control で包む。uncompressedLength は pduType2 から末尾までの長さで、payload より 4 バイト長い */
 export function shareData(
 	userId: number,
 	shareId: number,
@@ -230,7 +232,7 @@ export function parseShareData(body: Uint8Array): ShareData {
 	return { type2, payload: r.rest() };
 }
 
-/** Frame Acknowledge PDU の本体(TS_FRAME_ACKNOWLEDGE_PDU、[MS-RDPBCGR]): 描き終えたフレームの ID */
+/** Frame Acknowledge PDU(TS_FRAME_ACKNOWLEDGE_PDU、[MS-RDPBCGR])の本体。描き終えたフレームの ID を入れる */
 export const frameAcknowledge = (frameId: number) =>
 	new Writer(4).u32(frameId).done();
 
@@ -250,7 +252,7 @@ export const control = (action: number, grantId = 0, controlId = 0) =>
 export const fontList = () =>
 	new Writer(8).u16(0).u16(0).u16(0x0003).u16(0x0032).done();
 
-/** Set Error Info(0 は異常なし)。サーバーが切る理由 */
+/** Set Error Info。サーバーが切る理由で、0 は異常なし */
 export function parseErrorInfo(payload: Uint8Array): number {
 	return new Reader(payload).u32();
 }
@@ -300,13 +302,13 @@ export const CAP = {
 	FRAME_ACKNOWLEDGE: 0x1e,
 } as const;
 
-/** 応答していないフレームの最大数(Frame Acknowledge 能力) */
+/** Frame Acknowledge 能力で伝える、応答していないフレームの最大数 */
 export const MAX_UNACKNOWLEDGED_FRAMES = 3;
 
-/** サーバーと決める RemoteFX の codecId(クライアントが決めて宣言する) */
+/** RemoteFX の codecId。クライアントが決めて宣言する */
 export const RFX_CODEC_ID = 3;
 
-/** RemoteFX のコーデック GUID(76772F12-BD72-4463-AFB3-B73C9C6F7886)。GUID は先頭 3 つの欄がリトル エンディアン */
+/** RemoteFX のコーデック GUID、76772F12-BD72-4463-AFB3-B73C9C6F7886。GUID は先頭 3 つの欄がリトル エンディアン */
 export const RFX_GUID = Uint8Array.of(
 	0x12,
 	0x2f,
@@ -327,8 +329,8 @@ export const RFX_GUID = Uint8Array.of(
 );
 
 /**
- * Bitmap Codecs 能力の中身(bitmapCodecCount 以降): RemoteFX のみ。
- * 能力は TS_RFX_CLNT_CAPS_CONTAINER(49 バイト): RLGR1 と RLGR3、タイル 64x64、ICT、DWT 5/3、画像モード
+ * Bitmap Codecs 能力の bitmapCodecCount 以降。載せるのは RemoteFX だけ。
+ * 中身は 49 バイトの TS_RFX_CLNT_CAPS_CONTAINER で、RLGR1 と RLGR3、64x64 のタイル、ICT、DWT 5/3、画像モードを伝える
  */
 export function bitmapCodecs(): Uint8Array {
 	const icap = (entropy: number) =>
@@ -366,8 +368,8 @@ export function bitmapCodecs(): Uint8Array {
 }
 
 /**
- * サーバーの Bitmap Codecs 能力(Demand Active の中身)から、RemoteFX の codecId を探す。
- * サーバーが ID を決めて載せていればそれ、無ければ(xrdp のように)こちらが宣言した RFX_CODEC_ID
+ * Demand Active に載ったサーバーの Bitmap Codecs 能力から、RemoteFX の codecId を探す。
+ * サーバーが ID を載せていればそれを使う。xrdp のように載せていなければ、こちらが宣言した RFX_CODEC_ID を使う
  */
 export function serverRfxCodecId(caps: Map<number, Uint8Array>): number {
 	const b = caps.get(CAP.BITMAP_CODECS);
@@ -389,7 +391,7 @@ export type ClientCaps = {
 	width: number;
 	height: number;
 	keyboardLayout: number;
-	/** 1 つの更新の最大の大きさ(Multifragment Update) */
+	/** Multifragment Update で受ける、1 つの更新の最大の大きさ */
 	maxRequestSize?: number;
 };
 
@@ -401,7 +403,7 @@ function cap(type: number, body: Uint8Array): Uint8Array {
 		.done();
 }
 
-/** Confirm Active に載せる、クライアントの能力セット。順序の描画(Orders)は全部断って、ビットマップと Surface Commands で受ける */
+/** Confirm Active に載せるクライアントの能力セット。Orders による描画はすべて断り、ビットマップと Surface Commands で受ける */
 export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 	return [
 		cap(
@@ -496,8 +498,8 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 				.done(),
 		),
 		cap(CAP.BITMAP_CODECS, bitmapCodecs()),
-		// Frame Acknowledge: 応答していないフレームがこの数に達すると、サーバーは送るのを待つ。
-		// こちらの復号が遅いときにサーバーが送り続けて詰まるのを防ぐ。2 だと往復の遅い回線で止まりがちなので 3
+		// Frame Acknowledge。応答していないフレームがこの数に達すると、サーバーは送るのを待つ。
+		// こちらの復号が遅いときに、サーバーが送り続けて詰まることがなくなる。2 では往復の遅い回線で止まりやすいので 3 にした
 		cap(
 			CAP.FRAME_ACKNOWLEDGE,
 			new Writer(4).u32(MAX_UNACKNOWLEDGED_FRAMES).done(),
@@ -506,8 +508,8 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 }
 
 /**
- * Demand Active への返事: Confirm Active と、同期(Synchronize・Control の Cooperate と Request・Font List)。
- * I/O チャネルへ順に送る。つなぐときと、再アクティベーション(画面の大きさが変わった)のとき
+ * Demand Active への返事。Confirm Active のあとに同期の PDU(Synchronize、Control の Cooperate と Request、Font List)を続け、
+ * I/O チャネルへ順に送る。つなぐときと、画面の大きさが変わって再アクティベーションするときに使う
  */
 export function activationPdus(
 	userId: number,
@@ -525,7 +527,7 @@ export function activationPdus(
 	];
 }
 
-/** Confirm Active PDU(Share Control で包んだ完成形) */
+/** Share Control で包んだ Confirm Active PDU */
 export function confirmActive(
 	userId: number,
 	shareId: number,

@@ -1,4 +1,4 @@
-// 試験用: ZGFX の簡単な符号化器(文字・一致・生の並び)。zgfx.test.ts と tools/zgfx-bench.ts が使う
+// 試験用の ZGFX の簡単な符号化器。文字、一致、生の並びだけを使う。zgfx.test.ts と tools/zgfx-bench.ts が使う。
 
 import { ZGFX_TOKENS } from "./zgfx";
 
@@ -70,7 +70,7 @@ export function writeMatch(
 	}
 }
 
-/** 欲張りの一致探し(同じセグメントの中だけ)。rawFrom 以降は「生の並び」で送る */
+/** 欲張りに一致を探す。探すのは同じセグメントの中だけ。rawFrom から後ろは生の並びで送る */
 export function encode(data: Uint8Array, rawFrom = data.length): Uint8Array {
 	const w = new BitWriter();
 	let i = 0;
@@ -91,7 +91,7 @@ export function encode(data: Uint8Array, rawFrom = data.length): Uint8Array {
 		} else writeLiteral(w, data[i++] as number);
 	}
 	if (rawFrom < data.length) {
-		// distance 0 の一致 = 生の並び
+		// distance 0 の一致は生の並びを表す
 		w.bits(0b10001, 5)
 			.bits(0, 5)
 			.bits(data.length - rawFrom, 15)

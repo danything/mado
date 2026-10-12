@@ -1,9 +1,9 @@
-// RemoteFX Progressive([MS-RDPEGFX] 2.2.4.2。GFX の WireToSurface2 で来る CAPROGRESSIVE)。
-// 64x64 のタイルを、まず粗く(TILE_FIRST / TILE_SIMPLE)送り、あとから細かく(TILE_UPGRADE)していく。
-// タイルごとに、逆量子化した係数(current)・符号(sign)・どのビットまで来たか(bitPos)を面ごとに覚えておき、
-// upgrade では足りない下のビット(SRL と RAW の 2 つのビット列)を係数に足して、復号し直す。
-// RLGR と色変換は RemoteFX(rfx.ts)と同じ。逆 DWT は、帯を 33 / 31 などに分ける「外挿」の形(RFX_DWT_REDUCE_EXTRAPOLATE)がある。
-// 細かいところ(C の整数の割り算、INT16 のあふれ)は FreeRDP の progressive.c に合わせる。
+// RemoteFX Progressive([MS-RDPEGFX] 2.2.4.2)。GFX の WireToSurface2 で CAPROGRESSIVE として来る。
+// 64x64 のタイルを、まず TILE_FIRST / TILE_SIMPLE で粗く送り、あとから TILE_UPGRADE で細かくしていく。
+// タイルごとに、逆量子化した係数(current)、符号(sign)、どのビットまで来たか(bitPos)を面ごとに覚えておく。
+// upgrade では、足りない下のビットを SRL と RAW の 2 つのビット列から係数に足して、復号し直す。
+// RLGR と色変換は RemoteFX(rfx.ts)と同じ。逆 DWT には、帯を 33 / 31 などに分ける「外挿」の形(RFX_DWT_REDUCE_EXTRAPOLATE)がある。
+// C の整数の割り算や INT16 のあふれといった細かいところは、FreeRDP の progressive.c に合わせる。
 
 import { Reader } from "./bytes";
 import { ENTROPY_RLGR1, inverseDwt, rlgrDecode, TILE, yccToRgba } from "./rfx";
@@ -20,19 +20,19 @@ const WBT_TILE_UPGRADE = 0xccc7;
 const SYNC_MAGIC = 0xcaccacca;
 const RFX_DWT_REDUCE_EXTRAPOLATE = 0x01;
 const RFX_TILE_DIFFERENCE = 0x01;
-/** quality がこれなら、progressive の量子化は全部 0(最初から最後の段) */
+/** quality がこの値なら、progressive の量子化は全部 0 になる。最初から最後の段にあたる */
 const FULL_QUALITY = 0xff;
 
 const MAX_RECTS = 1 << 12;
 const MAX_TILES = 1 << 12;
 
-/** 10 の帯の値(rfx.ts の BANDS の順: HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3) */
+/** 10 の帯の値。順は rfx.ts の BANDS と同じで HL1 LH1 HH1 HL2 LH2 HH2 HL3 LH3 HH3 LL3 */
 type Quant = number[];
 type Yuv<T> = [T, T, T];
 
 export type ProgressiveRect = { x: number; y: number; w: number; h: number };
 
-/** 面に描く部分(タイルを Region の矩形で切ったもの)。位置は面の座標 */
+/** 面に描く部分。タイルを Region の矩形で切ったもの。位置は面の座標 */
 export type ProgressivePart = ProgressiveRect & { rgba: Uint8ClampedArray };
 
 /** 帯の [位置, 大きさ]。通常の形は RemoteFX と同じ */
@@ -48,7 +48,7 @@ const NORMAL: [number, number][] = [
 	[3968, 64],
 	[4032, 64],
 ];
-/** 外挿の形: 1 段目は低域 33・高域 31、2 段目は 17・16、3 段目は 9・8 */
+/** 外挿の形。1 段目は低域 33・高域 31、2 段目は 17・16、3 段目は 9・8 */
 const EXTRAPOLATED: [number, number][] = [
 	[0, 1023], // HL1 31x33
 	[1023, 1023], // LH1 33x31
@@ -65,8 +65,8 @@ const EXTRAPOLATED: [number, number][] = [
 const ZERO: Quant = new Array(10).fill(0);
 
 /**
- * 量子化の 5 バイト(4 ビットずつ、下位から LL3 HL3 / LH3 HH3 / HL2 LH2 / HH2 HL1 / LH1 HH1)→ BANDS の順。
- * RemoteFX(TS_RFX_CODEC_QUANT)とは HL と LH の並びが違う
+ * 量子化の 5 バイトを BANDS の順に並べ替える。5 バイトには 4 ビットずつ、下位から LL3 HL3 / LH3 HH3 / HL2 LH2 / HH2 HL1 / LH1 HH1 が入る。
+ * RemoteFX の TS_RFX_CODEC_QUANT とは HL と LH の並びが違う
  */
 export function parseProgressiveQuant(b: Uint8Array): Quant {
 	const n = (i: number) =>
@@ -74,13 +74,13 @@ export function parseProgressiveQuant(b: Uint8Array): Quant {
 	return [n(7), n(8), n(9), n(4), n(5), n(6), n(1), n(2), n(3), n(0)];
 }
 
-/** 1 つのタイルの、upgrade のために覚えておくもの */
+/** 1 つのタイルについて、upgrade のために覚えておくもの */
 type Tile = {
-	/** 逆量子化した係数(DWT の前) */
+	/** 逆量子化した係数。DWT の前の値 */
 	current: Yuv<Int16Array>;
-	/** 最初の段の量子化された値(upgrade で、どちらのビット列から読むかを決める) */
+	/** 最初の段の量子化された値。upgrade でどちらのビット列から読むかを、これで決める */
 	sign: Yuv<Int16Array>;
-	/** 帯ごとに、どのビットまで来たか(量子化 + progressive の量子化) */
+	/** 帯ごとに、どのビットまで来たか。量子化と progressive の量子化を足したもの */
 	bitPos: Yuv<Quant>;
 };
 
@@ -96,14 +96,14 @@ function newTile(): Tile {
 type Region = {
 	rects: ProgressiveRect[];
 	quants: Quant[];
-	/** quality の番号 → Y・Cb・Cr の progressive の量子化 */
+	/** quality の番号ごとの、Y・Cb・Cr の progressive の量子化 */
 	progQuants: Yuv<Quant>[];
 	extrapolate: boolean;
 };
 
 /**
- * 1 枚のタイルの復号の仕事。Worker へ渡せる形(構造化複製できるものだけ)。
- * タイルの状態(upgrade のための係数)は、復号する側(ProgressiveTiles)が surface と key で持つ
+ * 1 枚のタイルを復号する仕事。構造化複製できるものだけで作るので、Worker へ渡せる。
+ * upgrade のための係数などタイルの状態は、復号する側の ProgressiveTiles が surface と key で持つ
  */
 export type ProgressiveTileJob = {
 	surface: number;
@@ -113,29 +113,29 @@ export type ProgressiveTileJob = {
 	type: number;
 	quant: Yuv<Quant>;
 	prog: Yuv<Quant>;
-	/** TILE_FIRST / SIMPLE のとき、前の係数に足す(RFX_TILE_DIFFERENCE) */
+	/** TILE_FIRST / SIMPLE で、前の係数に足すとき(RFX_TILE_DIFFERENCE) */
 	diff: boolean;
 	extrapolate: boolean;
-	/** FIRST / SIMPLE は Y・Cb・Cr の 3 つ、UPGRADE は成分ごとに SRL と RAW の 6 つ */
+	/** FIRST / SIMPLE は Y・Cb・Cr の 3 つ。UPGRADE は成分ごとに SRL と RAW があるので 6 つ */
 	data: Uint8Array[];
 };
 
-/** 読み取ったタイル。復号の仕事と、面のどこに描くか */
+/** 読み取ったタイル。復号の仕事と、面のどこに描くかを持つ */
 export type ProgressiveTile = {
 	job: ProgressiveTileJob;
 	x: number;
 	y: number;
 };
 
-/** 読み取った 1 つの WireToSurface2: 復号するタイルと、描く矩形(Region の矩形。タイルの無い矩形もある) */
+/** 読み取った 1 つの WireToSurface2。復号するタイルと、描く矩形を持つ。矩形は Region のもので、タイルの無い矩形もある */
 export type ProgressiveMessage = {
 	tiles: ProgressiveTile[];
 	rects: ProgressiveRect[];
 };
 
-/** タイルの状態を持って復号する。Worker ではタイルの位置ごとに受け持つ Worker を決めて、同じタイルは同じ Worker で復号する */
+/** タイルの状態を持って復号する。Worker で復号するときは、タイルの位置ごとに受け持つ Worker を決めて、同じタイルは同じ Worker で復号する */
 export class ProgressiveTiles {
-	/** 面 → (key → タイル) */
+	/** 面ごとに、key からタイルを引く表 */
 	private surfaces = new Map<number, Map<number, Tile>>();
 
 	deleteSurface(id: number): void {
@@ -168,8 +168,8 @@ export class ProgressiveTiles {
 }
 
 /**
- * WireToSurface2 の bitmapData を読み、復号するタイルを並べる(復号はしない)。
- * width / height は面の大きさ。面の外のタイルは描けないので飛ばす(PDU 全体は捨てない)
+ * WireToSurface2 の bitmapData を読み、復号するタイルを並べる。復号はしない。
+ * width / height は面の大きさ。面の外のタイルは描けないので飛ばす。PDU 全体は捨てない
  */
 export function parseProgressive(
 	surface: number,
@@ -206,9 +206,9 @@ export function parseProgressive(
 
 /**
  * 1 つの GFX のフレーム(StartFrame から EndFrame まで)の中で復号したタイル。
- * Windows は、同じフレームの前の PDU で送ったタイルを、後の PDU の矩形にも描かせる(矩形だけでタイルの無い PDU も来る)。
- * そこで FreeRDP と同じく、PDU ごとに「このフレームで復号したタイル全部」を、その PDU の矩形で切って描く。
- * その PDU のタイルだけを描くと、窓を動かしたあとの空いたところが描かれず、残像が残った
+ * Windows は、同じフレームの前の PDU で送ったタイルを、後の PDU の矩形にも描かせる。矩形だけでタイルの無い PDU も来る。
+ * そこで FreeRDP と同じく、PDU ごとに、このフレームで復号したタイル全部をその PDU の矩形で切って描く。
+ * その PDU のタイルだけを描いていたときは、窓を動かしたあとの空いたところが描かれず、残像が残った
  */
 export class ProgressiveFrame {
 	private surfaces = new Map<
@@ -216,7 +216,7 @@ export class ProgressiveFrame {
 		Map<number, { x: number; y: number; rgba: Uint8ClampedArray }>
 	>();
 
-	/** フレームの始まり(StartFrame) */
+	/** フレームの始まり。StartFrame で呼ぶ */
 	reset(): void {
 		this.surfaces.clear();
 	}
@@ -225,7 +225,7 @@ export class ProgressiveFrame {
 		this.surfaces.delete(id);
 	}
 
-	/** msg のタイルを復号した rgba(64x64、タイルと同じ順)を覚え、面に描く部分を返す。width / height は面の大きさ */
+	/** msg のタイルを復号した rgba を覚え、面に描く部分を返す。rgba は 64x64 でタイルと同じ順。width / height は面の大きさ */
 	draw(
 		surface: number,
 		msg: ProgressiveMessage,
@@ -251,7 +251,7 @@ export class ProgressiveFrame {
 	}
 }
 
-/** Progressive の復号器(その場で復号する。Worker を使わないとき・試験用)。タイルの状態を面ごとに持つ(面を消したら deleteSurface) */
+/** Progressive の復号器。Worker を使わないときと試験で、その場で復号する。タイルの状態は面ごとに持つので、面を消したら deleteSurface を呼ぶ */
 export class ProgressiveDecoder {
 	private tiles = new ProgressiveTiles();
 
@@ -355,7 +355,7 @@ function region(
 			default:
 				throw new Error(`Progressive: 知らないタイル 0x${type.toString(16)}`);
 		}
-		// 面の外のタイルは描けないので飛ばす(ほかのタイルは描く)
+		// 面の外のタイルは描けないので飛ばす。ほかのタイルは描く
 		if (xIdx * TILE >= width || yIdx * TILE >= height) continue;
 		out.tiles.push({
 			job: {
@@ -415,13 +415,13 @@ const PIXELS: Yuv<Int16Array> = [
 	new Int16Array(4096),
 ];
 
-/** 帯ごとの「ビットの位置」= 量子化 + progressive の量子化 */
+/** 帯ごとのビットの位置。量子化と progressive の量子化の和 */
 const add = (a: Quant, b: Quant): Quant =>
 	a.map((v, i) => v + (b[i] as number));
-/** 逆量子化のずらし = ビットの位置 - 1(5 ビットの小数を残す) */
+/** 逆量子化でずらす量。ビットの位置から 1 を引いたもので、5 ビットの小数が残る */
 const shiftOf = (bitPos: Quant): Quant => bitPos.map((v) => Math.max(0, v - 1));
 
-/** TILE_FIRST / TILE_SIMPLE: RLGR → 符号を覚える → LL3 の差分 → 逆量子化 →(差分なら前の係数に足す)→ 覚える → 逆 DWT */
+/** TILE_FIRST / TILE_SIMPLE。RLGR、符号を覚える、LL3 の差分、逆量子化、差分なら前の係数に足す、覚える、逆 DWT の順に進む */
 function first(
 	tile: Tile,
 	quant: Yuv<Quant>,
@@ -458,7 +458,7 @@ function first(
 	return yccToRgba(PIXELS[0], PIXELS[1], PIXELS[2]);
 }
 
-/** TILE_UPGRADE: 成分ごとに SRL と RAW の 2 つのビット列。足りないビットを係数に足して、逆 DWT し直す */
+/** TILE_UPGRADE。成分ごとに SRL と RAW の 2 つのビット列が来る。足りないビットを係数に足して、逆 DWT し直す */
 function upgrade(
 	tile: Tile,
 	quant: Yuv<Quant>,
@@ -484,7 +484,7 @@ function upgrade(
 			const [at, len] = bands[b] as [number, number];
 			const s = shift[b] as number;
 			if (b === 9) {
-				// LL3 は全部 RAW から
+				// LL3 は全部 RAW から読む
 				for (let i = at; i < at + len; i++)
 					current[i] = (current[i] as number) + (raw.bits(n) << s);
 				continue;
@@ -495,7 +495,7 @@ function upgrade(
 				if (sg > 0) v = raw.bits(n);
 				else if (sg < 0) v = -raw.bits(n);
 				else {
-					// まだ 0 だった係数は SRL から(ここで初めて符号が決まる)
+					// まだ 0 だった係数は SRL から読む。ここで初めて符号が決まる
 					v = srlRead(state, srl, n);
 					sign[i] = v;
 				}
@@ -531,7 +531,7 @@ class Bits {
 
 type SrlState = { kp: number; nz: number; unary: boolean };
 
-/** SRL(符号つきのランレングス)の 1 つの値。0 の並びは適応的な Golomb、0 でない値は符号 + 大きさの unary */
+/** SRL(符号つきのランレングス)の値を 1 つ読む。0 の並びは適応的な Golomb で、0 でない値は符号と大きさの unary で来る */
 function srlRead(st: SrlState, bs: Bits, numBits: number): number {
 	if (st.nz) {
 		st.nz--;
@@ -540,12 +540,12 @@ function srlRead(st: SrlState, bs: Bits, numBits: number): number {
 	const k = st.kp >> 3;
 	if (!st.unary) {
 		if (!bs.bit()) {
-			// 0 の並びが 1 << k 個
+			// 0 が 1 << k 個並ぶ
 			st.nz = (1 << k) - 1;
 			st.kp = Math.min(80, st.kp + 4);
 			return 0;
 		}
-		// 0 の並びが k ビットの数だけ(1 << k 未満)。そのあとに 0 でない値
+		// 0 が k ビットの数だけ並ぶ。1 << k 未満。そのあとに 0 でない値が来る
 		st.nz = k ? bs.bits(k) : 0;
 		st.unary = true;
 		if (st.nz) {
@@ -567,7 +567,7 @@ function srlRead(st: SrlState, bs: Bits, numBits: number): number {
 	return negative ? -mag : mag;
 }
 
-/** SRL のビット列の先頭から n 個の値(状態は初めから。試験用) */
+/** SRL のビット列の先頭から n 個の値を読む。状態は初めから。試験用 */
 export function srlValues(
 	data: Uint8Array,
 	numBits: number,
@@ -580,9 +580,9 @@ export function srlValues(
 
 // ---- 逆 DWT ----
 
-/** C の INT16 への代入(あふれは折り返す) */
+/** C の INT16 への代入。あふれたら折り返す */
 const s16 = (v: number) => (v << 16) >> 16;
-/** C の整数の割り算(0 へ切り捨て) */
+/** C の整数の割り算。0 の方へ切り捨てる */
 const half = (v: number) => (v / 2) | 0;
 
 const TMP = new Int16Array(4096);
@@ -599,7 +599,7 @@ function dwt(buf: Int16Array, extrapolate: boolean): void {
 	dwtBlock(buf, 0, 1);
 }
 
-/** 外挿の形の 1 段。buf[at..] に HL(L 行 x H 列)LH(H x L)HH(H x H)LL(L x L)が並び、(L+H) x (L+H) の画素で置き換える */
+/** 外挿の形の 1 段。buf[at..] には HL(L 行 x H 列)、LH(H x L)、HH(H x H)、LL(L x L)が並ぶ。これを (L+H) x (L+H) の画素で置き換える */
 function dwtBlock(buf: Int16Array, at: number, level: number): void {
 	const nL = (64 >> level) + 1;
 	const nH = level === 1 ? 31 : (64 + (1 << (level - 1))) >> level;
@@ -609,16 +609,16 @@ function dwtBlock(buf: Int16Array, at: number, level: number): void {
 	const ll = hh + nH * nH;
 	const w = nL + nH;
 	const hi = nL * w;
-	// 水平: LL + HL → 低域の行(L 行)、LH + HH → 高域の行(H 行)
+	// 水平。LL と HL から低域の行(L 行)を、LH と HH から高域の行(H 行)を作る
 	for (let y = 0; y < nL; y++)
 		lift(buf, ll + y * nL, hl + y * nH, 1, TMP, y * w, 1, nL, nH);
 	for (let y = 0; y < nH; y++)
 		lift(buf, lh + y * nL, hh + y * nH, 1, TMP, hi + y * w, 1, nL, nH);
-	// 垂直: 列ごと
+	// 垂直。列ごとに変換する
 	for (let x = 0; x < w; x++) lift(TMP, x, hi + x, w, buf, at + x, w, nL, nH);
 }
 
-/** 1 本の逆変換。低域 nL 個と高域 nH 個から nL + nH 個。lo / hi の歩幅は step、出力の歩幅は dStep */
+/** 1 本の逆変換。低域 nL 個と高域 nH 個から nL + nH 個を作る。lo / hi の歩幅は step、出力の歩幅は dStep */
 function lift(
 	s: Int16Array,
 	lo: number,

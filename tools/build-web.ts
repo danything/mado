@@ -1,12 +1,12 @@
-// 画面のビルド(bun run build:web)。dist/web を作る。exe に埋め込まれ、ハッシュ入りの名前のものは 1 年キャッシュされる。
-// Worker(RemoteFX の復号)は、HTML のビルドでは束ねられないので先に別に束ね、できた名前を画面のビルドに定数で渡す。
+// 画面をビルドして dist/web を作る。bun run build:web で呼ぶ。dist/web は exe に埋め込まれ、ハッシュ入りの名前のものは 1 年キャッシュされる。
+// RemoteFX を復号する Worker は HTML のビルドでは束ねられない。先に別に束ねて、できたファイル名を画面のビルドに定数で渡す。
 
 import { rm } from "node:fs/promises";
 import { basename } from "node:path";
 
 await rm("dist/web", { recursive: true, force: true });
 
-// 1. Worker。名前に内容のハッシュを入れる(中身が変わったら名前も変わる)
+// 1. Worker。名前に内容のハッシュを入れるので、中身が変われば名前も変わる
 const worker = await Bun.build({
 	entrypoints: ["web/rdp/rfx.worker.ts"],
 	outdir: "dist/web",

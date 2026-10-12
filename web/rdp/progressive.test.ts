@@ -1,4 +1,4 @@
-// RemoteFX Progressive の試験: 量子化の並び、SRL、最初の段(外挿と通常の逆 DWT)、Region の矩形での切り取り、差分、upgrade。
+// RemoteFX Progressive の試験。量子化の並び、SRL、最初の段(外挿と通常の逆 DWT)、Region の矩形での切り取り、差分、upgrade を見る。
 
 import { describe, expect, test } from "bun:test";
 import { concat, Writer } from "./bytes";
@@ -17,7 +17,7 @@ const block = (type: number, body: Uint8Array) =>
 		.bytes(body)
 		.done();
 
-/** 量子化の 5 バイト(並びは送られる順: LL3 HL3 LH3 HH3 HL2 LH2 HH2 HL1 LH1 HH1) */
+/** 量子化の 5 バイト。送られる順に LL3 HL3 LH3 HH3 HL2 LH2 HH2 HL1 LH1 HH1 と並べて渡す */
 const quant = (v: number[]) =>
 	Uint8Array.from(
 		{ length: 5 },
@@ -25,7 +25,7 @@ const quant = (v: number[]) =>
 	);
 const all = (n: number) => quant(new Array(10).fill(n));
 
-/** DC だけの係数(LL3 の先頭)を RLGR1 で */
+/** DC だけの係数(LL3 の先頭)を RLGR1 で符号化したもの */
 function dc(v: number, extrapolate = true): Uint8Array {
 	const c = new Int32Array(4096);
 	c[extrapolate ? 4015 : 4032] = v;
@@ -232,7 +232,7 @@ describe("Progressive", () => {
 
 	test("TILE_FIRST(粗い段)→ TILE_UPGRADE(最後の段): 足りない下のビットを足す", () => {
 		const d = new ProgressiveDecoder();
-		// quality 0 は Y の全部の帯を 2 ビット粗く(ビットの位置 8、ずらし 7)
+		// quality 0 では、Y の全部の帯が 2 ビット粗くなる。ビットの位置は 8、ずらしは 7
 		const prog = [[all(2), all(0), all(0)]];
 		const a = d.decode(
 			1,
@@ -242,7 +242,7 @@ describe("Progressive", () => {
 		);
 		// 10 << 7 = 1280 → (1280 + 4096) >> 5 = 168
 		expect(gray(a)).toBe(168);
-		// 最後の段(0xff): 各帯 2 ビット。LL3 以外は係数が 0 なので SRL(空 = 0 の並び)、LL3 の 81 個は RAW から「01」ずつ → +1 << 5
+		// 最後の段(0xff)では各帯 2 ビット。LL3 以外は係数が 0 なので SRL から読み、空なので 0 の並びになる。LL3 の 81 個は RAW から「01」ずつ読み、+1 << 5 になる
 		const raw = new Uint8Array(21).fill(0x55);
 		const b = d.decode(
 			1,

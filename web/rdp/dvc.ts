@@ -11,7 +11,7 @@ const CMD = {
 	CAPABILITIES: 0x05,
 } as const;
 
-/** 1 つの DVC PDU の大きさの上限(静的チャネルの断片に収める) */
+/** 1 つの DVC PDU の大きさの上限。静的チャネルの断片 1 つに収める */
 const MAX_PDU = 1590;
 
 export interface DynamicChannel {
@@ -26,7 +26,7 @@ export interface DynamicHandler {
 	onClose?(): void;
 }
 
-/** ID を 1 / 2 / 4 バイトのうち最短で書く。cbId(ヘッダーの下位 2 ビット)と一緒に返す */
+/** ID を 1 / 2 / 4 バイトのうち最短で書く。ヘッダーの下位 2 ビットに入れる cbId も返す */
 function writeId(id: number): { cb: number; bytes: Uint8Array } {
 	if (id < 0x100) return { cb: 0, bytes: Uint8Array.of(id) };
 	if (id < 0x10000) return { cb: 1, bytes: new Writer(2).u16(id).done() };
@@ -67,7 +67,7 @@ export class DynamicChannels {
 			case CMD.CAPABILITIES: {
 				r.u8(); // pad
 				const version = r.u16();
-				// 圧縮(版 3 の DATA_FIRST_COMPRESSED)は受けられないので、版 2 まで
+				// 版 3 の DATA_FIRST_COMPRESSED は受けられないので、版は 2 までと答える
 				this.send(
 					new Writer(4)
 						.u8(CMD.CAPABILITIES << 4)
@@ -177,7 +177,7 @@ export const DISPLAYCONTROL = "Microsoft::Windows::RDS::DisplayControl";
 
 const DISPCTL = { CAPS: 0x5, MONITOR_LAYOUT: 0x2 } as const;
 
-/** サーバーが受け付ける大きさ: 幅・高さとも 200〜8192、幅は偶数 */
+/** サーバーが受け付ける大きさ。幅も高さも 200〜8192 で、幅は偶数 */
 export function clampMonitorSize(
 	width: number,
 	height: number,
@@ -189,7 +189,7 @@ export function clampMonitorSize(
 	};
 }
 
-/** MONITOR_LAYOUT_PDU: 主モニター 1 つ */
+/** 主モニター 1 つだけの MONITOR_LAYOUT_PDU */
 export function monitorLayout(
 	width: number,
 	height: number,
@@ -204,7 +204,7 @@ export function monitorLayout(
 		.i32(0)
 		.u32(size.width)
 		.u32(size.height)
-		// 物理の大きさ(mm)。96 dpi 相当
+		// 物理的な大きさ(mm)。96 dpi として計算する
 		.u32(Math.round((size.width * 25.4) / 96))
 		.u32(Math.round((size.height * 25.4) / 96))
 		.u32(0) // Orientation: 0 度
@@ -220,13 +220,13 @@ export function monitorLayout(
 	);
 }
 
-/** 解像度の自動追従。サーバーが DisplayControl を開いたら、resize() で大きさを伝えられる */
+/** 窓の大きさに解像度を合わせる。サーバーが DisplayControl を開いたあとは、resize() で大きさを伝えられる */
 export class DisplayControl implements DynamicHandler {
 	private channel?: DynamicChannel;
 	private pending?: { width: number; height: number };
-	/** サーバーが受け付ける最大のモニター数(Caps から) */
+	/** Caps で知らされた、サーバーが受け付ける最大のモニター数 */
 	maxMonitors = 0;
-	/** サーバーが受け付ける全モニターの面積の上限(A * B 画素)。0 は不明 */
+	/** サーバーが受け付ける全モニターの面積の上限で、A * B 画素。0 は不明 */
 	maxArea = 0;
 
 	onOpen(channel: DynamicChannel): void {
@@ -253,7 +253,7 @@ export class DisplayControl implements DynamicHandler {
 		this.maxArea = 0;
 	}
 
-	/** 開いていなければ、開いたときに送る(最後の 1 つだけ) */
+	/** 大きさを伝える。まだ開いていなければ、開いたときに最後の 1 つを送る */
 	resize(width: number, height: number): void {
 		if (!this.channel || this.maxMonitors === 0) {
 			this.pending = { width, height };

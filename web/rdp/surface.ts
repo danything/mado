@@ -1,9 +1,9 @@
-// Surface Commands([MS-RDPBCGR] 2.2.9.2)。Fast-Path の SURFCMDS の更新に、複数のコマンドが並ぶ:
-// Set Surface Bits / Stream Surface Bits(コーデックで符号化されたビットマップ)と Frame Marker。
+// Surface Commands([MS-RDPBCGR] 2.2.9.2)。Fast-Path の SURFCMDS の更新には、複数のコマンドが並ぶ。
+// コマンドは Set Surface Bits / Stream Surface Bits(コーデックで符号化したビットマップ)と Frame Marker。
 //
-// サーバーが復号より速く送ってくると、溜まった更新を順に全部復号して遅れが膨らむ。SurfaceRenderer は復号を後回しにして、
-// 同じ左上の古いもの(RemoteFX のタイル・旧ビットマップ)は、新しいものの描く範囲にすっぽり入るときだけ復号しない。
-// 旧ビットマップ(Windows が RemoteFX を使わないときの planar など)も同じ列に載せて、受けた順に描く。
+// サーバーが復号より速く送ってくると、溜まった更新を順に全部復号することになり、遅れが膨らむ。そこで SurfaceRenderer は復号を後回しにする。
+// 同じ左上にある古いもの(RemoteFX のタイルや旧ビットマップ)は、新しいものが描く範囲にすっぽり入るときに限って復号しない。
+// 旧ビットマップも同じ列に載せて、受けた順に描く。Windows は RemoteFX を使わないとき planar などで送ってくる。
 
 import type { BitmapRect } from "./bitmap";
 import { Reader } from "./bytes";
@@ -16,13 +16,13 @@ const CMD_STREAM_SURFACE_BITS = 0x0006;
 
 const EX_COMPRESSED_BITMAP_HEADER_PRESENT = 0x01;
 
-/** Frame Marker の frameAction の End(0 は Begin) */
+/** Frame Marker の frameAction の End。0 は Begin */
 const FRAME_END = 1;
 
-/** codecId 0 は「コーデックなし」(生のビットマップ)。RemoteFX の ID は能力セットで決める */
+/** codecId 0 は「コーデックなし」で、生のビットマップ。RemoteFX の ID は能力セットで決める */
 const CODEC_NONE = 0;
 
-/** 1 つのビットマップの縦横の上限(安全のため) */
+/** 1 つのビットマップの縦横の上限 */
 const MAX_SIDE = 16384;
 
 export type SurfaceDraw = (
@@ -37,9 +37,9 @@ type ScreenSize = { width: number; height: number };
 
 type SurfaceEvents = {
 	draw: SurfaceDraw;
-	/** Frame Marker(0 = 始まり、1 = 終わり) */
+	/** Frame Marker。0 が始まりで 1 が終わり */
 	frame?(action: number, frameId: number): void;
-	/** 渡すと、RemoteFX は復号せずにこれへ渡す(bits は Surface Bits の本体。復号は呼び出し側が後でする) */
+	/** これを渡すと、RemoteFX は復号せずにこれへ渡す。bits は Surface Bits の本体で、復号は呼び出し側が後でする */
 	rfx?(
 		bits: Uint8Array,
 		left: number,
@@ -100,7 +100,7 @@ export function handleSurfaceCommands(
 						throw new Error(`生の Surface Bits は 32bpp だけ (${bpp})`);
 					drawRaw(bits, left, top, width, height, screen, ev.draw);
 				}
-				// 知らないコーデックは描かない(能力で宣言していないので来ない)
+				// 知らないコーデックは描かない。能力で宣言していないので来ないはず
 				break;
 			}
 			case CMD_FRAME_MARKER: {
@@ -127,11 +127,11 @@ function intersect(a: Rect, b: Rect): Rect | null {
 const sameRect = (a: Rect, b: Rect) =>
 	a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 
-/** 矩形 a が b をすっぽり含む */
+/** 矩形 a が b をすっぽり含むか */
 const contains = (a: Rect, b: Rect) =>
 	a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h;
 
-/** RGBA の画像(幅 stride)から矩形(画像の中の座標)を切り出す */
+/** RGBA の画像(幅 stride)から矩形を切り出す。矩形は画像の中の座標 */
 function crop(
 	rgba: Uint8ClampedArray,
 	stride: number,
@@ -204,7 +204,7 @@ function drawTile(
 	}
 }
 
-/** コーデックなし: 32 ビットの BGRA(上の行から)。大きさを超える分は切る */
+/** コーデックなし。32 ビットの BGRA が上の行から並ぶ。大きさを超える分は切る */
 function drawRaw(
 	bits: Uint8Array,
 	left: number,
@@ -247,16 +247,16 @@ function drawRaw(
 type Pending = {
 	/** RemoteFX のタイル。旧ビットマップなら undefined で、bitmap がある */
 	tile?: RawTile;
-	/** 旧ビットマップの矩形と、描く大きさ(幅が 4 の倍数に揃えられているときは右の余りを切る) */
+	/** 旧ビットマップの矩形と、描く大きさ。幅が 4 の倍数に揃えてあるときは右の余りを切る */
 	bitmap?: { rect: BitmapRect; w: number; h: number };
-	/** 位置の索引の鍵(画面の座標の左上) */
+	/** 位置の索引の鍵。画面の座標での左上 */
 	key: string;
 	left: number;
 	top: number;
 	area: Rect | null;
-	/** 後のタイルに完全に置き換えられた */
+	/** 後のタイルに完全に置き換えられたか */
 	dead: boolean;
-	/** Worker での復号の状態(非同期のプールのとき) */
+	/** Worker での復号の状態。非同期のプールのときに使う */
 	state: "waiting" | "done" | "failed";
 	rgba?: Uint8ClampedArray;
 	/** 実際に描く範囲を囲む矩形(画面の座標)。後のタイルがこれを全部描くなら、このタイルは要らない */
@@ -285,27 +285,27 @@ type Batch = {
 	after: (() => void)[];
 };
 
-/** 溜めてよいタイルの数(これを超えたら、すぐ吐き出す) */
+/** 溜めてよいタイルの数。これを超えたらすぐ吐き出す */
 const MAX_PENDING = 8192;
 
 type SurfaceRendererOptions = {
 	draw: SurfaceDraw;
-	/** 終わったフレーム(Frame Marker の End)の描画が済んだら、frameId ごとに呼ぶ(Frame Acknowledge を返す) */
+	/** 終わったフレーム(Frame Marker の End)を描き終えたら、frameId ごとに呼ぶ。ここで Frame Acknowledge を返す */
 	ack?(frameId: number): void;
-	/** 吐き出しの予約。既定は setTimeout(0)(受信ループが、バッファにある PDU を読み終えてから走る) */
+	/** 吐き出しの予約。既定は setTimeout(0) で、受信ループがバッファにある PDU を読み終えてから走る */
 	schedule?(fn: () => void): void;
-	/** タイルの復号の置き場。既定はその場で復号する(SyncPool)。非同期のプールなら、並列に復号して、揃った順に描く */
+	/** タイルの復号の置き場。既定は SyncPool で、その場で復号する。非同期のプールなら並列に復号して、揃った順に描く */
 	pool?: TilePool;
 };
 
 /**
  * Surface Commands を、RemoteFX の復号を後回しにして処理する。
- * 同じ位置のタイルは最新だけを復号する。復号がプール(Worker)で非同期でも、描く順序と Frame Acknowledge の順序は保つ。
- * 旧ビットマップは bitmaps() で同じ列に載せる。順序が意味を持つほかの更新(生のビットマップ・画面の大きさの変更)は ordered() で包むこと
+ * 同じ位置のタイルは最新のものだけを復号する。復号が Worker のプールで非同期になっても、描く順序と Frame Acknowledge の順序は保つ。
+ * 旧ビットマップは bitmaps() で同じ列に載せる。順序が意味を持つほかの更新は ordered() で包む。生のビットマップや画面の大きさの変更がそれにあたる
  */
 export class SurfaceRenderer {
 	private entries: Pending[] = [];
-	/** タイルの位置(絶対座標)→ まだ描いていないタイル(復号中を含む) */
+	/** タイルの位置(絶対座標)から、まだ描いていないタイルを引く。復号中のものも含む */
 	private byKey = new Map<string, Pending[]>();
 	private ended: number[] = [];
 	private scheduled = false;
@@ -313,11 +313,11 @@ export class SurfaceRenderer {
 	private ack?: (frameId: number) => void;
 	private schedule: (fn: () => void) => void;
 	private pool: TilePool;
-	/** プールに回して、まだ描き終えていない吐き出し(古い順) */
+	/** プールに回して、まだ描き終えていない吐き出し。古い順に並ぶ */
 	private batches: Batch[] = [];
-	/** 復号できずに捨てたタイル(診断用) */
+	/** 復号できずに捨てたタイルの数。診断用 */
 	skipped = 0;
-	/** 後のタイルに置き換えられて、復号しなかった(結果を捨てた)タイル(診断用) */
+	/** 後のタイルに置き換えられて、復号しなかったか結果を捨てたタイルの数。診断用 */
 	coalesced = 0;
 
 	constructor(o: SurfaceRendererOptions) {
@@ -333,7 +333,7 @@ export class SurfaceRenderer {
 		return n;
 	}
 
-	/** 復号中(プールに回して、まだ描いていない)のタイルの数 */
+	/** 復号中のタイルの数。プールに回して、まだ描いていないもの */
 	get inFlight(): number {
 		let n = 0;
 		for (const b of this.batches) for (const j of b.jobs) if (!j.dead) n++;
@@ -368,7 +368,7 @@ export class SurfaceRenderer {
 		const abs: Rect = { x: tile.x + left, y: tile.y + top, w: TILE, h: TILE };
 		const visible = area && intersect(abs, area);
 		if (!visible) return; // 画面の外
-		// このタイルが実際に描く範囲(画面の座標): Region の矩形とタイルとコマンドの範囲の重なり
+		// このタイルが実際に描く範囲(画面の座標)。Region の矩形、タイル、コマンドの範囲の重なりになる
 		const clips = tile.rects.length
 			? tile.rects
 			: [{ x: tile.x, y: tile.y, w: TILE, h: TILE }];
@@ -391,9 +391,9 @@ export class SurfaceRenderer {
 				h: Math.max(u.y + u.h, r.y + r.h) - y,
 			};
 		});
-		// 1 つの矩形で描く範囲(ひとかたまり)。同じ位置の古いタイルは、描く範囲がこれにすっぽり入るときだけ要らない
-		// (以前は「自分の見える範囲を全部描くか」だけで判定していて、見える範囲が狭い新しいタイルが古いタイルを捨て、
-		// その部分にさらに前の絵が残った。Windows は更新の範囲をタイルより細かく切って送る)
+		// 1 つの矩形で描く範囲のまとまり。同じ位置の古いタイルは、描く範囲がこれにすっぽり入るときだけ要らない
+		// 以前は自分の見える範囲を全部描くかだけで判定していた。すると見える範囲が狭い新しいタイルが古いタイルを捨て、
+		// その部分にさらに前の絵が残った。Windows は更新の範囲をタイルより細かく切って送ってくる
 		const cover = drawn.find((r) => sameRect(r, bounds));
 		this.push(
 			{
@@ -411,8 +411,8 @@ export class SurfaceRenderer {
 	}
 
 	/**
-	 * 旧ビットマップの更新(矩形の並び)。復号を後回しにして、RemoteFX のタイルと混ざっても受けた順に描く。
-	 * 同じ位置(左上)の古いもの(タイルでもビットマップでも)は、この矩形が描く範囲にすっぽり入るときだけ要らない
+	 * 旧ビットマップの更新。矩形が並んで来る。復号を後回しにして、RemoteFX のタイルと混ざっても受けた順に描く。
+	 * 同じ左上にある古いものは、タイルでもビットマップでも、この矩形が描く範囲にすっぽり入るときだけ要らない
 	 */
 	bitmaps(rects: BitmapRect[], screen: ScreenSize): void {
 		for (const rect of rects) {
@@ -441,7 +441,7 @@ export class SurfaceRenderer {
 		this.request();
 	}
 
-	/** 保留に足す。cover(1 つの矩形で描く範囲)が、同じ位置の古いものの描く範囲をすっぽり含むなら、古いものは捨てる */
+	/** 保留に足す。cover は 1 つの矩形で描く範囲。これが同じ位置の古いものの描く範囲をすっぽり含むなら、古いものは捨てる */
 	private push(e: Pending, cover: Rect | undefined): void {
 		const list = (this.byKey.get(e.key) ?? []).filter((old) => {
 			if (!cover || !contains(cover, old.bounds)) return true;
@@ -466,7 +466,7 @@ export class SurfaceRenderer {
 
 	/**
 	 * 溜めたタイルを復号に回す。同期のプールならその場で復号して描き、終わったフレームの応答を返す。
-	 * 非同期のプールなら、描くのは揃ってから(順序どおり)
+	 * 非同期のプールなら、揃ってから順序どおりに描く
 	 */
 	flush(): void {
 		const entries = this.entries.filter((e) => !e.dead);
@@ -552,7 +552,7 @@ export class SurfaceRenderer {
 		);
 	}
 
-	/** 描き終えた(捨てた)ものを、位置の索引から外す */
+	/** 描き終えたものや捨てたものを、位置の索引から外す */
 	private forget(e: Pending): void {
 		const list = this.byKey.get(e.key);
 		if (!list) return;
@@ -561,7 +561,7 @@ export class SurfaceRenderer {
 		if (list.length === 0) this.byKey.delete(e.key);
 	}
 
-	/** Worker を止める(切断のとき) */
+	/** Worker を止める。切断のときに呼ぶ */
 	dispose(): void {
 		this.pool.terminate();
 	}

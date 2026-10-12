@@ -1,5 +1,5 @@
 // ClearCodec([MS-RDPEGFX] 2.2.4.1)。GFX で文字や UI の部品に使われる。
-// 残差(residual)→ 帯(bands、縦の棒 vBar のキャッシュ)→ サブコーデック(生 / NSCodec / RLEX)の順に重ねる。
+// 残差(residual)、帯(bands。縦の棒 vBar のキャッシュを使う)、サブコーデック(生 / NSCodec / RLEX)の順に重ねて描く。
 // グリフのキャッシュと vBar のキャッシュはセッションを通して持つので、1 つの ClearDecoder を使い続ける。
 
 import { MAX_PIXELS } from "./bitmap";
@@ -12,10 +12,10 @@ const FLAG_CACHE_RESET = 0x04;
 const VBAR_STORAGE = 32768;
 const SHORT_VBAR_STORAGE = 16384;
 const GLYPH_STORAGE = 4000;
-/** グリフにしてよい大きさ(画素数) */
+/** グリフにしてよい大きさの上限。画素数で数える */
 const GLYPH_MAX_PIXELS = 1024 * 1024;
 
-/** BGR の 3 バイトずつの並び(縦の棒) */
+/** 縦の棒。BGR の 3 バイトずつが並ぶ */
 type VBar = Uint8Array;
 
 export class ClearDecoder {
@@ -27,10 +27,10 @@ export class ClearDecoder {
 		| { w: number; h: number; rgba: Uint8ClampedArray }
 		| undefined
 	)[] = new Array(GLYPH_STORAGE);
-	/** 知らないサブコーデックが来た数(診断用) */
+	/** 知らないサブコーデックが来た回数。診断用 */
 	unsupported = 0;
 
-	/** w x h の RGBA(上の行から、不透明)を返す */
+	/** w x h の RGBA を返す。上の行から並び、不透明 */
 	decode(data: Uint8Array, w: number, h: number): Uint8ClampedArray {
 		if (w <= 0 || h <= 0 || w * h > MAX_PIXELS)
 			throw new Error("ClearCodec: 大きさが不正");
@@ -89,7 +89,7 @@ export class ClearDecoder {
 				const header = r.u16();
 				let bar: VBar;
 				if ((header & 0xc000) === 0x4000) {
-					// SHORT_VBAR_CACHE_HIT: 短い棒 + 上の余白(yOn)
+					// SHORT_VBAR_CACHE_HIT。短い棒と上の余白(yOn)
 					const short = this.shortVBars[header & 0x3fff];
 					if (!short) throw new Error("ClearCodec: キャッシュに無い短い棒");
 					bar = this.fullBar(short, r.u8(), height, bg);
@@ -220,10 +220,10 @@ function rgbaToBgr(rgba: Uint8ClampedArray): Uint8Array {
 
 /**
  * NSCodec([MS-RDPNSC] 2.2 / 3.1.8)。ClearCodec のサブコーデック 1 として来る。
- * NSCODEC_BITMAP_STREAM: 面ごとの長さ(Y / Co / Cg / A の 4 つ)、ColorLossLevel、ChromaSubsamplingLevel、予約、各面。
- * 面は元の大きさより短ければ RLE。色差を間引くときは、Y の幅を 8 の倍数に丸め、Co / Cg は縦横半分。
- * 色差は planar の YCoCg と同じく、8 ビットのまま (ColorLossLevel - 1) ずらしてから符号付きに読む(FreeRDP の nsc.c と同じ)。
- * 結果は w x h の RGBA(上の行から)
+ * NSCODEC_BITMAP_STREAM は、面ごとの長さ(Y / Co / Cg / A の 4 つ)、ColorLossLevel、ChromaSubsamplingLevel、予約、各面の順に並ぶ。
+ * 面は元の大きさより短ければ RLE で縮めてある。色差を間引くときは Y の幅を 8 の倍数に丸め、Co / Cg は縦横とも半分になる。
+ * 色差は planar の YCoCg と同じく、8 ビットのまま (ColorLossLevel - 1) ずらしてから符号付きとして読む。FreeRDP の nsc.c と同じ。
+ * 結果は w x h の RGBA で、上の行から並ぶ
  */
 export function nscodec(
 	data: Uint8Array,
@@ -272,8 +272,8 @@ export function nscodec(
 }
 
 /**
- * NSCodec の面の RLE。値の 1 バイト、次も同じ値なら続く長さ(1 バイト + 2、0xFF なら 4 バイト)。
- * 最後の 4 バイトは RLE にせずにそのまま(FreeRDP の nsc_rle_decode と同じ)
+ * NSCodec の面の RLE。値を 1 バイト読み、次も同じ値なら続く長さが来る。長さは 1 バイトに 2 を足したもので、0xFF なら 4 バイトで来る。
+ * 最後の 4 バイトは RLE にせず、そのまま置かれる。FreeRDP の nsc_rle_decode と同じ
  */
 export function nscRle(data: Uint8Array, size: number): Uint8Array {
 	const out = new Uint8Array(size);
@@ -310,7 +310,7 @@ export function nscRle(data: Uint8Array, size: number): Uint8Array {
 	return out;
 }
 
-/** 長さ: 1 バイト、0xFF なら 2 バイト、0xFFFF なら 4 バイト */
+/** 長さ。1 バイトで、0xFF なら 2 バイト、0xFFFF なら 4 バイトで来る */
 function runLength(r: Reader): number {
 	let n = r.u8();
 	if (n === 0xff) {
@@ -320,7 +320,7 @@ function runLength(r: Reader): number {
 	return n;
 }
 
-/** 残差: (B, G, R, 長さ)の並びで、上の行から全面を埋める */
+/** 残差。(B, G, R, 長さ)が並び、上の行から全面を埋める */
 function residual(
 	data: Uint8Array,
 	out: Uint8ClampedArray,
@@ -345,14 +345,14 @@ function residual(
 	if (p !== total) throw new Error("ClearCodec: 残差が足りない");
 }
 
-/** RLEX: パレット + (並びの長さ、続き)。結果は BGR の 3 バイトずつ */
+/** RLEX。パレットのあとに (並びの長さ、続き) が並ぶ。結果は BGR の 3 バイトずつ */
 export function rlex(data: Uint8Array, pixels: number): Uint8Array {
 	const r = new Reader(data);
 	const count = r.u8();
 	if (count === 0 || count > 127)
 		throw new Error("ClearCodec: RLEX のパレットが不正");
 	const palette = r.bytes(count * 3);
-	// stopIndex のビット数: floor(log2(count - 1)) + 1
+	// stopIndex のビット数は floor(log2(count - 1)) + 1
 	const bits = count === 1 ? 1 : 32 - Math.clz32(count - 1);
 	const out = new Uint8Array(pixels * 3);
 	let p = 0;

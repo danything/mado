@@ -9,13 +9,13 @@ using System.Text.Json.Nodes;
 namespace Mado;
 
 /// <summary>
-/// Let's Encrypt から証明書を取る ACME(RFC 8555)のクライアント。HTTP-01 だけ。
+/// Let's Encrypt から証明書を取る ACME (RFC 8555) のクライアント。HTTP-01 にだけ対応する。
 ///
-/// ライブラリは入れない。使うのは新しいアカウント・注文・認可・確定・ダウンロードの決まった順の POST だけで、
-/// 署名(JWS ES256)は ECDsa、CSR は CertificateRequest で足りる。
+/// ライブラリは使わない。やることは、アカウント作成、注文、認可、確定、ダウンロードの POST を決まった順に送ることだけ。
+/// JWS ES256 の署名は ECDsa で、CSR は CertificateRequest で作れる。
 ///
-/// dataDir に置くもの(bun 版と同じ形。入れ替えてもそのまま使える): acme-account.json(アカウントの鍵 JWK と URL)、
-/// tls.key / tls.crt(証明書の鍵と連なり、PEM)。
+/// dataDir には acme-account.json にアカウントの鍵 (JWK) と URL を、tls.key と tls.crt に証明書の鍵と連なりを PEM で置く。
+/// bun 版と同じ形なので、入れ替えてもそのまま使える。
 /// </summary>
 internal sealed class Acme(
     string host, string email, bool staging, string dataDir,
@@ -37,7 +37,7 @@ internal sealed class Acme(
     string KeyFile => Path.Combine(dataDir, "tls.key");
     string CertFile => Path.Combine(dataDir, "tls.crt");
 
-    /// <summary>置いてある証明書。期限が近い(または無い)なら取り直す</summary>
+    /// <summary>置いてある証明書を返す。無いか期限が近ければ取り直す</summary>
     public async Task<(string KeyPem, string CertPem, bool Renewed)> Ensure()
     {
         if (File.Exists(KeyFile) && File.Exists(CertFile))
@@ -143,7 +143,7 @@ internal sealed class Acme(
         }
     }
 
-    /// <summary>状態が valid になるまで待つ(Retry-After があれば従う)</summary>
+    /// <summary>状態が valid になるまで待つ。Retry-After があればその間隔で聞き直す</summary>
     async Task<JsonNode> Poll(string url, string what)
     {
         for (var i = 0; i < 30; i++)
@@ -175,7 +175,7 @@ internal sealed class Acme(
         else header["jwk"] = new JsonObject { ["crv"] = "P-256", ["kty"] = "EC", ["x"] = jwk["x"]!.DeepClone(), ["y"] = jwk["y"]!.DeepClone() };
         var p = B64(header.ToJsonString());
         var body = payload is null ? "" : B64(payload.ToJsonString());
-        // ECDsa.SignData の既定の形は r || s(IEEE P1363)で、JWS の ES256 と同じ
+        // ECDsa.SignData の既定の出力は IEEE P1363 の r || s で、JWS の ES256 と同じ形
         var sig = key.SignData(Encoding.ASCII.GetBytes($"{p}.{body}"), HashAlgorithmName.SHA256);
         var jws = new JsonObject { ["protected"] = p, ["payload"] = body, ["signature"] = Base64Url.EncodeToString(sig) };
         var msg = new HttpRequestMessage(HttpMethod.Post, url)
@@ -190,7 +190,7 @@ internal sealed class Acme(
         var err = JsonNode.Parse(await res.Content.ReadAsStringAsync() is { Length: > 0 } s ? s : "{}");
         var type = err?["type"]?.GetValue<string>();
         res.Dispose();
-        // nonce の使い回しを弾かれたら、新しい nonce で 1 回だけやり直す(RFC 8555 6.5)
+        // badNonce で弾かれたら、新しい nonce で 1 回やり直す。RFC 8555 6.5
         if (!retried && type == "urn:ietf:params:acme:error:badNonce") return await PostRaw(url, payload, accept, true);
         throw new InvalidOperationException($"acme: {url} ({(int)res.StatusCode}) {type} {err?["detail"]}".Trim());
     }
@@ -208,8 +208,8 @@ internal sealed class Acme(
         (X509Certificate2.CreateFromPem(pem).NotAfter.ToUniversalTime() - DateTime.UtcNow).TotalDays;
 
     /// <summary>
-    /// Kestrel に渡す形。Windows の SChannel は PEM から作った一時的な鍵を受けないので、一度 PKCS#12 にして読み直す。
-    /// 途中の証明書(Let's Encrypt の中間)も一緒に送る
+    /// Kestrel に渡す形にする。Windows の SChannel は PEM から作った一時的な鍵を受けないので、一度 PKCS#12 にして読み直す。
+    /// Let's Encrypt の中間証明書も一緒に送る
     /// </summary>
     public static SslStreamCertificateContext Context(string keyPem, string certPem)
     {

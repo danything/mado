@@ -17,7 +17,7 @@ internal sealed record Pending(
     [property: JsonPropertyName("verifier")] string Verifier,
     [property: JsonPropertyName("to")] string To);
 
-/// <summary>誰が・どこへ。つなぐ先はここで決まり、ブラウザが RDCleanPath に入れてくる行き先は見ない</summary>
+/// <summary>誰がどこへつなぐか。つなぐ先はここで決める。ブラウザが RDCleanPath に入れてくる行き先は見ない</summary>
 internal sealed record RelayToken(
     [property: JsonPropertyName("sub")] string Sub,
     [property: JsonPropertyName("target")] string Target,
@@ -59,35 +59,35 @@ internal sealed record JwtClaims(
 internal sealed class Forbidden(string message) : Exception(message);
 
 /// <summary>
-/// OIDC(認可コード + PKCE)でのログイン。
+/// OIDC の認可コード + PKCE でログインする。
 ///
-/// ライブラリは入れない(denpa の oidc.ts、bun 版の mado と同じ考え)。使う口は discovery・authorize・token・jwks の 4 つだけで、
-/// HttpClient と System.Security.Cryptography で足りる。ASP.NET Core の OpenIdConnect の仕組みは Native AOT に対応していない。
-/// 相手は Entra ID を想定しているが、使うのは OIDC の標準だけ。
+/// denpa の oidc.ts や bun 版の mado と同じく、ライブラリは使わない。使う口は discovery、authorize、token、jwks の 4 つで、
+/// HttpClient と System.Security.Cryptography で書ける。ASP.NET Core の OpenIdConnect は Native AOT に対応していない。
+/// 相手は Entra ID を想定しているが、OIDC の標準の範囲しか使っていない。
 /// </summary>
 internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient http)
 {
     OidcDiscovery? discovered;
-    /// <summary>kid ごとの公開鍵。相手が鍵を入れ替えたときのために、見つからなければ取り直す(同時のログインがあるので gate で守る)</summary>
+    /// <summary>kid ごとの公開鍵。相手が鍵を入れ替えることがあるので、見つからなければ取り直す。ログインは同時に来るので gate で守る</summary>
     readonly Dictionary<string, RSA> keys = [];
     readonly SemaphoreSlim gate = new(1, 1);
-    /// <summary>知らない kid で JWKS を取り直すのは、この間隔に 1 回まで(でたらめな kid で IdP を叩かせない)</summary>
+    /// <summary>知らない kid で JWKS を取り直すのは、この間隔に 1 回まで。でたらめな kid で IdP を叩かせない</summary>
     static readonly TimeSpan RefetchInterval = TimeSpan.FromMinutes(5);
     DateTimeOffset lastFetch = DateTimeOffset.MinValue;
-    /// <summary>時計のずれの許容(秒)</summary>
+    /// <summary>時計のずれをどこまで許すか。秒</summary>
     const int Skew = 60;
 
     public static string RandomToken(int bytes = 32) => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(bytes));
 
     /// <summary>
-    /// 戻る先は自分のところの絶対パスだけ(`//evil.example` で外へ飛ばす踏み台にしない)。
-    /// ブラウザは `\` を `/` として扱い、タブや改行は取り除くので、`/\evil.example` や `/\t/evil.example` も弾く
-    /// (`\` と制御文字はどこにあっても受けない)
+    /// 戻る先は自分のサイトの絶対パスに限る。`//evil.example` のような外へ飛ばす踏み台にはさせない。
+    /// ブラウザは `\` を `/` として扱い、タブや改行を取り除くので、`/\evil.example` や `/\t/evil.example` も弾く。
+    /// `\` と制御文字は、どこにあっても受けない
     /// </summary>
     public static string SafeReturn(string? to) =>
         to is not null && to.StartsWith('/') && !to.StartsWith("//") && !to.Contains('\\') && !to.Any(char.IsControl) ? to : "/";
 
-    /// <summary>口の一覧。一度読んだら覚える(取れなかったときは覚えず、次にまた取りに行く)</summary>
+    /// <summary>口の一覧。一度読んだら覚えておく。取れなかったときは覚えず、次にまた取りに行く</summary>
     async Task<OidcDiscovery> Discover()
     {
         if (discovered is not null) return discovered;
@@ -119,7 +119,7 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
         return ($"{doc.AuthorizationEndpoint}?{query}", pending);
     }
 
-    /// <summary>戻ってきたコードを確かめ切ってユーザーを返す。通さない人なら Forbidden</summary>
+    /// <summary>戻ってきたコードを確かめて、ユーザーを返す。通さない人なら Forbidden を投げる</summary>
     public async Task<User> Finish(string code, Pending pending)
     {
         var claims = await Verify(await Exchange(code, pending.Verifier), pending.Nonce);
@@ -128,7 +128,7 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
         return new User(claims.Sub!, claims.Name ?? claims.PreferredUsername ?? claims.Sub!);
     }
 
-    /// <summary>コードを ID トークンに換える。秘密は本文に入れて送る(client_secret_post)</summary>
+    /// <summary>コードを ID トークンに換える。秘密は client_secret_post で本文に入れて送る</summary>
     async Task<string> Exchange(string code, string verifier)
     {
         var doc = await Discover();
@@ -160,7 +160,7 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
             var doc = await Discover();
             using var res = await http.GetAsync(doc.JwksUri);
             if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"署名の鍵を取得できない ({(int)res.StatusCode})");
-            // 取れたときだけ数える(一時的に取れなかったあと、5 分待たずに取り直せるように)
+            // 取れたときだけ時刻を残す。一時的に取れなかっただけなら、5 分待たずに取り直せる
             lastFetch = DateTimeOffset.UtcNow;
             var jwks = JsonSerializer.Deserialize(await res.Content.ReadAsStringAsync(), ApiJson.Default.Jwks);
             foreach (var k in jwks?.Keys ?? [])
@@ -178,7 +178,7 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
         }
     }
 
-    /// <summary>ID トークンの署名まで確かめる(認可コードフローでは省いてよいことになっているが、数行なので省かない)</summary>
+    /// <summary>ID トークンの署名まで確かめる。認可コードフローでは省いてもよいが、数行で書けるので省かない</summary>
     internal async Task<JwtClaims> Verify(string token, string nonce)
     {
         var parts = token.Split('.');
@@ -211,7 +211,7 @@ internal sealed class Oidc(Config.OidcOptions c, string redirectUri, HttpClient 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (claims.Exp is not { } exp || exp + Skew < now) throw new InvalidOperationException("ID トークンの期限が切れている");
         if (claims.Nbf is { } nbf && nbf - Skew > now) throw new InvalidOperationException("ID トークンがまだ有効でない");
-        // 出したときの合言葉と一致すること。これが「自分が始めたログイン」の証拠
+        // nonce がこちらで出したものと合えば、自分が始めたログインだと分かる
         if (claims.Nonce != nonce) throw new InvalidOperationException("ID トークンの nonce が合わない");
         if (string.IsNullOrEmpty(claims.Sub)) throw new InvalidOperationException("ID トークンに sub が無い");
         return claims;

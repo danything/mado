@@ -1,4 +1,4 @@
-// 回線の自動検出の試験。要求の読み取り、応答のバイト列、帯域の測り方、接続の途中(readIo)での答え方。
+// 回線の自動検出の試験。要求の読み取り、応答のバイト列、帯域の測り方、つなぐ途中の readIo での答え方を見る。
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -16,7 +16,7 @@ import * as mcs from "./mcs";
 import { StreamClosed, type Transport } from "./stream";
 import * as x224 from "./x224";
 
-/** Security Header(SEC_AUTODETECT_REQ)付きの要求 */
+/** SEC_AUTODETECT_REQ の Security Header を付けた要求 */
 function request(
 	seq: number,
 	type: number,

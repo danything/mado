@@ -1,13 +1,13 @@
-// mado-tray: タスクトレイに mado(サービス)の状態を出す。サインイン時に起動する(MSI が HKLM の Run に登録する)。
+// mado-tray: mado サービスの状態をタスクトレイに出す。MSI が HKLM の Run に登録し、サインインしたときに起動する。
 //
-// 状態は mado の状態の口(http://127.0.0.1:8788/status。`--port <番号>` で変える)を 5 秒ごとに見る。動いていればアプリのアイコン、
-// 聞けなければ注意のアイコンにして、ツールチップに版・つないでいる数・証明書の残り日数を出す。
-// 右クリックのメニュー: 画面を開く / 今すぐ更新を確かめる / サービスを再起動(UAC)/ ログを開く(UAC)/ 終了。
-// 自動更新でサービスと exe が新しい版になったら、自分も起こし直す(RestartIfUpdated)。
+// 5 秒ごとに mado の状態の口 http://127.0.0.1:8788/status を見る。ポートは `--port <番号>` で変えられる。
+// 動いていればアプリのアイコン、聞けなければ注意のアイコンにする。ツールチップには版、つないでいる数、証明書の残り日数を出す。
+// 右クリックのメニューは、画面を開く、今すぐ更新を確かめる、サービスを再起動、ログを開く、終了。再起動とログは UAC を通す。
+// 自動更新でサービスと exe が新しい版になったら、自分も起こし直す。RestartIfUpdated を参照。
 //
-// WinForms は Native AOT に対応していないので、Win32(Shell_NotifyIcon と隠しウィンドウ)を直接呼ぶ。
-// ウィンドウはメッセージ専用ではなく普通の(見えない)トップレベルにして、MSI の更新のときに Restart Manager が
-// WM_CLOSE で閉じられるようにする(閉じたあと RegisterApplicationRestart で起こし直してもらう)。
+// WinForms は Native AOT に対応していないので、Shell_NotifyIcon と隠しウィンドウを Win32 で直接呼ぶ。
+// ウィンドウはメッセージ専用にせず、見えない普通のトップレベルにする。こうすると MSI の更新のときに Restart Manager が
+// WM_CLOSE で閉じられる。閉じたあとは RegisterApplicationRestart で起こし直してもらう。
 
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -23,11 +23,11 @@ internal static unsafe partial class Program
     static nint hwnd, hInstance, appIcon, warnIcon, mutex;
     static uint taskbarCreated;
     static string[] startArgs = [];
-    /// <summary>自分の版と exe の置き場所(起動したときのもの)</summary>
+    /// <summary>起動したときの exe の置き場所</summary>
     static readonly string? exePath = Environment.ProcessPath;
     /// <summary>
-    /// 自分の版。属性から取れなければ、起動したときの exe のファイルの版。どちらも取れなければ null で、
-    /// 起こし直しはしない(「0.0.0 より新しい」で 5 秒ごとに起こし直し続けないため)
+    /// 自分の版。属性から取れなければ、起動したときの exe のファイルの版を使う。どちらも取れなければ null にして、
+    /// 起こし直しはしない。0.0.0 にすると、どの版も新しく見えて 5 秒ごとに起こし直し続けてしまう
     /// </summary>
     static readonly string? ownVersion = Known(typeof(Program).Assembly
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
@@ -36,7 +36,7 @@ internal static unsafe partial class Program
 
     static string? Known(string? v) => string.IsNullOrEmpty(v) || VersionOf(v) == "v0.0.0" ? null : VersionOf(v);
 
-    /// <summary>起動したときの exe の中身の目印(書き換えた時刻と大きさ)。MSI が入れ替えたら変わる</summary>
+    /// <summary>起動したときの exe の更新時刻と大きさ。MSI が入れ替えたら変わる</summary>
     static readonly (DateTime, long)? startedFrom = Stamp();
 
     static (DateTime, long)? Stamp()
@@ -49,7 +49,7 @@ internal static unsafe partial class Program
         catch { return null; }
     }
 
-    /// <summary>最後に聞けた状態(聞けなければ null)。背景で取ってきて、タイマーで反映する</summary>
+    /// <summary>最後に聞いた状態。聞けなければ null。裏で取ってきて、タイマーで画面に反映する</summary>
     static volatile StatusView? status;
     static volatile bool fetching;
     static bool? wasUp;
@@ -63,16 +63,16 @@ internal static unsafe partial class Program
         var i = Array.IndexOf(args, "--port");
         if (i >= 0 && i + 1 < args.Length && int.TryParse(args[i + 1], out var port)) Net.Base = $"http://127.0.0.1:{port}";
         startArgs = args;
-        // 二重に起動しない(サインインし直したときなど)。起こし直すときは、新しいほうを起動する前に放す
+        // サインインし直したときなどに二重に起動しないようにする。起こし直すときは、新しいほうを起動する前に放す
         mutex = CreateMutexW(0, 0, "Local\\mado-tray");
         if (Marshal.GetLastPInvokeError() == 183 /* ERROR_ALREADY_EXISTS */) return 0;
-        // MSI の更新で Restart Manager に閉じられたら、終わったあとに起こし直してもらう
-        // 起こし直すときも同じ引数(--port)で
+        // MSI の更新で Restart Manager に閉じられたら、終わったあとに起こし直してもらう。
+        // そのときも --port などの引数を引き継ぐ
         RegisterApplicationRestart(args.Length > 0 ? string.Join(' ', args) : null, 0);
 
         Log($"起動: 自分 {ownVersion ?? "(不明)"}、{exePath}、引数 [{string.Join(' ', args)}]");
         hInstance = GetModuleHandleW(null);
-        // exe に埋め込んだアイコン(ApplicationIcon。資源の ID は 32512)。無ければ Windows の標準のもの
+        // ApplicationIcon で exe に埋め込んだアイコン。リソースの ID は 32512。無ければ Windows の標準のアイコンを使う
         appIcon = LoadImageW(hInstance, 32512, 1 /* IMAGE_ICON */, GetSystemMetrics(49), GetSystemMetrics(50), 0);
         if (appIcon == 0) appIcon = LoadIconW(0, 32512 /* IDI_APPLICATION */);
         warnIcon = LoadIconW(0, 32515 /* IDI_WARNING */);
@@ -128,7 +128,7 @@ internal static unsafe partial class Program
                     Apply();
                     Fetch();
                     return 0;
-                case 0x0011: // WM_QUERYENDSESSION(サインアウトや Restart Manager)。閉じてよい
+                case 0x0011: // WM_QUERYENDSESSION。サインアウトや Restart Manager から来る。閉じてよいと答える
                     return 1;
                 case 0x0016: // WM_ENDSESSION
                 case 0x0010: // WM_CLOSE
@@ -143,26 +143,26 @@ internal static unsafe partial class Program
         }
         catch (Exception e)
         {
-            // 例外をネイティブの呼び出し元に返さない(ログには残す)
+            // 例外はネイティブの呼び出し元に返さず、ログに残すだけにする
             Log($"WndProc 0x{msg:x}: {e.GetType().Name}: {e.Message}");
         }
         return DefWindowProcW(h, msg, w, l);
     }
 
-    // --- 状態 ---------------------------------------------------------------------------------------
+    // 状態
 
     static void Fetch()
     {
         if (fetching) return;
         fetching = true;
-        // Net.Status は例外を出さない(聞けなければ null)
+        // Net.Status は例外を出さない。聞けなければ null が返る
         _ = Net.Status().ContinueWith(t =>
         {
             status = t.Result;
             fetching = false;
         }, TaskScheduler.Default);
     }
-    /// <summary>取ってきた状態をアイコンとツールチップに出す。止まった・戻ったときは通知も出す</summary>
+    /// <summary>取ってきた状態をアイコンとツールチップに出す。止まったときと戻ったときは通知も出す</summary>
     static void Apply()
     {
         var s = status;
@@ -181,10 +181,10 @@ internal static unsafe partial class Program
 
     /// <summary>
     /// サービスが新しい版になり、置き場所の mado-tray.exe も入れ替わっていたら、自分を起こし直す。
-    /// 置き場所の exe の版は FileVersionInfo では読めない(同じパスの exe = 自分が読み込まれているので、
-    /// 入れ替わったあとも読み込み済みの古い版が返る)。代わりに、起動したときから中身が変わったか(時刻と大きさ)を見る。
-    /// サービスが入れる MSI は、サインインしている人のトレイを閉じられない(動いている exe は名前を変えて残り、
-    /// 新しい exe が置かれる)ので、トレイは古いまま動き続けてしまう。同じ引数(--port)で起動して、自分は終わる
+    /// 置き場所の exe の版は FileVersionInfo では読めない。同じパスの exe は自分として読み込まれているので、
+    /// 入れ替わったあとも読み込み済みの古い版が返ってくる。そこで、起動したときから更新時刻と大きさが変わったかを見る。
+    /// サービスが入れる MSI は、サインインしている人のトレイを閉じられない。動いている exe は名前を変えて残り、
+    /// 新しい exe がその横に置かれるので、トレイは古いまま動き続けてしまう。だから同じ引数で新しい exe を起動し、自分は終わる
     /// </summary>
     static void RestartIfUpdated(string serviceVersion)
     {
@@ -205,7 +205,7 @@ internal static unsafe partial class Program
         catch (Exception e)
         {
             Log($"起こし直せなかった: {e.Message}");
-            // 起動できなければ、放したものを取り直してこのまま動き続ける(次の確認でまた試す)
+            // 起動できなければ mutex を取り直して、このまま動き続ける。次の確認でまた試す
             mutex = CreateMutexW(0, 0, "Local\\mado-tray");
             return;
         }
@@ -214,7 +214,7 @@ internal static unsafe partial class Program
 
     static string? lastSeen;
 
-    /// <summary>%LOCALAPPDATA%\mado\tray.log に足す(1 MB を超えたら .1 に回す)。書けなくても止めない</summary>
+    /// <summary>%LOCALAPPDATA%\mado\tray.log に書き足す。1 MB を超えたら .1 に回す。書けなくても止めない</summary>
     static void Log(string msg)
     {
         try
@@ -234,7 +234,7 @@ internal static unsafe partial class Program
     static bool Newer(string a, string b) =>
         Version.TryParse(a.TrimStart('v').Split('-')[0], out var x) && Version.TryParse(b.TrimStart('v').Split('-')[0], out var y) && x > y;
 
-    // --- メニュー -----------------------------------------------------------------------------------
+    // メニュー
 
     static void ShowMenu()
     {
@@ -259,11 +259,11 @@ internal static unsafe partial class Program
             case MenuOpen: Open(s?.Origin); break;
             case MenuUpdate: UpdateNow(); break;
             case MenuRestart:
-                // 止めて起こすには管理者が要る(UAC)
+                // サービスの再起動には管理者の権限が要るので、UAC を通す
                 ShellExecuteW(0, "runas", "powershell.exe", "-NoProfile -WindowStyle Hidden -Command Restart-Service mado", null, 0);
                 break;
             case MenuLog:
-                // ログは SYSTEM と Administrators だけが読める(UAC)
+                // ログを読めるのは SYSTEM と Administrators だけなので、UAC を通す
                 ShellExecuteW(0, "runas", "notepad.exe",
                     $"\"{Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "mado", "logs", "mado.log")}\"", null, 1);
                 break;
@@ -276,9 +276,10 @@ internal static unsafe partial class Program
         if (url is { Length: > 0 }) ShellExecuteW(0, "open", url, null, null, 1);
     }
 
-    // Net.UpdateNow は例外を出さない(失敗も通知の文にする)
+    // Net.UpdateNow は例外を出さない。失敗も通知の文にして返す
     static void UpdateNow() => _ = Net.UpdateNow().ContinueWith(t => Balloon(t.Result.Title, t.Result.Text, t.Result.Warn), TaskScheduler.Default);
-    // --- アイコン -----------------------------------------------------------------------------------
+
+    // アイコン
 
     static NOTIFYICONDATAW Data(uint flags)
     {
@@ -326,7 +327,7 @@ internal static unsafe partial class Program
         dst[n] = '\0';
     }
 
-    // --- Win32 --------------------------------------------------------------------------------------
+    // Win32
 
     [StructLayout(LayoutKind.Sequential)]
     struct POINT { public int X, Y; }
@@ -453,7 +454,7 @@ internal static unsafe partial class Program
 /// <summary>状態の口との話。await は unsafe の文脈では書けないので、Program とは分ける</summary>
 internal static class Net
 {
-    /// <summary>状態の口。既定は 8788(mado.json の status.port の既定と同じ)。--port で変える</summary>
+    /// <summary>状態の口。既定の 8788 は mado.json の status.port の既定と同じ。--port で変える</summary>
     public static string Base = "http://127.0.0.1:8788";
     static readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(3) };
 
@@ -478,7 +479,7 @@ internal static class Net
         }
     }
 
-    /// <summary>今すぐ更新を確かめる。通知に出す (題, 本文, 注意か)</summary>
+    /// <summary>今すぐ更新を確かめる。通知に出す題、本文、注意かどうかを返す</summary>
     public static async Task<(string Title, string Text, bool Warn)> UpdateNow()
     {
         try

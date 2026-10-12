@@ -1,4 +1,4 @@
-// マウス ポインタ([MS-RDPBCGR] 2.2.9.1.1.4)。形を RGBA にして、画面側が CSS の cursor にする。
+// マウス ポインタ([MS-RDPBCGR] 2.2.9.1.1.4)。形を RGBA にする。それを画面側が CSS の cursor にする。
 
 import { Reader } from "./bytes";
 
@@ -7,13 +7,13 @@ export type Cursor = {
 	height: number;
 	hotX: number;
 	hotY: number;
-	/** 上の行から */
+	/** 行は上から並ぶ */
 	rgba: Uint8ClampedArray;
 };
 
 const MAX_SIDE = 384;
 
-/** 新しいポインタ(Fast-Path の 0xB、Slow-Path の POINTER)。large なら大きさの欄が 32 ビット */
+/** 新しいポインタを読む。Fast-Path の 0xB と Slow-Path の POINTER。large なら大きさの欄が 32 ビット */
 export function parseNewPointer(
 	b: Uint8Array,
 	large = false,
@@ -23,7 +23,7 @@ export function parseNewPointer(
 	return parseColorBody(r, xorBpp, large);
 }
 
-/** 24 ビットのポインタ(Fast-Path の COLOR、Slow-Path の COLOR) */
+/** 24 ビットのポインタを読む。Fast-Path と Slow-Path の COLOR */
 export function parseColorPointer(b: Uint8Array): {
 	index: number;
 	cursor: Cursor;
@@ -64,8 +64,9 @@ function parseColorBody(
 }
 
 /**
- * XOR マスク(色)と AND マスク(1 ビット、1 が透明)を RGBA にする。どちらも下の行から、行は 2 バイトの境界。
- * 32 ビットは XOR マスクのアルファを使う。AND が 1 で XOR が 0 でない画素は「画面を反転」だが、近似で色をそのまま出す
+ * XOR マスクと AND マスクを RGBA にする。XOR マスクは色、AND マスクは 1 ビットで 1 が透明。
+ * どちらも行は下から並び、各行は 2 バイトの境界にそろう。32 ビットでは XOR マスクのアルファを使う。
+ * AND が 1 で XOR が 0 でない画素は本来「画面を反転」だが、色をそのまま出して近似する
  */
 function decode(
 	w: number,
@@ -121,7 +122,7 @@ function decode(
 				default:
 					throw new Error(`ポインタの色の深さ ${bpp} は使えない`);
 			}
-			// 32 ビットはアルファが透明を決める。それ以外は AND マスク
+			// 32 ビットはアルファで透明かが決まる。それ以外は AND マスクで決まる
 			if (bpp !== 32 && transparent && r === 0 && g === 0 && b === 0) a = 0;
 			else if (bpp !== 32 && transparent) a = 255;
 			out[d] = r;

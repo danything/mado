@@ -1,4 +1,4 @@
-// RemoteFX のタイル復号の計測。実タイル(xrdp から取ったもの)を何度も復号して、1 タイルあたりの時間と内訳を出す。
+// RemoteFX のタイルを復号する速さを計る。xrdp から取った実際のタイルを何度も復号して、1 タイルあたりの時間と内訳を出す。
 //   wslc run --rm -v "D:\danything\mado:/app" -w /app oven/bun:1 bun tools/rfx-bench.ts
 
 import { decodeTile, parseQuant, reconstruct, rlgrDecode, yccToRgba } from "../web/rdp/rfx";
@@ -42,7 +42,8 @@ const total = time("decodeTile(全部)", () => {
 });
 console.log(`1080p(510 タイル)の全面更新: ${(total * 510).toFixed(1)} ms`);
 
-// 密なデータ(スクロールで来る文字やウィンドウの縁のような、係数が多いタイル)。ラプラス分布の乱数を RLGR3 / RLGR1 で符号化して復号する
+// 密なデータ。スクロールで来る文字やウィンドウの縁のように、係数が多いタイルを想定する。
+// ラプラス分布の乱数を RLGR3 と RLGR1 で符号化して、それを復号する
 let seed = 12345;
 const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
 const dense = (scale: number) => {

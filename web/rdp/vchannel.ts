@@ -1,8 +1,9 @@
-// 静的仮想チャネル([MS-RDPBCGR] 2.2.6)。1 つのメッセージを、8 バイトのヘッダー(全体の長さ + フラグ)付きの断片に分けて運ぶ。
+// 静的仮想チャネル([MS-RDPBCGR] 2.2.6)。1 つのメッセージを断片に分けて運ぶ。
+// 断片には 8 バイトのヘッダーが付き、全体の長さとフラグが入る。
 
 import { concat, Reader, Writer } from "./bytes";
 
-/** 1 つの断片の本体の最大(VCChunkSize の既定) */
+/** 1 つの断片の本体の最大。VCChunkSize の既定の値 */
 export const CHUNK_SIZE = 1600;
 
 const FIRST = 0x01;
@@ -11,7 +12,7 @@ const LAST = 0x02;
 export const SHOW_PROTOCOL = 0x10;
 const COMPRESSED = 0x00200000;
 
-/** メッセージを断片に分ける(それぞれ Send Data Request の中身になる) */
+/** メッセージを断片に分ける。断片はそれぞれ Send Data Request の中身になる */
 export function splitChannelData(data: Uint8Array, flags = 0): Uint8Array[] {
 	const out: Uint8Array[] = [];
 	let at = 0;

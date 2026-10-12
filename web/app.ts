@@ -1,5 +1,5 @@
-// 画面。自前の RDP クライアント(web/rdp)で RDP を話し、mado の /ws(RDCleanPath)を通して PC につなぐ。
-// Windows のユーザー名とパスワードはブラウザの中の CredSSP が使うだけで、mado のサーバーには届かない。
+// 画面。web/rdp の RDP クライアントで、mado の /ws(RDCleanPath)を通して PC につなぐ。
+// Windows のユーザー名とパスワードはブラウザの中の CredSSP で使う。mado のサーバーには届かない。
 
 import { AutoScale } from "./rdp/autoscale";
 import { attachChannels, type Channels } from "./rdp/channels";
@@ -62,22 +62,22 @@ home.hidden = false;
 
 const display = new Display(screen);
 
-/** つなぐのに待つ長さ(CredSSP・ライセンス・同期まで) */
+/** つながるまで待つ時間。CredSSP、ライセンス、同期までを含む */
 const CONNECT_TIMEOUT_MS = 30_000;
 
 let current: { client: RdpClient; channels: Channels } | undefined;
 /** つないでいる最中の取り消し用 */
 let connecting: AbortController | undefined;
-/** 最後に、ブラウザのクリップボードとリモートの間でやりとりした文字列(往復を防ぐ) */
+/** ブラウザのクリップボードとリモートの間で最後にやりとりした文字列。同じ文字列が行き来しないように覚えておく */
 let lastClipboard: string | undefined;
 
 /**
  * 画面の送り方。上ほど遅延が小さく、送る量も少ない。
- * - avc: GFX + H.264(ブラウザが H.264 を復号できるとき)
- * - gfx: GFX(ClearCodec・Progressive など。H.264 なし)
- * - bitmap: 旧来の描画(RemoteFX・ビットマップ)
+ * - avc: GFX + H.264。ブラウザが H.264 を復号できるときに使う
+ * - gfx: H.264 なしの GFX。ClearCodec や Progressive を使う
+ * - bitmap: 旧来の描画。RemoteFX とビットマップ
  * GFX を使えないサーバーは GFX のチャネルを開かないので、そのまま旧来の描画になる。
- * つないだあとで壊れたら、一つ下に切り替えて裏でつなぎ直す
+ * つないだあとで壊れたら、一つ下の方式で裏からつなぎ直す
  */
 type Mode = "avc" | "gfx" | "bitmap";
 const MODE_NAMES: Record<Mode, string> = {
@@ -86,7 +86,7 @@ const MODE_NAMES: Record<Mode, string> = {
 	bitmap: "ビットマップ / RemoteFX",
 };
 
-/** つないだ相手と認証(つなぎ直しに使う。パスワードは画面を閉じるまでメモリにだけ置く) */
+/** つないだ相手と認証の情報。つなぎ直しに使う。パスワードは画面を閉じるまでメモリに置くだけで、保存しない */
 type Login = {
 	target: string;
 	username: string;
@@ -98,7 +98,7 @@ type SessionEnd = { message: string; fallback?: Mode };
 
 /** 方式を切り替えた記録(診断用) */
 const switches: string[] = [];
-/** 画素数を自動で変えた記録(診断用。新しいもの 5 つ) */
+/** 画素数を自動で変えた記録。診断に新しいものから 5 つ出す */
 const scaleSwitches: string[] = [];
 /** いまの画素数の割合(診断用) */
 let currentScale: () => number = () => 1;
@@ -153,11 +153,11 @@ async function runSession(
 ): Promise<SessionEnd> {
 	const stops: (() => void)[] = [];
 	try {
-		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入り、サーバーが決める
+		// トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入っていて、サーバーが決める
 		const { token } = await getJson<{ token: string }>(
 			`/api/token?target=${encodeURIComponent(login.target)}`,
 		);
-		// 画面の場所を出してから大きさを測る(clientHeight を読むとレイアウトがその場で決まる)
+		// 画面の場所を表示してから大きさを測る。clientHeight を読んだ時点でレイアウトが決まる
 		home.hidden = true;
 		toolbar.hidden = false;
 		$<HTMLElement>("#current").textContent = login.target;
@@ -223,7 +223,7 @@ async function runSession(
 		const resize = (w: number, h: number) => {
 			const width = even(Math.round(w * auto.scale));
 			const height = Math.round(h * auto.scale);
-			// いまの大きさと同じなら送らない。Windows は同じ大きさでも画面の作り直しをする(GPU があると数十秒、絵が来ない)
+			// いまと同じ大きさなら送らない。Windows は同じ大きさでも画面を作り直し、GPU があると数十秒絵が来なくなる
 			if (width === display.width && height === display.height) return;
 			channels.displayControl.resize(width, height);
 		};
@@ -238,7 +238,7 @@ async function runSession(
 				auto.pause(now + 10_000);
 			}
 			const l = gfxClient.latency;
-			// 最近のフレームが無ければ(画面が静か)混んでいない
+			// 最近のフレームが無いのは画面が静かなときなので、混んでいないとみなす
 			const queued = now - l.at < AUTO_SAMPLE_MS * 1.5 ? l.queued : undefined;
 			const next = auto.sample({ queued, backlog: gfxClient.backlog }, now);
 			if (next === undefined) return;
@@ -316,7 +316,7 @@ function diagText(
 	return lines.join("\n");
 }
 
-/** サーバーが測った回線(回線の自動検出)。測っていなければ答えた数だけ */
+/** 回線の自動検出でサーバーが測った値と、こちらが応答した回数 */
 function networkText(n: RdpClient["network"]): string {
 	const ms = (v?: number) => (v === undefined ? "-" : `${v}ms`);
 	const info = n.info
@@ -373,13 +373,13 @@ toolbar.addEventListener("click", (e) => {
 
 // ---- クリップボード ----
 
-/** リモートでコピーされた文字列を、ブラウザのクリップボードへ(権限が無ければ黙って諦める) */
+/** リモートでコピーされた文字列をブラウザのクリップボードに入れる。権限が無ければ何もしない */
 function writeClipboard(text: string): void {
 	lastClipboard = text;
 	void navigator.clipboard?.writeText(text).catch(() => {});
 }
 
-/** 画面にフォーカスが来たとき、ブラウザのクリップボードの文字列をリモートへ知らせる(変わっていたときだけ) */
+/** 画面にフォーカスが来たら、ブラウザのクリップボードの文字列をリモートへ知らせる。前と同じなら知らせない */
 function watchClipboard(canvas: HTMLElement, channels: Channels): () => void {
 	const sync = async () => {
 		try {
@@ -408,7 +408,7 @@ function desktopSize(): { width: number; height: number } {
 
 /**
  * キーボード配列。OS の配列がはっきり US の形なら米国(0x0409)、それ以外は日本語(0x0411)。
- * 調べられないブラウザ(Chromium 以外)は日本語にする
+ * 配列を調べられないブラウザ(Chromium 以外)では日本語にする
  */
 async function detectKeyboardLayout(): Promise<number> {
 	const kb = (
@@ -418,7 +418,8 @@ async function detectKeyboardLayout(): Promise<number> {
 	).keyboard;
 	try {
 		const map = await kb?.getLayoutMap();
-		// JIS の目印: ¥・ろのキーがある、または [ の位置が @・' の位置が : になる。どれも無く、US の形(' と [)なら米国
+		// ¥ や ろ のキーがある、[ の位置が @、' の位置が : になっている、のどれかなら JIS。
+		// どれも無く、' と [ が US の位置にあれば米国
 		if (map) {
 			const jis =
 				map.has("IntlYen") ||

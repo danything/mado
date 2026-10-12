@@ -171,7 +171,7 @@ describe("CredSSP の TSRequest", () => {
 	});
 
 	test("errorCode は符号なしで読む", () => {
-		// version 6、errorCode 0xC000006D(符号付きの INTEGER で、負数として 4 バイトで来る)
+		// version 6、errorCode 0xC000006D。errorCode は符号付きの INTEGER なので、負の数として 4 バイトで来る
 		const raw = fromHex("300da003020106a4060204c000006d");
 		expect(parseTsRequest(raw).errorCode).toBe(0xc000006d);
 	});

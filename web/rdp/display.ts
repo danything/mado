@@ -1,10 +1,10 @@
-// ブラウザの画面。canvas に描き、ポインタを CSS の cursor にし、キー・マウスを RDP の入力にする。
+// ブラウザの画面。canvas に描き、ポインタは CSS の cursor で出す。キーとマウスは RDP の入力にする。
 
 import type { RdpClient, Screen } from "./client";
 import * as input from "./input";
 import type { Cursor } from "./pointer";
 
-/** 表示上の位置(canvas の矩形の左上からの距離)→ RDP の座標。矩形は fit で拡縮された表示の大きさ */
+/** canvas の矩形の左上からの距離を、RDP の座標にする。矩形は fit で拡縮したあとの表示の大きさ */
 export function toRdpPoint(
 	clientX: number,
 	clientY: number,
@@ -21,7 +21,7 @@ export function toRdpPoint(
 	};
 }
 
-/** 親の大きさに収まる最大の表示の大きさ(縦横比を保つ) */
+/** 縦横比を保ったまま、親の大きさに収まる最大の表示の大きさ */
 export function fitSize(
 	width: number,
 	height: number,
@@ -46,8 +46,8 @@ export class Display implements Screen {
 		this.canvas.style.outline = "none";
 		this.canvas.style.display = "block";
 		this.canvas.style.margin = "auto";
-		// desynchronized: 描いた絵を、ブラウザの合成(次の描画の周期)を待たずに出す(Chromium。1 フレームほど早く見える)。
-		// alpha: false: 画面は不透明なので、下と混ぜる処理を省く
+		// desynchronized にすると、描いた絵をブラウザの合成を待たずに出せる。Chromium では 1 フレームほど早く見える。
+		// 画面は不透明なので alpha: false にして、下と混ぜる処理を省く
 		const ctx = this.canvas.getContext("2d", {
 			desynchronized: true,
 			alpha: false,
@@ -67,14 +67,14 @@ export class Display implements Screen {
 	}
 
 	resize(width: number, height: number): void {
-		// 大きさを入れ直すと canvas は消える。同じ大きさなら何もしない(Deactivate-Reactivate のあと、GFX は描き直しを送ってこない)
+		// 大きさを入れ直すと canvas は消える。Deactivate-Reactivate のあと GFX は描き直しを送ってこないので、同じ大きさなら何もしない
 		if (this.canvas.width === width && this.canvas.height === height) return;
 		this.canvas.width = width;
 		this.canvas.height = height;
 		this.fit();
 	}
 
-	/** 切れたあとの片付け: 画を消して、ポインタを既定に戻す */
+	/** 切れたあとの片付け。画面を消して、ポインタを既定に戻す */
 	clear(): void {
 		this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 		this.canvas.style.cursor = "default";
@@ -87,7 +87,7 @@ export class Display implements Screen {
 		h: number,
 		rgba: Uint8ClampedArray,
 	): void {
-		// 写さずにそのまま渡す(タイルごとの複製を省く)。rgba は ArrayBuffer の上にある
+		// タイルごとに複製しないよう、写さずにそのまま渡す。rgba は ArrayBuffer の上にある
 		this.ctx.putImageData(
 			new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h),
 			x,
@@ -95,7 +95,7 @@ export class Display implements Screen {
 		);
 	}
 
-	/** GFX の面(canvas)の一部を画面へ写す */
+	/** GFX の面の canvas の一部を画面へ写す */
 	blit(
 		src: CanvasImageSource,
 		sx: number,
@@ -109,7 +109,7 @@ export class Display implements Screen {
 		this.ctx.drawImage(src, sx, sy, w, h, dx, dy, w, h);
 	}
 
-	/** blit と同じだが、消さずに重ねる(GFX で面が重なるとき、上の面を描く) */
+	/** blit と同じだが、下を消さずに重ねる。GFX で面が重なるとき、上の面を描くのに使う */
 	blitOver(
 		src: CanvasImageSource,
 		sx: number,
@@ -128,7 +128,7 @@ export class Display implements Screen {
 		else this.canvas.style.cursor = this.cursorCss(cursor);
 	}
 
-	/** 画面の大きさを親に fit させる(CSS だけ。canvas の画素数は RDP の大きさのまま) */
+	/** 画面の大きさを CSS で親に合わせる。canvas の画素数は RDP の大きさのまま */
 	private fit(): void {
 		const s = fitSize(
 			this.canvas.width,
@@ -173,9 +173,9 @@ const MODIFIERS: {
 ];
 
 /**
- * キーイベントの修飾の状態(e.shiftKey など)と、覚えている押下(down)が食い違うときに送るもの。down も合わせて書き換える。
- * ブラウザの自動操作や、窓の外で修飾キーを離したときなどは、修飾キーの keydown / keyup が来ないことがある。
- * そのキー自身が修飾キーなら、その種類は合わせない(自身の keydown / keyup で足りる)
+ * キーイベントの e.shiftKey などと、覚えている押下 down が食い違うときに送る入力を返す。down も合わせて書き換える。
+ * ブラウザの自動操作や、窓の外で修飾キーを離したときには、修飾キーの keydown / keyup が来ないことがある。
+ * そのキー自身が修飾キーなら、その種類は合わせない。自身の keydown / keyup で足りる
  */
 export function syncModifiers(
 	e: Pick<KeyboardEvent, "code" | "shiftKey" | "ctrlKey" | "altKey">,
@@ -199,14 +199,14 @@ export function syncModifiers(
 	return out;
 }
 
-/** canvas のキー・マウスを RDP の入力にする。戻り値で解除 */
+/** canvas のキーとマウスを RDP の入力にする。戻り値を呼ぶと解除する */
 export function bindInput(
 	canvas: HTMLCanvasElement,
 	client: RdpClient,
 	display: Display,
 ): () => void {
 	const down = new Set<string>();
-	/** 最後に送った位置(同じ位置へは送らない) */
+	/** 最後に送った位置。同じ位置へは送らない */
 	let last = { x: -1, y: -1 };
 
 	const point = (e: MouseEvent) =>
@@ -243,7 +243,7 @@ export function bindInput(
 	};
 	const onKeyDown = (e: KeyboardEvent) => key(e, true);
 	const onKeyUp = (e: KeyboardEvent) => key(e, false);
-	// 移動はすぐ送る(描画のタイミングを待たない。ブラウザが mousemove をまとめる頻度で足りる)
+	// 移動は描画の周期を待たずにすぐ送る。ブラウザが mousemove をまとめる頻度で足りる
 	const onMove = (e: MouseEvent) => {
 		const p = point(e);
 		if (p.x === last.x && p.y === last.y) return;
@@ -259,7 +259,7 @@ export function bindInput(
 		client.sendInput([ev]);
 		e.preventDefault();
 	};
-	// 押したまま canvas の外へ出して離しても、ボタンが押しっぱなしにならないよう、押している間は window で離すのを待つ
+	// 押したまま canvas の外で離すと、ボタンが押しっぱなしになる。押している間は window で離すのを待つ
 	const held = new Set<number>();
 	const onUp = (e: MouseEvent) => {
 		if (!held.delete(e.button)) return;
@@ -273,7 +273,7 @@ export function bindInput(
 	};
 	const onWheel = (e: WheelEvent) => {
 		const events: Uint8Array[] = [];
-		// deltaMode 1 は行単位(1 行 = 40px 相当)
+		// deltaMode 1 は行単位。1 行を 40px とみなす
 		const k = e.deltaMode === 1 ? 40 : 1;
 		if (e.deltaY) events.push(input.mouseWheel(e.deltaY * k));
 		if (e.deltaX) events.push(input.mouseWheel(e.deltaX * k, true));
@@ -316,7 +316,7 @@ export function bindInput(
 	};
 }
 
-/** 親の大きさが変わって落ち着いたら(debounce)cb を呼ぶ。戻り値で解除 */
+/** 親の大きさが変わり、しばらく落ち着いたら cb を呼ぶ。戻り値を呼ぶと解除する */
 export function watchSize(
 	el: HTMLElement,
 	cb: (width: number, height: number) => void,

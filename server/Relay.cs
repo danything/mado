@@ -6,22 +6,22 @@ using System.Security.Cryptography.X509Certificates;
 namespace Mado;
 
 /// <summary>
-/// WebSocket(ブラウザの RDP クライアント)と RDP サーバーのあいだの中継。
+/// ブラウザの RDP クライアントとつながった WebSocket と、RDP サーバーのあいだを中継する。
 ///
-/// 1. 最初に RDCleanPath の要求を受け取る(複数のメッセージに分かれて来てもよい)
+/// 1. 最初に RDCleanPath の要求を受け取る。複数のメッセージに分かれて来てもよい
 /// 2. RDP サーバーに TCP でつなぎ、要求に入っていた X.224 の接続要求を送り、接続確認を受け取る
 /// 3. 同じソケットの上で TLS を張り、サーバーの証明書の連なりを取る
-/// 4. RDCleanPath の応答(接続確認 + 証明書)を返し、あとは WebSocket ↔ TLS をそのまま流す
+/// 4. 接続確認と証明書を RDCleanPath の応答で返す。あとは WebSocket と TLS のあいだをそのまま流す
 ///
-/// つなぐ先はトークン(proxy_auth)に入っている、設定の targets のどれか。ブラウザが送ってくる destination は見ない
-/// (どこへでも行ける中継にしない)。RDP との TLS は SslStream(Windows では SChannel)で、RDP の自己署名証明書を
-/// そのまま受けられる(bun 版のように鍵交換を絞る必要は無い)。
+/// つなぐ先は、proxy_auth のトークンに入っている設定の targets のどれか。どこへでも行ける中継にはしたくないので、
+/// ブラウザが送ってくる destination は見ない。RDP との TLS は SslStream で張る。Windows では SChannel になり、
+/// RDP の自己署名証明書をそのまま受けられる。bun 版のように鍵交換を絞る必要は無い。
 /// </summary>
 internal static class Relay
 {
     const int MaxRequest = 64 * 1024;
 
-    /// <summary>authorize は proxy_auth(使い捨てのトークン)を確かめて、つなぐ先を返す。だめなら null</summary>
+    /// <summary>authorize は proxy_auth の使い捨てのトークンを確かめて、つなぐ先を返す。通らなければ null</summary>
     public static async Task Run(WebSocket ws, Func<string?, Target?> authorize, Action<string> log, CancellationToken ct)
     {
         var buf = new byte[64 * 1024];
@@ -68,7 +68,7 @@ internal static class Relay
         }
 
         log($"relay to {target.Name} ({target.Host}:{target.Port})");
-        // 入力(キー・マウス)は小さなパケットなので、Nagle で溜めずにすぐ送る(遅延を減らす)
+        // キーやマウスの入力は小さなパケットになる。Nagle で溜めると遅れるので、すぐ送る
         using var tcp = new TcpClient { NoDelay = true };
         SslStream ssl;
         try
@@ -78,7 +78,7 @@ internal static class Relay
             if (req.PreconnectionBlob is { } pcb) await net.WriteAsync(System.Text.Encoding.UTF8.GetBytes(pcb), ct);
             await net.WriteAsync(req.X224, ct);
             var cc = await ReadTpkt(net, ct);
-            // RDP_NEG_FAILURE(0x03)なら TLS には進まず、そのまま返す(ブラウザが理由を出す)
+            // RDP_NEG_FAILURE (0x03) なら TLS には進まず、そのまま返す。理由はブラウザが表示する
             if (cc.Length >= 12 && cc[11] == 0x03)
             {
                 await Send(ws, RdCleanPath.Error(RdCleanPath.NegotiationError, x224: cc), ct);
@@ -158,7 +158,7 @@ internal static class Relay
         await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "relay failed", ct);
     }
 
-    /// <summary>TPKT(RFC 1006)を 1 つ読む。ヘッダーの 3〜4 バイト目が全体の長さ</summary>
+    /// <summary>TPKT (RFC 1006) を 1 つ読む。ヘッダーの 3〜4 バイト目が全体の長さ</summary>
     internal static async Task<byte[]> ReadTpkt(Stream s, CancellationToken ct)
     {
         var head = new byte[4];

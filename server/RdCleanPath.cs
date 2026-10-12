@@ -1,12 +1,12 @@
 namespace Mado;
 
 /// <summary>
-/// RDCleanPath の PDU(Devolutions の IronRDP の crates/ironrdp-rdcleanpath と同じ形。ブラウザ側は web/rdp/rdcleanpath.ts)。
+/// RDCleanPath の PDU。形は Devolutions の IronRDP にある crates/ironrdp-rdcleanpath と同じ。ブラウザ側は web/rdp/rdcleanpath.ts。
 ///
-/// ブラウザは RDP の TLS を自分で張れない。そこでブラウザは最初に RDCleanPath の要求(X.224 の接続要求入り)を送り、
-/// ゲートウェイが RDP サーバーと X.224 → TLS までを代わりにやって、サーバーの応答(X.224 の接続確認)と証明書の連なりを
-/// 返す。そのあとは平文の RDP をゲートウェイが TLS に包んで流す。証明書を返すのは、ブラウザ側の CredSSP がサーバーの
-/// 公開鍵に結びつけた認証をするため。
+/// ブラウザは RDP の TLS を自分で張れない。そこでブラウザは最初に、X.224 の接続要求を入れた RDCleanPath の要求を送る。
+/// ゲートウェイは RDP サーバーとの X.224 と TLS を代わりに済ませ、X.224 の接続確認と証明書の連なりを返す。
+/// そのあとはブラウザからの平文の RDP を、ゲートウェイが TLS に包んで流す。
+/// 証明書を返すのは、ブラウザ側の CredSSP がサーバーの公開鍵に結びつけて認証するから。
 ///
 ///   RDCleanPathPdu ::= SEQUENCE {            -- 文脈タグはすべて EXPLICIT
 ///     version [0] INTEGER (3390), error [1] RDCleanPathErr OPTIONAL, destination [2] UTF8String OPTIONAL,
@@ -29,7 +29,7 @@ internal static class RdCleanPath
         string? PreconnectionBlob,
         byte[]? X224);
 
-    /// <summary>届いたぶんで PDU が揃っていれば読む。揃っていなければ null(続きを待つ)。rest は後ろに続いていたもの</summary>
+    /// <summary>届いたぶんで PDU が揃っていれば読む。揃っていなければ null を返すので、続きを待つ。Remaining は後ろに続いていたバイト</summary>
     public static (Request Request, ReadOnlyMemory<byte> Remaining)? Parse(ReadOnlyMemory<byte> buf)
     {
         var outer = Der.Read(buf);

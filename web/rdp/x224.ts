@@ -1,4 +1,4 @@
-// TPKT と X.224([MS-RDPBCGR] 2.2.1)。接続要求・接続確認と、PDU の切り出し(TPKT / Fast-Path)。
+// TPKT と X.224([MS-RDPBCGR] 2.2.1)。接続要求と接続確認、TPKT / Fast-Path の PDU の切り出し。
 
 import { concat, Reader, Writer } from "./bytes";
 import type { ByteStream } from "./stream";
@@ -10,7 +10,7 @@ export const PROTOCOL = {
 	HYBRID_EX: 8,
 } as const;
 
-/** X.224 Connection Request(RDP_NEG_REQ 付き)。TPKT ヘッダーまで含む。RDCleanPath の x224_pdu にそのまま入れる */
+/** RDP_NEG_REQ 付きの X.224 Connection Request。TPKT ヘッダーも含め、RDCleanPath の x224_pdu にそのまま入れる */
 export function connectionRequest(
 	protocols: number = PROTOCOL.HYBRID,
 ): Uint8Array {
@@ -24,11 +24,11 @@ export function connectionRequest(
 		.u16(8) // length
 		.u32(protocols)
 		.done();
-	// 先頭の 1 バイトは LI(あとに続く長さ)
+	// 先頭の 1 バイトは LI で、あとに続く長さ
 	return tpkt(concat(Uint8Array.of(body.length), body));
 }
 
-/** TPKT で包む(長さは全体) */
+/** TPKT で包む。長さはヘッダーを含めた全体 */
 function tpkt(payload: Uint8Array): Uint8Array {
 	return concat(
 		new Writer(4)
@@ -62,7 +62,7 @@ export function failureMessage(code: number): string {
 	return FAILURES[code] ?? `RDP サーバーが接続を断った (${code})`;
 }
 
-/** X.224 Connection Confirm(TPKT ヘッダー付き)を読む。RDP_NEG_RSP が無ければ標準 RDP 扱い */
+/** TPKT ヘッダー付きの X.224 Connection Confirm を読む。RDP_NEG_RSP が無ければ標準 RDP とみなす */
 export function parseConnectionConfirm(pdu: Uint8Array): ConnectionConfirm {
 	const r = new Reader(pdu);
 	if (r.u8() !== 3) throw new Error("X.224: TPKT ではない");
@@ -87,8 +87,8 @@ export type Pdu =
 	| { kind: "fastpath"; data: Uint8Array };
 
 /**
- * 次の PDU を 1 つ切り出す。先頭が 0x03 なら TPKT(data は X.224 Data の 3 バイトの後ろ)、
- * それ以外は Fast-Path(data はヘッダーの後ろ。先頭の action は 0 のもののみ)
+ * 次の PDU を 1 つ切り出す。先頭が 0x03 なら TPKT で、data は X.224 Data の 3 バイトの後ろ。
+ * それ以外は Fast-Path で、data はヘッダーの後ろ。Fast-Path は先頭の action が 0 のものしか来ない
  */
 export async function readPdu(s: ByteStream): Promise<Pdu> {
 	const first = (await s.peek(1))[0] as number;
@@ -98,7 +98,7 @@ export async function readPdu(s: ByteStream): Promise<Pdu> {
 		// 短すぎる長さのまま読むとヘッダーの途中で止まって、以降の流れがずれる
 		if (len < 7) throw new Error(`TPKT: 長さが不正 (${len})`);
 		const all = await s.read(len);
-		// X.224 Data TPDU は 02 f0 80。それ以外(Connection Confirm など)は丸ごと返す
+		// X.224 Data TPDU は 02 f0 80。Connection Confirm などほかのものは丸ごと返す
 		if (all[4] === 2 && all[5] === 0xf0 && all[6] === 0x80)
 			return { kind: "slowpath", data: all.subarray(7) };
 		return { kind: "slowpath", data: all.subarray(4) };

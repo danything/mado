@@ -1,4 +1,4 @@
-// WebCodecsAvc の試験。VideoDecoder / EncodedVideoChunk は偽物(返事をしない復号器)。
+// WebCodecsAvc の試験。VideoDecoder と EncodedVideoChunk は偽物で、復号器は返事をしない。
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { concat, fromHex } from "./bytes";
@@ -19,7 +19,7 @@ class FakeDecoder {
 		this.state = "configured";
 	}
 	decode(chunk: { type: string }) {
-		// 返事をしない(タイムアウトさせる)
+		// 返事をせず、タイムアウトさせる
 		this.chunks.push(chunk.type);
 	}
 	close() {

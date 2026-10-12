@@ -30,7 +30,7 @@ export class Reassembler {
 	/** 最初の断片を受けて、最後をまだ受けていない */
 	private open = false;
 
-	/** x224.readPdu の fastpath の data(ヘッダーの後ろ)を渡す */
+	/** x224.readPdu が返した fastpath の data を渡す。ヘッダーは取り除いてある */
 	push(pdu: Uint8Array): Update[] {
 		const out: Update[] = [];
 		const r = new Reader(pdu);
@@ -46,7 +46,7 @@ export class Reassembler {
 			const size = r.u16();
 			const data = r.bytes(size);
 			switch (frag) {
-				case 0: // 単独(組み立て中に来たら、組み立て中のものは捨てる)
+				case 0: // 単独。組み立ての途中に来たら、組み立て中のものは捨てる
 					this.parts = [];
 					this.size = 0;
 					this.open = false;
@@ -74,7 +74,7 @@ export class Reassembler {
 		return out;
 	}
 
-	/** 断片を足す。最初の断片が無いもの、溜まりすぎるものは例外 */
+	/** 断片を足す。最初の断片が来ていないときや、溜まりすぎたときは例外にする */
 	private append(data: Uint8Array): void {
 		if (!this.open) throw new Error("Fast-Path: 最初の断片が無い");
 		this.size += data.length;

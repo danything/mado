@@ -32,7 +32,7 @@ describe("フレームの遅れ", () => {
 		const l = new FrameLatency();
 		const day = Date.UTC(2026, 9, 12);
 		for (let i = 0; i < 5; i++) l.add(i * 100, day + i * 100 + 20, i * 100);
-		// サーバーの時計が 9 秒戻った: 遅れが 9 秒溜まったのではない
+		// サーバーの時計が 9 秒戻っただけで、遅れが 9 秒溜まったのではない
 		l.add(1000 - 9000 + 86_400_000, day + 1000 + 20, 1000);
 		expect(l.queued).toBeUndefined();
 		const m = new FrameLatency();
@@ -52,7 +52,7 @@ describe("画素数の自動調整", () => {
 		const a = new AutoScale(1);
 		expect(a.sample(busy, 0)).toBeUndefined();
 		expect(a.sample(busy, 2000)).toBe(0.75);
-		// 変えてから 6 秒は、全面の送り直しなので見ない
+		// 変えてから 6 秒は全面の送り直しが来るので、判定しない
 		expect(a.sample(busy, 4000)).toBeUndefined();
 		expect(a.sample(busy, 6000)).toBeUndefined();
 		expect(a.sample(busy, 8000)).toBeUndefined();
@@ -80,7 +80,7 @@ describe("画素数の自動調整", () => {
 		const a = new AutoScale(0.75);
 		a.sample(busy, 0);
 		expect(a.sample(busy, 2000)).toBe(0.5);
-		// 下げてから 6 秒は見ず、そのあと 5 回続けて空いていたら上げる(下げてから 10 秒は必ず待つ)
+		// 下げてから 6 秒は判定しない。そのあと 5 回続けて空いていたら上げる。下げてから 10 秒は上げない
 		for (let t = 4000; t < 16_000; t += 2000)
 			expect(a.sample(calm, t)).toBeUndefined();
 		expect(a.sample(calm, 16_000)).toBe(0.75);
@@ -99,7 +99,7 @@ describe("画素数の自動調整", () => {
 			t += 2000;
 		}
 		const up = t - 2000;
-		// 上げてから 6 秒は見ない。そのあとすぐ混んだ: 次に上げるまで 20 秒待つ
+		// 上げてから 6 秒は判定しない。そのあとすぐ混んだので、次に上げるまで 20 秒待つ
 		a.sample(busy, up + 6000);
 		expect(a.sample(busy, up + 8000)).toBe(0.75);
 		let back = -1;
