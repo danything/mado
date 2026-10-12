@@ -16,6 +16,8 @@ type Surface = {
 	ctx: Canvas2D;
 	width: number;
 	height: number;
+	/** アルファを持つ面(ARGB)。持たない面は全部不透明なので、重ねて描いても置き換えと同じになる */
+	alpha: boolean;
 	map?: { x: number; y: number };
 	/** 前の present() から変わったところ(和集合の矩形) */
 	dirty?: Rect;
@@ -40,7 +42,7 @@ function makeCanvas(
 
 export class CanvasGfxOps implements GfxOps {
 	private surfaces = new Map<number, Surface>();
-	private cache = new Map<number, ImageData>();
+	private cache = new Map<number, OffscreenCanvas | HTMLCanvasElement>();
 
 	constructor(private display: Display) {}
 
@@ -70,9 +72,41 @@ export class CanvasGfxOps implements GfxOps {
 			this.touch(s, 0, 0, s.width, s.height);
 	}
 
-	createSurface(id: number, width: number, height: number): void {
+	createSurface(
+		id: number,
+		width: number,
+		height: number,
+		alpha: boolean,
+	): void {
 		const { canvas, ctx } = makeCanvas(width, height);
-		this.surfaces.set(id, { canvas, ctx, width, height });
+		this.surfaces.set(id, { canvas, ctx, width, height, alpha });
+	}
+
+	/**
+	 * 面の矩形を、draw で描いたもので置き換える(putImageData と同じく合成しない)。
+	 * getImageData / putImageData は GPU から読み戻すので遅い(スクロールの写しで 30 倍ほど)。drawImage と fillRect で GPU の上のまま済ませる
+	 */
+	private replace(
+		s: Surface,
+		x: number,
+		y: number,
+		w: number,
+		h: number,
+		draw: (ctx: Canvas2D) => void,
+	): void {
+		if (!s.alpha) {
+			draw(s.ctx);
+		} else {
+			// 透明を含む絵でも下の絵と混ぜない。copy は描いた外まで消すので、矩形で切ってから
+			s.ctx.save();
+			s.ctx.beginPath();
+			s.ctx.rect(x, y, w, h);
+			s.ctx.clip();
+			s.ctx.globalCompositeOperation = "copy";
+			draw(s.ctx);
+			s.ctx.restore();
+		}
+		this.touch(s, x, y, w, h);
 	}
 
 	deleteSurface(id: number): void {
@@ -108,15 +142,16 @@ export class CanvasGfxOps implements GfxOps {
 		rgba: [number, number, number, number],
 	): void {
 		const s = this.surface(id);
-		for (const r of rects) {
-			const w = r.right - r.left;
-			const h = r.bottom - r.top;
+		const [r, g, b, a] = rgba;
+		const color = `rgb(${r} ${g} ${b} / ${a / 255})`;
+		for (const rc of rects) {
+			const w = rc.right - rc.left;
+			const h = rc.bottom - rc.top;
 			if (w <= 0 || h <= 0) continue;
-			// putImageData は合成せずに置き換える(アルファを持つ面でもそのまま)
-			const img = new ImageData(w, h);
-			for (let i = 0; i < w * h; i++) img.data.set(rgba, i * 4);
-			s.ctx.putImageData(img, r.left, r.top);
-			this.touch(s, r.left, r.top, w, h);
+			this.replace(s, rc.left, rc.top, w, h, (ctx) => {
+				ctx.fillStyle = color;
+				ctx.fillRect(rc.left, rc.top, w, h);
+			});
 		}
 	}
 
@@ -124,28 +159,39 @@ export class CanvasGfxOps implements GfxOps {
 		const w = rect.right - rect.left;
 		const h = rect.bottom - rect.top;
 		if (w <= 0 || h <= 0) return;
-		const img = this.surface(src).ctx.getImageData(rect.left, rect.top, w, h);
-		const d = this.surface(dst);
-		d.ctx.putImageData(img, x, y);
-		this.touch(d, x, y, w, h);
+		// 同じ面の中で重なっていても、drawImage は元を写してから描く
+		const from = this.surface(src).canvas;
+		this.replace(this.surface(dst), x, y, w, h, (ctx) =>
+			ctx.drawImage(from, rect.left, rect.top, w, h, x, y, w, h),
+		);
 	}
 
 	toCache(slot: number, id: number, rect: Rect): void {
 		const w = rect.right - rect.left;
 		const h = rect.bottom - rect.top;
 		if (w <= 0 || h <= 0) return;
-		this.cache.set(
-			slot,
-			this.surface(id).ctx.getImageData(rect.left, rect.top, w, h),
+		// 新しい透明な canvas に描くので、合成しても置き換えと同じ
+		const c = makeCanvas(w, h);
+		c.ctx.drawImage(
+			this.surface(id).canvas,
+			rect.left,
+			rect.top,
+			w,
+			h,
+			0,
+			0,
+			w,
+			h,
 		);
+		this.cache.set(slot, c.canvas);
 	}
 
 	fromCache(slot: number, id: number, x: number, y: number): void {
-		const img = this.cache.get(slot);
-		if (!img) return;
-		const s = this.surface(id);
-		s.ctx.putImageData(img, x, y);
-		this.touch(s, x, y, img.width, img.height);
+		const c = this.cache.get(slot);
+		if (!c) return;
+		this.replace(this.surface(id), x, y, c.width, c.height, (ctx) =>
+			ctx.drawImage(c, x, y),
+		);
 	}
 
 	evict(slot: number): void {
