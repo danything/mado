@@ -125,6 +125,14 @@ describe("AutoDetect", () => {
 		);
 		// 止めたあとは数えない
 		ad.received(100);
+		// Payload と Stop の payload は received() で数え済みなので、二重に足さない
+		ad.handle(request(4, REQUEST.BW_START_CONTINUOUS));
+		ad.received(1000);
+		ad.handle(request(5, REQUEST.BW_PAYLOAD, (w) => w.u16(900).zeros(900)));
+		const once = ad.handle(
+			request(6, REQUEST.BW_STOP_CONTINUOUS),
+		) as Uint8Array;
+		expect(hex(once.subarray(14))).toBe("e8030000"); // 1000 バイト
 		const again = ad.handle(request(3, REQUEST.BW_STOP_TUNNEL)) as Uint8Array;
 		expect(hex(again.subarray(10))).toBe("0000000000000000");
 	});

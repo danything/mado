@@ -164,7 +164,9 @@ export class AutoDetect {
 				};
 				return undefined;
 			case REQUEST.BW_PAYLOAD:
-				if (this.measuring) this.measuring.bytes += req.payloadLength;
+				// つないだあとは received() が PDU 全体を数えているので、足すのはつなぐ途中だけ(二重に数えない)
+				if (this.measuring?.connectTime)
+					this.measuring.bytes += req.payloadLength;
 				return undefined;
 			case REQUEST.BW_STOP_CONNECTTIME:
 			case REQUEST.BW_STOP_CONTINUOUS:
@@ -185,7 +187,8 @@ export class AutoDetect {
 		const m = this.measuring;
 		this.measuring = undefined;
 		const connectTime = req.requestType === REQUEST.BW_STOP_CONNECTTIME;
-		const bytes = (m?.bytes ?? 0) + req.payloadLength;
+		// Stop の payload も、つないだあとは received() が数えている
+		const bytes = (m?.bytes ?? 0) + (m?.connectTime ? req.payloadLength : 0);
 		const delta = m ? Math.max(0, Math.round(this.now() - m.start)) : 0;
 		this.stats.bandwidth++;
 		return bandwidthResults(
