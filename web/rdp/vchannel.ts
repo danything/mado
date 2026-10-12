@@ -7,7 +7,8 @@ export const CHUNK_SIZE = 1600;
 
 const FIRST = 0x01;
 const LAST = 0x02;
-const SHOW_PROTOCOL = 0x10;
+/** 断片のヘッダーに、チャネルのオプションの SHOW_PROTOCOL を写す印 */
+export const SHOW_PROTOCOL = 0x10;
 const COMPRESSED = 0x00200000;
 
 /** メッセージを断片に分ける(それぞれ Send Data Request の中身になる) */
@@ -70,5 +71,3 @@ export class ChannelAssembler {
 		return msg;
 	}
 }
-
-export { SHOW_PROTOCOL };

@@ -209,3 +209,26 @@ describe("Frame Acknowledge", () => {
 		expect(c && hex(c)).toBe("1e000800" + "03000000");
 	});
 });
+
+describe("activationPdus", () => {
+	test("Confirm Active と同期の 4 つを、この順に", () => {
+		const pdus = pdu.activationPdus(1007, 0x103ea, {
+			width: 800,
+			height: 600,
+			keyboardLayout: 0x0411,
+		});
+		expect(pdus.length).toBe(5);
+		expect(pdu.parseShareControl(pdus[0] as Uint8Array).type).toBe(
+			pdu.PDUTYPE.CONFIRM_ACTIVE,
+		);
+		const types2 = pdus
+			.slice(1)
+			.map((p) => pdu.parseShareData(pdu.parseShareControl(p).body).type2);
+		expect(types2).toEqual([
+			pdu.PDUTYPE2.SYNCHRONIZE,
+			pdu.PDUTYPE2.CONTROL,
+			pdu.PDUTYPE2.CONTROL,
+			pdu.PDUTYPE2.FONTLIST,
+		]);
+	});
+});

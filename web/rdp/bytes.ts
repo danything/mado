@@ -34,21 +34,9 @@ export class Reader {
 		this.pos += 2;
 		return v;
 	}
-	i16(): number {
-		this.need(2);
-		const v = this.view.getInt16(this.pos, true);
-		this.pos += 2;
-		return v;
-	}
 	u32(): number {
 		this.need(4);
 		const v = this.view.getUint32(this.pos, true);
-		this.pos += 4;
-		return v;
-	}
-	u32be(): number {
-		this.need(4);
-		const v = this.view.getUint32(this.pos, false);
 		this.pos += 4;
 		return v;
 	}
@@ -130,21 +118,9 @@ export class Writer {
 		this.pos += 2;
 		return this;
 	}
-	i16(v: number): this {
-		this.grow(2);
-		this.view.setInt16(this.pos, v, true);
-		this.pos += 2;
-		return this;
-	}
 	u32(v: number): this {
 		this.grow(4);
 		this.view.setUint32(this.pos, v >>> 0, true);
-		this.pos += 4;
-		return this;
-	}
-	u32be(v: number): this {
-		this.grow(4);
-		this.view.setUint32(this.pos, v >>> 0, false);
 		this.pos += 4;
 		return this;
 	}
@@ -186,20 +162,11 @@ export class Writer {
 		this.zeros(bytes - t.length * 2);
 		return this;
 	}
-	/** あとで長さを書き込む場所を取っておく */
+	/** あとで書き込む場所(n バイト)を 0 で取っておき、その位置を返す(NTLM の MIC など) */
 	mark(n: number): number {
 		const at = this.pos;
 		this.zeros(n);
 		return at;
-	}
-	setU16(at: number, v: number): void {
-		this.view.setUint16(at, v, true);
-	}
-	setU16be(at: number, v: number): void {
-		this.view.setUint16(at, v, false);
-	}
-	setU32(at: number, v: number): void {
-		this.view.setUint32(at, v >>> 0, true);
 	}
 	done(): Uint8Array {
 		return this.buf.slice(0, this.pos);

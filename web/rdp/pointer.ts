@@ -35,11 +35,6 @@ export function parseCachedPointer(b: Uint8Array): number {
 	return new Reader(b).u16();
 }
 
-export function parsePosition(b: Uint8Array): { x: number; y: number } {
-	const r = new Reader(b);
-	return { x: r.u16(), y: r.u16() };
-}
-
 function parseColorBody(
 	r: Reader,
 	xorBpp: number,

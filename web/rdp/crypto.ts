@@ -1,4 +1,6 @@
-// NTLM に要る暗号のうち、WebCrypto に無いもの(MD4・MD5・RC4・HMAC-MD5)。どれも NTLM が決めた古い形で、ここ以外には使わない。
+// NTLM に要る暗号のうち、WebCrypto に無いもの(MD4・MD5・RC4・HMAC-MD5)と、WebCrypto の薄い包み(SHA-256・乱数)。
+
+import { concat } from "./bytes";
 
 function rotl(x: number, n: number): number {
 	return (x << n) | (x >>> (32 - n));
@@ -175,14 +177,7 @@ export class Rc4 {
 }
 
 export async function sha256(...parts: Uint8Array[]): Promise<Uint8Array> {
-	let n = 0;
-	for (const p of parts) n += p.length;
-	const all = new Uint8Array(n);
-	let o = 0;
-	for (const p of parts) {
-		all.set(p, o);
-		o += p.length;
-	}
+	const all = concat(...parts) as Uint8Array<ArrayBuffer>;
 	return new Uint8Array(await crypto.subtle.digest("SHA-256", all));
 }
 

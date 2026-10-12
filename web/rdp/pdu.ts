@@ -505,7 +505,27 @@ export function clientCapabilities(c: ClientCaps): Uint8Array[] {
 	];
 }
 
-/** Confirm Active(Share Control で包む前の Share Control の中身ではなく、完成した PDU) */
+/**
+ * Demand Active への返事: Confirm Active と、同期(Synchronize・Control の Cooperate と Request・Font List)。
+ * I/O チャネルへ順に送る。つなぐときと、再アクティベーション(画面の大きさが変わった)のとき
+ */
+export function activationPdus(
+	userId: number,
+	shareId: number,
+	caps: ClientCaps,
+): Uint8Array[] {
+	const data = (type2: number, payload: Uint8Array) =>
+		shareData(userId, shareId, type2, payload);
+	return [
+		confirmActive(userId, shareId, clientCapabilities(caps)),
+		data(PDUTYPE2.SYNCHRONIZE, synchronize(SERVER_ID)),
+		data(PDUTYPE2.CONTROL, control(CONTROL.COOPERATE)),
+		data(PDUTYPE2.CONTROL, control(CONTROL.REQUEST)),
+		data(PDUTYPE2.FONTLIST, fontList()),
+	];
+}
+
+/** Confirm Active PDU(Share Control で包んだ完成形) */
 export function confirmActive(
 	userId: number,
 	shareId: number,

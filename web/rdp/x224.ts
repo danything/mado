@@ -29,7 +29,7 @@ export function connectionRequest(
 }
 
 /** TPKT で包む(長さは全体) */
-export function tpkt(payload: Uint8Array): Uint8Array {
+function tpkt(payload: Uint8Array): Uint8Array {
 	return concat(
 		new Writer(4)
 			.u8(3)

@@ -2,6 +2,7 @@
 // タグは 1 バイト目そのまま(0x30 = SEQUENCE、0xa0 + n = 文脈 [n] の構造型)。MCS の 0x7f65 のような 2 バイトのタグも数として扱う。
 
 import { concat } from "./bytes";
+import type { ByteStream } from "./stream";
 
 export const SEQUENCE = 0x30;
 export const INTEGER = 0x02;
@@ -38,7 +39,7 @@ export function read(buf: Uint8Array, at = 0): (Tlv & { end: number }) | null {
 	let len = buf[p++] as number;
 	if (len & 0x80) {
 		const n = len & 0x7f;
-		if (n === 0 || n > 4) throw new Error(`DER: unsupported length form ${n}`);
+		if (n === 0 || n > 4) throw new Error(`DER: 長さの形が使えない (${n})`);
 		if (p + n > buf.length) return null;
 		len = 0;
 		for (let i = 0; i < n; i++) len = len * 256 + (buf[p++] as number);
@@ -54,7 +55,7 @@ export function read(buf: Uint8Array, at = 0): (Tlv & { end: number }) | null {
 
 export function mustRead(buf: Uint8Array, at = 0): Tlv & { end: number } {
 	const t = read(buf, at);
-	if (!t) throw new Error("DER: truncated");
+	if (!t) throw new Error("DER: 途中で切れている");
 	return t;
 }
 
@@ -132,8 +133,30 @@ export function subjectPublicKey(cert: Uint8Array): Uint8Array {
 	const items = readAll(tbs.value);
 	const offset = items[0]?.tag === ctx(0) ? 1 : 0;
 	const spki = items[offset + 5];
-	if (!spki || spki.tag !== SEQUENCE) throw new Error("cert: no SPKI");
+	if (!spki || spki.tag !== SEQUENCE)
+		throw new Error("証明書: 公開鍵の欄(SPKI)が無い");
 	const [, bits] = readAll(spki.value);
-	if (!bits || bits.tag !== BIT_STRING) throw new Error("cert: no key");
+	if (!bits || bits.tag !== BIT_STRING) throw new Error("証明書: 公開鍵が無い");
 	return bits.value.subarray(1);
+}
+
+/** 流れから TLV を 1 つ(タグから中身の終わりまで)読む。中身が max バイトを超えるなら tooLarge の例外 */
+export async function readFrom(
+	s: ByteStream,
+	max: number,
+	tooLarge: string,
+): Promise<Uint8Array> {
+	const head = await s.peek(2);
+	let headLen = 2;
+	let len = head[1] as number;
+	if (len & 0x80) {
+		const n = len & 0x7f;
+		if (n === 0 || n > 4) throw new Error(`DER: 長さの形が使えない (${n})`);
+		const h = await s.peek(2 + n);
+		len = 0;
+		for (let i = 0; i < n; i++) len = len * 256 + (h[2 + i] as number);
+		headLen += n;
+	}
+	if (len > max) throw new Error(tooLarge);
+	return s.read(headLen + len);
 }

@@ -2,7 +2,7 @@
 // mado が RDP サーバーと TLS まで張ったら、X.224 の接続確認とサーバーの証明書の鎖が返ってくる。
 
 import * as der from "./der";
-import type { WsStream } from "./stream";
+import type { ByteStream } from "./stream";
 import { failureMessage, parseConnectionConfirm } from "./x224";
 
 const VERSION = 3390;
@@ -23,39 +23,18 @@ export function request(
 
 export type Response = { x224: Uint8Array; certChain: Uint8Array[] };
 
-export class RdCleanPathError extends Error {
-	constructor(
-		message: string,
-		readonly x224?: Uint8Array,
-	) {
-		super(message);
-	}
-}
-
 /** X.224 の接続確認に失敗の理由(RDP_NEG_FAILURE)があれば、それを言う */
 function negotiationFailure(raw: Uint8Array | undefined): string {
-	const base = "RDP サーバーが接続を断った";
 	try {
 		const cc = raw && parseConnectionConfirm(raw);
 		if (cc && !cc.ok) return failureMessage(cc.failureCode);
 	} catch {}
-	return `${base}(ネゴシエーション)`;
+	return "RDP サーバーが接続を断った(ネゴシエーション)";
 }
 
 /** 応答を 1 つ読む(DER の長さで切る) */
-export async function readResponse(s: WsStream): Promise<Response> {
-	const head = await s.peek(2);
-	let headLen = 2;
-	let len = head[1] as number;
-	if (len & 0x80) {
-		const n = len & 0x7f;
-		const h = await s.peek(2 + n);
-		len = 0;
-		for (let i = 0; i < n; i++) len = len * 256 + (h[2 + i] as number);
-		headLen += n;
-	}
-	if (len > 1 << 20) throw new Error("RDCleanPath: 応答が大きすぎる");
-	const raw = await s.read(headLen + len);
+export async function readResponse(s: ByteStream): Promise<Response> {
+	const raw = await der.readFrom(s, 1 << 20, "RDCleanPath: 応答が大きすぎる");
 	const f = der.fields(der.mustRead(raw).value);
 	const x224 = f.get(6)?.value;
 	const err = f.get(1);
@@ -71,10 +50,10 @@ export async function readResponse(s: WsStream): Promise<Response> {
 					: http === 502
 						? "RDP サーバーにつなげなかった"
 						: `中継の失敗 (${code}${http ? `/${http}` : ""})`;
-		throw new RdCleanPathError(what, x224);
+		throw new Error(what);
 	}
 	const chain = f.get(7);
-	if (!x224 || !chain) throw new Error("RDCleanPath: incomplete response");
+	if (!x224 || !chain) throw new Error("RDCleanPath: 応答が足りない");
 	return {
 		x224,
 		certChain: der.readAll(chain.value).map((t) => t.value),

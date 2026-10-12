@@ -274,5 +274,3 @@ export class DisplayControl implements DynamicHandler {
 		return this.channel !== undefined && this.maxMonitors > 0;
 	}
 }
-
-export const DRDYNVC_STATIC = "drdynvc";

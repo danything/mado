@@ -11,7 +11,7 @@ import * as der from "./der";
 import { identity, Ntlm } from "./ntlm";
 import type { ByteStream } from "./stream";
 
-/** 受け取ってよい TSRequest / RDCleanPath 応答の大きさの上限(証明書の鎖で数十 KB) */
+/** 受け取ってよい TSRequest の大きさの上限 */
 const MAX_PDU = 1 << 20;
 const VERSION = 6;
 const enc = new TextEncoder();
@@ -71,17 +71,9 @@ async function readTsRequest(s: ByteStream): Promise<TsRequest> {
 	const head = await s.peek(2);
 	if (head[0] !== der.SEQUENCE)
 		throw new Error("CredSSP: サーバーの応答が TSRequest でない");
-	let headLen = 2;
-	let len = head[1] as number;
-	if (len & 0x80) {
-		const n = len & 0x7f;
-		const h = await s.peek(2 + n);
-		len = 0;
-		for (let i = 0; i < n; i++) len = len * 256 + (h[2 + i] as number);
-		headLen += n;
-	}
-	if (len > MAX_PDU) throw new Error("CredSSP: TSRequest が大きすぎる");
-	const t = parseTsRequest(await s.read(headLen + len));
+	const t = parseTsRequest(
+		await der.readFrom(s, MAX_PDU, "CredSSP: TSRequest が大きすぎる"),
+	);
 	if (t.errorCode !== undefined) throw new Error(ntStatus(t.errorCode));
 	return t;
 }
@@ -133,7 +125,8 @@ export async function credssp(
 
 	s.write(writeTsRequest({ version: VERSION, negoToken: ntlm.negotiate }));
 	const challenge = await readTsRequest(s);
-	if (!challenge.negoToken) throw new Error("CredSSP: no NTLM CHALLENGE");
+	if (!challenge.negoToken)
+		throw new Error("CredSSP: サーバーが NTLM の CHALLENGE を返さない");
 	const peerVersion = challenge.version;
 	// 版は、お互いに話せる低いほうに合わせる
 	const version = Math.min(VERSION, peerVersion);
