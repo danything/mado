@@ -8,7 +8,12 @@ import {
 	type Rect,
 	type VideoFrameLike,
 } from "./gfx";
-import { videoFrameYuv, type Yuv420 } from "./yuv444";
+import {
+	videoFrameYuv,
+	type Yuv420,
+	Yuv444Gl,
+	type Yuv444Target,
+} from "./yuv444";
 
 type Canvas2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
 
@@ -45,7 +50,33 @@ export class CanvasGfxOps implements GfxOps {
 	private surfaces = new Map<number, Surface>();
 	private cache = new Map<number, OffscreenCanvas | HTMLCanvasElement>();
 
-	constructor(private display: Display) {}
+	/** AVC444 を組み立てる GPU。まだ作っていなければ undefined、使えなければ "off" */
+	private gl?: Yuv444Gl | "off";
+
+	/** createGl は試験で差し替える */
+	constructor(
+		private display: Display,
+		private createGl: () => Yuv444Gl | undefined = () => Yuv444Gl.create(),
+	) {}
+
+	/** AVC444 の YUV444 を GPU で組み立てる。WebGL2 が無い・失敗したときは undefined(CPU で組み立てる) */
+	yuv444(id: number, width: number, height: number): Yuv444Target | undefined {
+		if (this.gl === undefined) {
+			const gl = this.createGl();
+			this.gl = gl ?? "off";
+			if (gl) console.info("AVC444: GPU(WebGL2)で組み立てる");
+		}
+		if (this.gl === "off") return undefined;
+		const t = this.gl.target(width, height, (src, sx, sy, w, h, dx, dy) => {
+			const s = this.surfaces.get(id);
+			if (!s) return;
+			this.replace(s, dx, dy, w, h, (ctx) =>
+				ctx.drawImage(src, sx, sy, w, h, dx, dy, w, h),
+			);
+		});
+		if (!t) this.gl = "off";
+		return t;
+	}
 
 	private surface(id: number): Surface {
 		const s = this.surfaces.get(id);

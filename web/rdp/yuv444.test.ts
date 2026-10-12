@@ -3,7 +3,14 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Rect } from "./gfx";
-import { clampRects, videoFrameYuv, type Yuv420, Yuv444 } from "./yuv444";
+import {
+	clampRects,
+	videoFrameYuv,
+	type Yuv420,
+	Yuv444,
+	Yuv444Gl,
+	Yuv444GlRef,
+} from "./yuv444";
 
 /** 決まった並びの乱数 */
 function rng(seed: number): () => number {
@@ -352,5 +359,158 @@ describe("videoFrameYuv", () => {
 		const ng = frame("I420", false);
 		expect((await videoFrameYuv(ng))?.height).toBe(2);
 		expect(ng.rects).toEqual([undefined]);
+	});
+
+	test("NV12 は UV の面もそのまま渡す(GPU 用)", async () => {
+		const p = await videoFrameYuv(frame("NV12"));
+		expect([...(p?.uv ?? [])]).toEqual([10, 30, 20, 40]);
+		expect(p?.uvStride).toBe(4);
+	});
+});
+
+describe("Yuv444GlRef(シェーダーと同じ計算)", () => {
+	/** 大きさ w x h の YUV420。U / V の幅と高さは半分の切り上げ */
+	function randomYuv(r: () => number, w: number, h: number): Yuv420 {
+		const cw = (w + 1) >> 1;
+		const ch = (h + 1) >> 1;
+		const rand = (n: number) => Uint8Array.from({ length: n }, () => r());
+		return {
+			width: w,
+			height: h,
+			y: rand(w * h),
+			u: rand(cw * ch),
+			v: rand(cw * ch),
+			yStride: w,
+			uStride: cw,
+			vStride: cw,
+		};
+	}
+
+	function randomRects(r: () => number, w: number, h: number): Rect[] {
+		const n = 1 + (r() % 3);
+		const out: Rect[] = [];
+		for (let i = 0; i < n; i++) {
+			const left = r() % w;
+			const top = r() % h;
+			out.push({
+				left,
+				top,
+				right: left + 1 + (r() % (w - left)),
+				bottom: top + 1 + (r() % (h - top)),
+			});
+		}
+		return out;
+	}
+
+	for (const v2 of [false, true])
+		for (const [w, h] of [
+			[32, 20],
+			[34, 22],
+			[33, 21],
+		] as const)
+			test(`${v2 ? "v2" : "v1"} ${w}x${h}: 主・補助・両方をでたらめな矩形で重ねても Yuv444 と同じ`, () => {
+				const r = rng(w * 100 + h + (v2 ? 1 : 0));
+				const cpu = new Yuv444(w, h);
+				const gl = new Yuv444GlRef(w, h);
+				// 補助の絵の高さ: 足りる高さと、足りない高さ(無いところは前の値のまま)
+				const auxH = v2 ? [h, h - 4] : [Math.ceil(h / 16) * 16, h];
+				for (let step = 0; step < 12; step++) {
+					const kind = step === 0 ? 1 : r() % 3; // 0: 主だけ、1: 補助だけ、2: 両方
+					if (kind !== 1) {
+						const p = randomYuv(r, w, h);
+						const rects = randomRects(r, w, h);
+						cpu.luma(p, rects);
+						gl.luma(p, rects);
+					}
+					if (kind !== 0) {
+						const p = randomYuv(r, w, auxH[r() % 2] as number);
+						const rects = randomRects(r, w, h);
+						expect(gl.chroma(p, v2, rects)).toBe(cpu.chroma(p, v2, rects));
+					}
+					expect([...gl.y]).toEqual([...cpu.y]);
+					expect([...gl.u]).toEqual([...cpu.u]);
+					expect([...gl.v]).toEqual([...cpu.v]);
+				}
+				const full = { left: 0, top: 0, right: w, bottom: h };
+				expect([...gl.rgba(full)]).toEqual([...cpu.rgba(full)]);
+			});
+
+	test("主の絵が無いうちは補助の絵を使わない", () => {
+		const gl = new Yuv444GlRef(4, 2);
+		const aux = yuv(
+			4,
+			16,
+			new Uint8Array(64),
+			new Uint8Array(16),
+			new Uint8Array(16),
+		);
+		expect(gl.chroma(aux, false, all)).toBe(false);
+	});
+
+	test("RGB への変換が Yuv444 と同じ(全部の Y / U / V の組の一部)", () => {
+		const n = 256 * 64;
+		const cpu = new Yuv444(n, 1);
+		const gl = new Yuv444GlRef(n, 1);
+		for (let i = 0; i < n; i++) {
+			const y = i & 255;
+			const u = (i >> 8) * 4;
+			const v = (y * 7 + u * 3) & 255;
+			for (const s of [cpu, gl]) {
+				s.y[i] = y;
+				s.u[i] = u;
+				s.v[i] = v;
+			}
+		}
+		const r = { left: 0, top: 0, right: n, bottom: 1 };
+		expect([...gl.rgba(r)]).toEqual([...cpu.rgba(r)]);
+	});
+});
+
+describe("Yuv444Gl", () => {
+	const g = globalThis as Record<string, unknown>;
+
+	test("canvas も WebGL2 も無ければ undefined。理由を 1 回だけ出す", () => {
+		const saved = g.OffscreenCanvas;
+		try {
+			g.OffscreenCanvas = undefined;
+			const logs: string[] = [];
+			expect(Yuv444Gl.create((m) => logs.push(m))).toBeUndefined();
+			expect(logs.length).toBe(1);
+		} finally {
+			g.OffscreenCanvas = saved;
+		}
+	});
+
+	test("getContext が null・シェーダーが通らないときも undefined", () => {
+		const saved = g.OffscreenCanvas;
+		let ctx: unknown = null;
+		g.OffscreenCanvas = class {
+			getContext() {
+				return ctx;
+			}
+			addEventListener() {}
+		};
+		try {
+			const logs: string[] = [];
+			expect(Yuv444Gl.create((m) => logs.push(m))).toBeUndefined();
+			// シェーダーの翻訳に失敗する GL
+			ctx = {
+				VERTEX_SHADER: 1,
+				FRAGMENT_SHADER: 2,
+				COMPILE_STATUS: 3,
+				createShader: () => ({}),
+				shaderSource() {},
+				compileShader() {},
+				getShaderParameter: () => false,
+				getShaderInfoLog: () => "ERROR: 0:1",
+				createProgram: () => ({}),
+				attachShader() {},
+			};
+			expect(Yuv444Gl.create((m) => logs.push(m))).toBeUndefined();
+			expect(logs.length).toBe(2);
+			expect(logs[1]).toContain("ERROR: 0:1");
+		} finally {
+			g.OffscreenCanvas = saved;
+		}
 	});
 });

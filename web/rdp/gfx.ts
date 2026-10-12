@@ -16,7 +16,7 @@ import {
 } from "./progressive";
 import { decodeStream } from "./rfx";
 import type { TilePool } from "./rfxpool";
-import { clampRects, type Yuv420, Yuv444 } from "./yuv444";
+import { clampRects, type Yuv420, Yuv444, type Yuv444Target } from "./yuv444";
 import { Zgfx } from "./zgfx";
 
 export const GRAPHICS = "Microsoft::Windows::RDS::Graphics";
@@ -127,6 +127,8 @@ export interface GfxOps {
 	drawVideo(id: number, frame: unknown, dest: Rect, regions: Rect[]): void;
 	/** フレームの終わり。変わったところを画面へ写す */
 	present(): void;
+	/** AVC444 を GPU で組み立てる、面 1 枚ぶんの YUV444。無ければ CPU の Yuv444 で組み立てて putRgba で描く */
+	yuv444?(id: number, width: number, height: number): Yuv444Target | undefined;
 }
 
 /** H.264(Annex B)を復号して 1 枚を返す。何も出なければ null。返した 1 枚は ops.drawVideo のあとで close する */
@@ -385,7 +387,7 @@ export class GfxClient implements DynamicHandler {
 	/** H.264 の復号が続けて失敗した回数。1 枚でも出れば 0 に戻す */
 	private avcFailures = 0;
 	/** AVC444 の YUV444 を面ごとに持つ。主の絵と補助の絵は別々に来るので、前のものを取っておく */
-	private yuv444 = new Map<number, Yuv444>();
+	private yuv444 = new Map<number, Yuv444Target>();
 	/** サーバーが選んだ能力の版と flags。CapsConfirm で来る */
 	confirmed?: { version: number; flags: number };
 	/** 診断用 */
@@ -579,7 +581,7 @@ export class GfxClient implements DynamicHandler {
 				this.surfaces.set(id, { width, height, alpha });
 				this.progressiveTiles.deleteSurface(id);
 				this.progressiveFrame.deleteSurface(id);
-				this.yuv444.delete(id);
+				this.dropYuv444(id);
 				this.ops.createSurface(id, width, height, alpha);
 				break;
 			}
@@ -590,7 +592,7 @@ export class GfxClient implements DynamicHandler {
 				this.surfaces.delete(id);
 				this.progressiveTiles.deleteSurface(id);
 				this.progressiveFrame.deleteSurface(id);
-				this.yuv444.delete(id);
+				this.dropYuv444(id);
 				this.ops.deleteSurface(id);
 				break;
 			}
@@ -860,7 +862,8 @@ export class GfxClient implements DynamicHandler {
 
 	/**
 	 * AVC444 / AVC444v2。主の絵と補助の絵を同じ復号器で順に復号する。FreeRDP と同じく 1 本の H.264 の流れとして扱う。結果は面ごとの YUV444 に重ねて描く。
-	 * 片方だけ来たときは、もう片方は前のものを使う
+	 * 片方だけ来たときは、もう片方は前のものを使う。
+	 * 重ねる計算は、ops が GPU のものを出せば GPU で、出さなければ CPU で行う。途中で GPU を失ったら CPU に替える
 	 */
 	private async avc444(
 		id: number,
@@ -876,7 +879,8 @@ export class GfxClient implements DynamicHandler {
 		this.stats.avc444++;
 		let st = this.yuv444.get(id);
 		if (!st || st.width !== w || st.height !== h) {
-			st = new Yuv444(w, h);
+			st?.close();
+			st = this.ops.yuv444?.(id, w, h) ?? new Yuv444(w, h);
 			this.yuv444.set(id, st);
 		}
 		// 片方が出なくても、もう片方は復号器に渡す。参照の鎖を切らないため
@@ -890,36 +894,51 @@ export class GfxClient implements DynamicHandler {
 		const chroma = chromaP && (await chromaP);
 		const t1 = performance.now();
 		this.stats.avc444DecodeMs += Math.round(t1 - t0);
-		const drawn: Rect[] = [];
-		if (m.luma && luma) {
-			const rects = clampRects(m.luma.regions, w, h);
-			st.luma(luma, rects);
-			drawn.push(...rects);
-		}
-		if (m.chroma && chroma) {
-			const rects = clampRects(m.chroma.regions, w, h);
-			if (st.chroma(chroma, v2, rects)) drawn.push(...rects);
-		}
 		if ((m.luma && !luma) || (m.chroma && !chroma)) {
 			this.stats.skipped++;
 			// 鍵フレームを待つ間も null なので、すぐには諦めない
 			if (++this.avcFailures === AVC_GIVE_UP) this.onAvcBroken?.();
 		} else this.avcFailures = 0;
-		const seen = new Set<string>();
-		for (const r of drawn) {
-			const key = `${r.left},${r.top},${r.right},${r.bottom}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			this.ops.putRgba(
-				id,
-				dest.left + r.left,
-				dest.top + r.top,
-				r.right - r.left,
-				r.bottom - r.top,
-				st.rgba(r),
-			);
+		/** 重ねて、描く矩形(同じものは 1 つに)を返す */
+		const apply = (st: Yuv444Target): Rect[] => {
+			const drawn: Rect[] = [];
+			if (m.luma && luma) {
+				const rects = clampRects(m.luma.regions, w, h);
+				st.luma(luma, rects);
+				drawn.push(...rects);
+			}
+			if (m.chroma && chroma) {
+				const rects = clampRects(m.chroma.regions, w, h);
+				if (st.chroma(chroma, v2, rects)) drawn.push(...rects);
+			}
+			const seen = new Set<string>();
+			return drawn.filter((r) => {
+				const key = `${r.left},${r.top},${r.right},${r.bottom}`;
+				if (seen.has(key)) return false;
+				seen.add(key);
+				return true;
+			});
+		};
+		const put = (
+			x: number,
+			y: number,
+			pw: number,
+			ph: number,
+			rgba: Uint8ClampedArray,
+		) => this.ops.putRgba(id, x, y, pw, ph, rgba);
+		if (!st.draw(apply(st), dest.left, dest.top, put)) {
+			// GPU を失った。CPU で組み立て直す(前の状態は無いので、この PDU の分から)
+			st.close();
+			st = new Yuv444(w, h);
+			this.yuv444.set(id, st);
+			st.draw(apply(st), dest.left, dest.top, put);
 		}
 		this.stats.avc444ConvertMs += Math.round(performance.now() - t1);
+	}
+
+	private dropYuv444(id: number): void {
+		this.yuv444.get(id)?.close();
+		this.yuv444.delete(id);
 	}
 }
 
