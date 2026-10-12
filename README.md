@@ -1,16 +1,15 @@
 # mado
 
-OIDC でログインして、ブラウザから RDP する小さなゲートウェイ。Windows のサービスとして動く。MSI で入れる。
+OIDC でログインして、ブラウザから RDP するゲートウェイ。Windows のサービスとして動き、MSI で入れる。
 
-| ログインしたあと、つなぐ先・画面の大きさ・Windows のユーザー名とパスワード | つないだ画面(上に Ctrl+Alt+Del・Windows キー・診断・全画面・切断) |
+| つなぐ前 | つないだ画面 |
 | --- | --- |
 | <img src="docs/images/login.png" alt="つなぐ前の画面" width="300"> | <img src="docs/images/session.jpg" alt="つないだ画面" width="560"> |
 
-画像は試験用の Windows 11(Hyper-V)につないだもの。画面の中は Wikipedia の記事。
+画像は試験用の Windows 11(Hyper-V)につないだところ。
 
-Guacamole のようにサーバーで画面を描くのではなく、RDP は全部ブラウザの中の
-自前の TypeScript 実装(`web/rdp/`)が話す。mado がするのは、ログインの確認と、
-ブラウザ ↔ RDP サーバーの中継(RDCleanPath)だけ。
+RDP はブラウザの中の TypeScript 実装(`web/rdp/`)が話す。Guacamole と違って、サーバーでは画面を描かない。
+mado はログインの確認と、ブラウザと RDP サーバーの間の中継(RDCleanPath)をする。
 
 ```
 ブラウザ ──https──> mado ──OIDC──> Entra ID などの IdP
@@ -18,30 +17,30 @@ Guacamole のようにサーバーで画面を描くのではなく、RDP は全
    └──wss /ws(RDCleanPath)──> mado ──TCP + TLS──> RDP(既定 127.0.0.1:3389)
 ```
 
-- 外に出すのは 443(画面と中継)と 80(Let's Encrypt の確認と https への案内)だけ。3389 は外に出さない
-- つなぐ先は設定に書いたもの(`targets`)だけ。画面で選んだ先は、サーバーが出す使い捨てのトークンに入れて決める。ブラウザが送ってくる行き先は見ない(どこへでも行ける踏み台にしない)
-- Windows のユーザー名とパスワードはブラウザの中の CredSSP が使うだけで、mado には届かない
-- 証明書は Let's Encrypt から自分で取って、30 日を切ったら取り直す(HTTP-01)
+- 外に開けるのは 443 と 80。80 は Let's Encrypt の確認と https への転送に使う。3389 は開けない
+- つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
+- Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
+- 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
 
-## 作り
+## 構成
 
-| 部分 | 中身 |
+| ディレクトリ | 内容 |
 | --- | --- |
-| `server/` | **.NET 10(Native AOT)**。`CreateSlimBuilder` の Kestrel で、`UseWindowsService` でそのままサービスになる。OIDC・ACME・DER・RDCleanPath は手書き(ASP.NET Core の OIDC の仕組みは AOT に対応していない)。外から入れているのは Microsoft の `Microsoft.Extensions.Hosting.WindowsServices` だけ |
-| `web/` | 画面。TS と [Blades CSS](https://blades.ninja/)、自前の RDP クライアント(`web/rdp/`: CredSSP / NTLM、MCS、旧ビットマップ・RemoteFX・GFX(H.264 など)、入力、クリップボード、解像度の追従。中身と試験は [docs/rdp-client.md](docs/rdp-client.md))。**bun でビルドして exe に埋め込む**(実行時に bun はいない) |
-| `tray/` | タスクトレイ(`mado-tray.exe`、.NET の Native AOT)。Win32 の `Shell_NotifyIcon` を直接呼ぶ(WinForms は AOT に対応していない)。サインイン時に起動する |
-| `installer/` | MSI(WiX v5)。サービスの登録、タスクトレイとサインイン時の起動、ファイアウォール(TCP 80 / 443)、`C:\ProgramData\mado` の権限 |
+| `server/` | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` だけ |
+| `web/` | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))。bun でビルドして exe に埋め込む |
+| `tray/` | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する |
+| `installer/` | MSI(WiX v5)。サービスの登録、トレイの自動起動、ファイアウォール(TCP 80 / 443)、`C:\ProgramData\mado` の権限 |
 
-RDP との TLS は `SslStream`(Windows の SChannel)なので、RDP の自己署名証明書をそのまま受けられる。
+RDP サーバーとの TLS は `SslStream`(SChannel)なので、RDP の自己署名証明書でもつながる。
 
 ## 使い方
 
-1. `C:\ProgramData\mado\mado.json` に設定を書く(下)。client secret は同じフォルダの `client-secret.txt` に
-2. [リリース](https://github.com/danything/mado/releases)の `mado.msi` を入れる(`msiexec /i mado.msi`)。サービス `mado` が自動で起動する
+1. `C:\ProgramData\mado\mado.json` に設定を書き、client secret を同じフォルダの `client-secret.txt` に置く
+2. [リリース](https://github.com/danything/mado/releases)の `mado.msi` を入れる(`msiexec /i mado.msi`)。サービス `mado` が起動する
 
-先に MSI を入れてもよい。設定が無いうちはサービスの起動が失敗するだけなので、置いてから `Restart-Service mado` する。
-フォルダは MSI が SYSTEM と Administrators だけが読めるように作る(client secret とセッションの鍵が入る)。
-**更新は mado が自分でする**(下の「自動更新」)。手で上げるときは新しい版の `mado.msi` を入れる(古い版を外して入れ替える。設定と証明書は残る)。
+MSI を先に入れてもいい。設定が無いとサービスの起動に失敗するので、設定を置いてから `Restart-Service mado` する。
+フォルダは MSI が作り、SYSTEM と Administrators だけが読める(client secret とセッションの鍵を置くため)。
+更新は mado が自分でする(下の「自動更新」)。手で更新するときは新しい `mado.msi` を入れる。設定と証明書は残る。
 
 ```json
 {
@@ -60,62 +59,62 @@ RDP との TLS は `SslStream`(Windows の SChannel)なので、RDP の自己署
 }
 ```
 
-| 項目 | 中身 |
+| 項目 | 内容 |
 | --- | --- |
-| `host` | 外から開く名前。証明書と OIDC の戻り先に使う |
-| `data_dir` | 証明書・ACME のアカウント・セッションの鍵の置き場。既定は設定ファイルの隣の `data` |
-| `acme.email` | Let's Encrypt に登録する連絡先。`acme.staging: true` で試験用の Let's Encrypt に |
-| `oidc` | `issuer`・`client_id`・`client_secret`(または 1 行目を読む `client_secret_file`)。`required_role` を書くと、ID トークンの `roles` にそれが無い人は入れない |
-| `targets` | つなぐ先(`name`・`host`・`port`。`port` の既定は 3389)。画面で選ぶ。1 つだけなら選ぶ欄は出ない。省くとこのマシン(127.0.0.1:3389)だけ |
+| `host` | 外から開くホスト名。証明書と OIDC の戻り先に使う |
+| `data_dir` | 証明書、ACME のアカウント、セッションの鍵を置く場所。既定は設定ファイルと同じ場所の `data` |
+| `acme.email` | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う |
+| `oidc` | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない |
+| `targets` | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら選択欄は出ない。省略するとこのマシン(127.0.0.1:3389) |
 | `listen` | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける) |
-| `status.port` | この PC の中からだけ見られる状態の口(既定 8788、`0` で開けない)。`GET /status` で版・つないでいる数・証明書の残り日数・更新の有無、`POST /update`(ヘッダー `x-mado: 1`)で今すぐ更新を確かめる。タスクトレイが使う |
+| `status.port` | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う |
 | `update` | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }` |
-| `tls` | `"off"` にすると TLS も ACME も使わず http だけで待ち受ける(localhost で試すとき) |
+| `tls` | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用 |
 
-IdP には戻り先 `https://<host>/callback` を登録する。Entra ID ならアプリロールを作って割り当て、`required_role` にその値を書く。
+IdP には戻り先として `https://<host>/callback` を登録する。Entra ID ならアプリロールを作ってユーザーに割り当て、その値を `required_role` に書く。
 
-ログは `C:\ProgramData\mado\logs\mado.log`(10 MB を超えたら `.1` に回す)。
+ログは `C:\ProgramData\mado\logs\mado.log`。10 MB を超えると `.1` に移す。
 
 ## 画面
 
-- **画面の大きさ**: 窓に合わせて RDP の解像度を決め、窓の大きさが変わったら追従する。画素数 75% / 50% にすると、解像度を下げて拡大表示する(描く量が減って軽い)
-- **送り方は自動**: GFX で受け、ブラウザが H.264 を復号できれば H.264 も使う。接続先が GFX を使えなければ旧ビットマップ / RemoteFX になり、途中で壊れたら一つ下の方式で裏でつなぎ直す。回線と端末の速さに合わせた画質・頻度の調整は接続先に任せる(往復時間・帯域の測定と、描き終えていないフレームの数を伝える)
-- **キーボード**: OS の配列から JIS / US を判定して接続先に伝える
-- ツールバー: Ctrl+Alt+Del / Windows キー / 診断(方式・更新の数・直近のエラーを左下に出す)/ 全画面 / 切断。クリップボードは文字列だけ行き来する
+- 解像度は窓の大きさに合わせ、窓を変えると追従する。回線や端末が追いつかないときは解像度を 75%、50% に下げ、余裕が戻ったら上げる
+- 画面の転送方式は自動で選ぶ。GFX を使い、ブラウザが H.264 を復号できれば H.264 も使う。接続先が GFX に対応していなければ旧来のビットマップ / RemoteFX になる。途中で復号に失敗したら、一段下の方式でつなぎ直す
+- キーボードは OS の配列から JIS か US かを判定して接続先に伝える
+- ツールバー: Ctrl+Alt+Del、Windows キー、診断、全画面、切断。診断は方式や負荷、直近のエラーを左下に出す。クリップボードはテキストだけ共有する
 
 ## タスクトレイ
 
-`mado-tray.exe` がサインイン時に起動し、状態の口を 5 秒ごとに見る。動いていれば mado のアイコン、聞けなければ注意のアイコンにして、
-止まった・戻ったときは通知を出す。ツールチップに版・つないでいる数・証明書の残り日数・新しい版の有無。
-右クリック: 画面を開く / 今すぐ更新を確かめる / サービスを再起動する(UAC)/ ログを開く(UAC)/ 終了。
-自動更新でサービスが新しい版になり、置き場所の `mado-tray.exe` も入れ替わったら、トレイも自分で起動し直す。トレイのログは `%LOCALAPPDATA%\mado\tray.log`。
+`mado-tray.exe` はサインイン時に起動し、5 秒ごとに状態の API を見る。サービスが止まったときと戻ったときに通知を出す。
+ツールチップには版、接続数、証明書の残り日数、新しい版の有無を出す。
+右クリックのメニュー: 画面を開く、更新を確認、サービスを再起動(UAC)、ログを開く(UAC)、終了。
+自動更新で `mado-tray.exe` が入れ替わると、トレイも起動し直す。トレイのログは `%LOCALAPPDATA%\mado\tray.log`。
 
 ## 自動更新
 
-サービスは `update.check_hours` ごとに GitHub のリリースの最新を見て、今より新しい版があれば入れる。
+サービスは `update.check_hours` ごとに GitHub のリリースを確認し、新しい版があれば入れる。
 
-- **署名を確かめてから入れる。** リリースの `mado.msi.sig` は、CI が ECDSA P-256 の秘密鍵(GitHub の secret `MADO_SIGNING_KEY`)で
-  `mado <タグ> <MSI の SHA-256>` に付けた署名で、exe に入っている公開鍵(`server/Updater.cs` の `PublicKey`)で確かめる。
-  タグも署名の中なので、古い版を「最新」と偽って戻させることはできない(今より新しい版しか受けない。MSI も古い版では上書きしない)
-- **誰もつないでいないときだけ**入れる。入れるのは `msiexec`(MSI のメジャー アップグレードがサービスを止め、入れ替えて起動し直す)。
-  MSI は `C:\ProgramData\mado\data\updates\`、ログは `logs\msi-<タグ>.log`
-- **鍵を作り直すとき**は、新しい公開鍵を `PublicKey` に入れてリリースし、その版だけは手で入れる(古い mado は新しい鍵の署名を受けない)
+- 入れる前に署名を確認する。リリースの `mado.msi.sig` は、CI が `mado <タグ> <MSI の SHA-256>` に ECDSA P-256 で付けた署名で、
+  秘密鍵は GitHub の secret `MADO_SIGNING_KEY`、公開鍵は exe に入っている(`server/Updater.cs` の `PublicKey`)。
+  タグも署名に含むので、古い版を最新と偽って入れさせることはできない。今より新しい版しか受け付けない
+- 誰もつないでいないときに入れる。`msiexec` でメジャー アップグレードし、サービスを止めて入れ替え、起動し直す。
+  MSI は `C:\ProgramData\mado\data\updates\`、ログは `logs\msi-<タグ>.log` に置く
+- 署名の鍵を作り直したときは、新しい公開鍵を `PublicKey` に入れてリリースし、その版だけは手で入れる。古い mado は新しい鍵の署名を受け付けない
 
 ## 開発
 
 ```sh
 bun install
-bun run build:web                          # 画面を dist/web に(server が埋め込む。server より先に)
-dotnet run --project tests/Mado.Tests.csproj   # 試験(TUnit)
-dotnet run --project server/Mado.csproj -- --config mado.dev.json   # "tls": "off" にすると http だけで試せる
+bun run build:web                          # 画面を dist/web にビルド(server が埋め込むので先に)
+dotnet run --project tests/Mado.Tests.csproj   # テスト(TUnit)
+dotnet run --project server/Mado.csproj -- --config mado.dev.json   # "tls": "off" なら http で試せる
 dotnet run tray/make-icon.cs tray/mado.ico   # アイコンを作り直す
-bun run check                              # 画面の biome・tsc・試験(bun test web)
+bun run check                              # 画面の biome、tsc、テスト(bun test web)
 ```
 
-**リリースは main に入ったときに自動**: `server/Mado.csproj` の `<Version>` を上げてマージすると、その版のタグを打って MSI を出す(`release.yml`。版を上げない変更はリリースしない)。
+main にマージすると自動でリリースする。`server/Mado.csproj` の `<Version>` を上げていれば、その版のタグを打って MSI を出す(`release.yml`)。版を上げていなければリリースしない。
 
-手元に bun や .NET が無ければ `oven/bun` と `mcr.microsoft.com/dotnet/sdk:10.0` のコンテナで同じことができる。exe(Native AOT)と MSI は
-Windows でしか作れないので CI(`windows-latest`)で作る。
+bun や .NET が手元に無ければ、`oven/bun` と `mcr.microsoft.com/dotnet/sdk:10.0` のコンテナで同じことができる。
+exe(Native AOT)と MSI は Windows でしか作れないので、CI(`windows-latest`)で作る。
 
 ## ライセンス
 

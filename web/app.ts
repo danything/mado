@@ -29,7 +29,7 @@ const screen = $<HTMLElement>("#screen");
 const field = (name: string) =>
 	form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-/** 前回選んだつなぐ先・画面の大きさ・ユーザー名(パスワードは覚えない) */
+/** 前回のつなぐ先とユーザー名。パスワードは覚えない */
 const REMEMBER = "mado:last";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -52,14 +52,10 @@ $<HTMLElement>("#target-field").hidden = session.targets.length < 2;
 try {
 	const last = JSON.parse(localStorage.getItem(REMEMBER) ?? "{}") as {
 		target?: string;
-		size?: string;
 		username?: string;
 	};
 	if (last.target && session.targets.includes(last.target))
 		select.value = last.target;
-	const sizes = field("size") as HTMLSelectElement;
-	if (last.size && [...sizes.options].some((o) => o.value === last.size))
-		sizes.value = last.size;
 	if (last.username) field("username").value = last.username;
 } catch {}
 home.hidden = false;
@@ -93,7 +89,6 @@ const MODE_NAMES: Record<Mode, string> = {
 /** つないだ相手と認証(つなぎ直しに使う。パスワードは画面を閉じるまでメモリにだけ置く) */
 type Login = {
 	target: string;
-	size: string;
 	username: string;
 	password: string;
 };
@@ -114,13 +109,12 @@ form.addEventListener("submit", async (e) => {
 	e.preventDefault();
 	const login: Login = {
 		target: select.value,
-		size: field("size").value,
 		username: field("username").value,
 		password: field("password").value,
 	};
 	try {
-		const { target, size, username } = login;
-		localStorage.setItem(REMEMBER, JSON.stringify({ target, size, username }));
+		const { target, username } = login;
+		localStorage.setItem(REMEMBER, JSON.stringify({ target, username }));
 	} catch {}
 	const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
 	// つないでいる途中に Enter でもう一度送られても、二つ目はつながない
@@ -168,7 +162,7 @@ async function runSession(
 		toolbar.hidden = false;
 		$<HTMLElement>("#current").textContent = login.target;
 		screen.classList.remove("idle");
-		const { width, height } = desktopSize(login.size);
+		const { width, height } = desktopSize();
 		const abort = new AbortController();
 		connecting = abort;
 		const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
@@ -223,9 +217,8 @@ async function runSession(
 		stops.push(watchDiag(() => diagText(client, gfxClient, pool.async)));
 		stops.push(bindInput(display.canvas, client, display));
 		stops.push(watchClipboard(display.canvas, channels));
-		// 窓の大きさが変わったら、RDP の解像度も(画素数の割合をかけて)変える。
-		// 割合は選んだものを上限に、混んでいれば自動で下げる(GFX のときだけ。フレームの時刻で混み具合が分かる)
-		const auto = new AutoScale(autoScale(login.size));
+		// 窓の大きさが変わったら RDP の解像度も変える。GFX のときは、混んでいれば解像度を下げる
+		const auto = new AutoScale(1);
 		const resize = (w: number, h: number) => {
 			const width = even(Math.round(w * auto.scale));
 			const height = Math.round(h * auto.scale);
@@ -249,7 +242,7 @@ async function runSession(
 			const next = auto.sample({ queued, backlog: gfxClient.backlog }, now);
 			if (next === undefined) return;
 			scaleSwitches.push(
-				`${new Date().toLocaleTimeString()} 画素数 ${Math.round(next * 100)}%(溜まった遅れ ${Math.round(queued ?? 0)}ms・未描画 ${gfxClient.backlog})`,
+				`${new Date().toLocaleTimeString()} 解像度 ${Math.round(next * 100)}% 遅延+${Math.round(queued ?? 0)}ms 未描画 ${gfxClient.backlog}`,
 			);
 			scaleSwitches.splice(0, scaleSwitches.length - 5);
 			resize(screen.clientWidth, screen.clientHeight);
@@ -295,7 +288,7 @@ function diagText(
 	// GFX を頼んでも、サーバーがチャネルを開かなければ旧来の描画のまま
 	const mode: Mode = gfx?.active ? (gfx.avcEnabled ? "avc" : "gfx") : "bitmap";
 	const lines = [
-		`mado ${session.version}  方式: ${MODE_NAMES[mode]}  復号の場所: ${workers ? "Worker" : "その場"}`,
+		`mado ${session.version}  方式: ${MODE_NAMES[mode]}  復号: ${workers ? "Worker" : "メインスレッド"}`,
 		`画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}`,
 		`更新: ${
 			Object.entries(client.stats)
@@ -303,13 +296,13 @@ function diagText(
 				.join(" ") || "-"
 		}`,
 		// 間引き・捨てたは、RemoteFX のタイルと旧ビットマップの両方を数える
-		`復号: 間引き=${client.decodeStats.coalesced} 捨てた=${client.decodeStats.skipped}`,
+		`旧ビットマップ: 間引き=${client.decodeStats.coalesced} 捨てた=${client.decodeStats.skipped}`,
 		networkText(client.network),
 	];
 	if (switches.length) lines.push("切り替え:", ...switches);
 	if (gfx?.active)
 		lines.push(
-			`混み具合: 溜まった遅れ ${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}  画素数 ${Math.round(currentScale() * 100)}%`,
+			`負荷: 遅延+${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}  解像度 ${Math.round(currentScale() * 100)}%`,
 			...scaleSwitches,
 		);
 	if (gfx?.active)
@@ -328,7 +321,7 @@ function networkText(n: RdpClient["network"]): string {
 	const info = n.info
 		? `rtt=${ms(n.info.averageRtt)}(最小 ${ms(n.info.baseRtt)}) 帯域=${n.info.bandwidth === undefined ? "-" : `${n.info.bandwidth}kbps`}`
 		: "-";
-	return `回線: ${info}  測定に答えた数: rtt=${n.answered.rtt} 帯域=${n.answered.bandwidth}`;
+	return `回線: ${info}  応答: rtt=${n.answered.rtt} 帯域=${n.answered.bandwidth}`;
 }
 
 /** 診断を開いた瞬間に書くためのもの(つないでいる間だけ) */
@@ -404,22 +397,12 @@ function watchClipboard(canvas: HTMLElement, channels: Channels): () => void {
 /** 幅は偶数でないと DisplayControl に断られる */
 const even = (n: number) => n - (n % 2);
 
-/**
- * RDP の解像度。窓(画面の場所)の大きさ × 画素数の割合。減らしたぶんは、表示で窓に合わせて拡大される(小さいほど描く量が減って軽い)
- */
-function desktopSize(size: string): { width: number; height: number } {
-	const k = autoScale(size);
+/** つなぐときの RDP の解像度。窓の大きさそのまま。混んでいたら、つないだあとで下げる */
+function desktopSize(): { width: number; height: number } {
 	return {
-		width: Math.round((screen.clientWidth || innerWidth) * k),
-		height: Math.round((screen.clientHeight || innerHeight) * k),
+		width: screen.clientWidth || innerWidth,
+		height: screen.clientHeight || innerHeight,
 	};
-}
-
-/** 画素数の割合(auto は 1、auto@0.5 は 0.5)。分からない値は 1 */
-function autoScale(size: string): number {
-	const m = size.match(/^auto(?:@([\d.]+))?$/);
-	const k = m?.[1] ? Number(m[1]) : 1;
-	return k > 0 && k <= 1 ? k : 1;
 }
 
 /**
