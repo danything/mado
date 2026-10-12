@@ -53,7 +53,7 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 ## AVC444
 
 1 つの PDU に主の画像(普通の YUV420)と補助の画像(4:4:4 に足りない色差を YUV420 の形に詰めたもの)が入る。LC の値によってはどちらか片方だけのこともある。
-2 つとも同じ VideoDecoder で順に復号する(1 本の H.264 ストリームとして扱う。FreeRDP と同じ)。`copyTo` で I420 / NV12 の面を読み出して面ごとの YUV444 に重ね、CPU で RGBA に変換して描く(`yuv444.ts`)。
+2 つとも同じ VideoDecoder で順に復号する(1 本の H.264 ストリームとして扱う。FreeRDP と同じ)。`copyTo` で I420 / NV12 の面を読み出し、面ごとの YUV444 に重ねて RGB に変換する。重ね合わせと変換は WebGL2 のシェーダーで行い、WebGL2 が使えないときや GPU を失ったときは CPU で行う(`yuv444.ts`)。実機では 1 フレームの組み立てが CPU の約 5ms から約 1ms になった。`copyTo` で面を読み出す分(復号の待ちと合わせて約 15ms)は残る。
 補助の画像の並び方は v1(AVC444)と v2(AVC444v2)で違う。並び方と色差の復元は FreeRDP の `prim_YUV.c` に合わせた。AVC420 は VideoFrame をそのまま drawImage する。
 
 ## テスト
