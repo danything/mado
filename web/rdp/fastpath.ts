@@ -1,6 +1,7 @@
 // Fast-Path の出力([MS-RDPBCGR] 2.2.9.1.2)。1 つの PDU に複数の更新が入り、大きな更新は断片に分かれて来る。
 
 import { concat, Reader } from "./bytes";
+import type { Bulk } from "./mppc";
 
 export const UPDATE = {
 	ORDERS: 0x0,
@@ -22,13 +23,16 @@ const MAX_UPDATE = 1 << 24;
 
 export type Update = { code: number; data: Uint8Array };
 
-/** 断片を組み立てながら、更新を 1 つずつ返す */
+/** 断片を組み立てながら、更新を 1 つずつ返す。圧縮された断片は、組み立てる前に 1 つずつ伸長する */
 export class Reassembler {
 	private parts: Uint8Array[] = [];
 	private code = 0;
 	private size = 0;
 	/** 最初の断片を受けて、最後をまだ受けていない */
 	private open = false;
+
+	/** I/O チャネルの圧縮の文脈。Share Data と同じものを使う。無ければ圧縮された更新は例外にする */
+	constructor(private bulk?: Bulk) {}
 
 	/** x224.readPdu が返した fastpath の data を渡す。ヘッダーは取り除いてある */
 	push(pdu: Uint8Array): Update[] {
@@ -39,12 +43,15 @@ export class Reassembler {
 			const code = h & 0xf;
 			const frag = (h >> 4) & 3;
 			const compression = h >> 6;
-			if (compression & 2) {
-				r.u8(); // compressionFlags
-				throw new Error("圧縮された Fast-Path の更新は受けられない");
-			}
+			// FASTPATH_OUTPUT_COMPRESSION_USED なら compressionFlags が付く。中身が 0(圧縮なし)のこともある
+			const flags = compression & 2 ? r.u8() : 0;
 			const size = r.u16();
-			const data = r.bytes(size);
+			let data = r.bytes(size);
+			if (flags & 0xe0) {
+				if (!this.bulk)
+					throw new Error("圧縮された Fast-Path の更新は受けられない");
+				data = this.bulk.decompress(data, flags);
+			}
 			switch (frag) {
 				case 0: // 単独。組み立ての途中に来たら、組み立て中のものは捨てる
 					this.parts = [];

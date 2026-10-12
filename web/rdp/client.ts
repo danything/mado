@@ -36,7 +36,8 @@ export interface Screen {
 type ChannelHandler = (name: string, data: Uint8Array) => void;
 
 export class RdpClient {
-	private fast = new Reassembler();
+	/** Fast-Path の組み立て。つなぐ途中で使ったものを引き継ぐ(断片と圧縮の履歴が続いている) */
+	private fast: Reassembler;
 	private cursors = new Map<number, pointer.Cursor>();
 	private assemblers = new Map<number, ChannelAssembler>();
 	private width: number;
@@ -70,6 +71,7 @@ export class RdpClient {
 		this.height = session.height;
 		this.shareId = session.shareId;
 		this.autodetect = session.autodetect ?? new AutoDetect();
+		this.fast = session.fast ?? new Reassembler(session.bulk);
 		this.surface = new SurfaceRenderer({
 			draw: (x, y, w, h, rgba) => this.screen.draw(x, y, w, h, rgba),
 			ack: (frameId) => this.sendFrameAck(frameId),
@@ -111,7 +113,7 @@ export class RdpClient {
 		this.screen.resize(this.width, this.height);
 		this.send(input.fastPathInput([input.syncEvent(0)]));
 		try {
-			for (const p of s.pending) this.handlePdu(p);
+			for (const u of s.pending) this.handleUpdate(u.code, u.data);
 			s.pending.length = 0;
 			for (const c of s.pendingChannel.splice(0))
 				this.handleChannel(c.channelId, c.data);
@@ -198,7 +200,9 @@ export class RdpClient {
 	private handleChannel(channelId: number, chunk: Uint8Array): void {
 		for (const [name, id] of this.session.channels) {
 			if (id !== channelId) continue;
-			const asm = this.assemblers.get(id) ?? new ChannelAssembler();
+			const asm =
+				this.assemblers.get(id) ??
+				new ChannelAssembler(this.session.channelBulk);
 			this.assemblers.set(id, asm);
 			const msg = asm.push(chunk);
 			if (msg) this.onChannel?.(name, msg);
@@ -209,7 +213,7 @@ export class RdpClient {
 		const sc = pdu.parseShareControl(data);
 		switch (sc.type) {
 			case pdu.PDUTYPE.DATA:
-				this.handleShareData(pdu.parseShareData(sc.body));
+				this.handleShareData(pdu.parseShareData(sc.body, this.session.bulk));
 				break;
 			case pdu.PDUTYPE.DEACTIVATE_ALL:
 				break; // 続けて Demand Active が来る

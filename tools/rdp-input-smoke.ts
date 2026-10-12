@@ -136,6 +136,7 @@ const session = await establish(
 		height: H,
 		allowTls: true,
 		dummyLicense: true,
+		compression: process.env.COMPRESS !== "0",
 	},
 	cc,
 	new Uint8Array(t.getPeerCertificate().raw),
@@ -158,6 +159,10 @@ await sleep(8000);
 png(out);
 console.log("cursor updates:", cursors);
 console.log("updates by code:", JSON.stringify(client.stats));
+console.log(
+	"bulk:",
+	JSON.stringify({ io: session.bulk?.stats, channel: session.channelBulk?.stats }),
+);
 // キーボード。(567, 696) にあるドックの端末アイコンをクリックして開き、"echo mado" と打つ
 const key = (code: string, down: boolean) => input.keyEvent(code, down) as Uint8Array;
 client.sendInput([input.mouseMove(567, 696)]);

@@ -4,7 +4,9 @@
 import { AutoDetect } from "./autodetect";
 import { concat, Reader } from "./bytes";
 import { credssp } from "./credssp";
+import { Reassembler, type Update } from "./fastpath";
 import * as mcs from "./mcs";
+import { Bulk } from "./mppc";
 import { identity } from "./ntlm";
 import * as pdu from "./pdu";
 import * as cleanpath from "./rdcleanpath";
@@ -46,6 +48,8 @@ export type ConnectOptions = {
 	dummyLicense?: boolean;
 	/** 回線の自動検出を頼む。サーバーが RTT と帯域を測って画質を変える。既定は true */
 	autodetect?: boolean;
+	/** バルク圧縮(RDP 5.0)を頼む。旧ビットマップやチャネルのデータが小さくなる。既定は true */
+	compression?: boolean;
 };
 
 export type Session = {
@@ -64,14 +68,23 @@ export type Session = {
 	keyboardLayout: number;
 	width: number;
 	height: number;
-	/** 同期の途中で届いた Fast-Path の PDU。あとで流して、画面の更新を取りこぼさないようにする */
-	pending: x224.Pdu[];
+	/**
+	 * 同期の途中で届いた Fast-Path の更新。あとで流して、画面の更新を取りこぼさないようにする。
+	 * 圧縮の履歴は Share Data と共通なので、届いた順に伸長してから溜める
+	 */
+	pending: Update[];
 	/** 同期の途中で届いた、drdynvc などの静的チャネルのデータ */
 	pendingChannel: { channelId: number; data: Uint8Array }[];
 	/** 回線の自動検出に使うメッセージ チャネルの ID。サーバーが使わないときは無い */
 	messageChannelId?: number;
 	/** 回線の自動検出の受け手。つなぐ途中で使ったものを、つないだあとも使い続ける */
 	autodetect?: AutoDetect;
+	/** つなぐ途中で使った Fast-Path の組み立て。断片と圧縮の履歴を引き継ぐ */
+	fast?: Reassembler;
+	/** I/O チャネル(Fast-Path と Share Data)の圧縮の文脈。圧縮を頼まなかったときは無い */
+	bulk?: Bulk;
+	/** 静的チャネルの圧縮の文脈。I/O チャネルとは別の履歴にする */
+	channelBulk?: Bulk;
 };
 
 export type TransportKind = "WebTransport" | "WebSocket";
@@ -237,7 +250,10 @@ export async function establish(
 			x224.data(mcs.sendDataRequest(userId, server.ioChannelId, data)),
 		);
 
-	// 5. Client Info
+	// 5. Client Info。圧縮を頼むと、このあとサーバーから届くデータは圧縮されることがある
+	const compression = o.compression ?? true;
+	const bulk = compression ? new Bulk() : undefined;
+	const channelBulk = compression ? new Bulk() : undefined;
 	const id = identity(o.username, o.password);
 	send(
 		concat(
@@ -246,6 +262,7 @@ export async function establish(
 				domain: id.domain,
 				user: id.user,
 				password: id.password,
+				compression,
 			}),
 		),
 	);
@@ -255,6 +272,7 @@ export async function establish(
 		ioChannelId: server.ioChannelId,
 		pending: [],
 		pendingChannel: [],
+		fast: new Reassembler(bulk),
 	};
 	let autodetect: AutoDetect | undefined;
 	if (messageChannelId !== undefined) {
@@ -280,7 +298,7 @@ export async function establish(
 			if (sc.type === pdu.PDUTYPE.DEMAND_ACTIVE)
 				demand = pdu.parseDemandActive(sc.body);
 			else if (sc.type === pdu.PDUTYPE.DATA)
-				checkErrorInfo(pdu.parseShareData(sc.body));
+				checkErrorInfo(pdu.parseShareData(sc.body, bulk));
 			continue;
 		}
 		const r = new Reader(data);
@@ -323,7 +341,7 @@ export async function establish(
 		if (!isShareControl(data)) continue;
 		const sc = pdu.parseShareControl(data);
 		if (sc.type !== pdu.PDUTYPE.DATA) continue;
-		const sd = pdu.parseShareData(sc.body);
+		const sd = pdu.parseShareData(sc.body, bulk);
 		checkErrorInfo(sd);
 		if (sd.type2 === pdu.PDUTYPE2.FONTMAP) done = true;
 	}
@@ -344,6 +362,9 @@ export async function establish(
 		pendingChannel: inbox.pendingChannel,
 		messageChannelId,
 		autodetect,
+		fast: inbox.fast,
+		bulk,
+		channelBulk,
 	};
 }
 
@@ -372,12 +393,14 @@ async function readSlow(s: Transport): Promise<{ data: Uint8Array }> {
 /** 接続の途中に届くものの行き先 */
 export type Inbox = {
 	ioChannelId: number;
-	/** Fast-Path の PDU。つないだあとで RdpClient が流す */
-	pending: x224.Pdu[];
+	/** Fast-Path の更新。つないだあとで RdpClient が流す */
+	pending: Update[];
 	/** 静的チャネルのデータ。これも RdpClient があとで流す */
 	pendingChannel: Session["pendingChannel"];
 	/** 回線の自動検出のメッセージ チャネル。サーバーは答えるまでの時間を測るので、その場で答える */
 	message?: { id: number; handle: (data: Uint8Array) => void };
+	/** Fast-Path の組み立て。圧縮の履歴が Share Data と共通なので、届いたその場で伸長する */
+	fast?: Reassembler;
 };
 
 /** I/O チャネルの Send Data Indication を 1 つ読む。Fast-Path とほかのチャネルのデータは溜めておき、メッセージ チャネルにはその場で答える */
@@ -385,7 +408,8 @@ export async function readIo(s: Transport, inbox: Inbox): Promise<Uint8Array> {
 	for (;;) {
 		const p = await x224.readPdu(s);
 		if (p.kind === "fastpath") {
-			inbox.pending.push(p);
+			inbox.fast ??= new Reassembler();
+			inbox.pending.push(...inbox.fast.push(p.data));
 			continue;
 		}
 		const ind = mcs.parseSendDataIndication(p.data);

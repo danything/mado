@@ -14,7 +14,20 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 | 画面(GFX) | ZGFX、GFX のコマンド、AVC420 / AVC444(WebCodecs)、ClearCodec(NSCodec)、Planar、RemoteFX Progressive、解像度の自動調整 | `gfx.ts` `gfx-canvas.ts` `yuv444.ts` `zgfx.ts` `clearcodec.ts` `progressive.ts` `autoscale.ts` |
 | 入力とポインタ | スキャンコード(JIS / US は OS の配列から判定)、Unicode、マウス、ホイール、ポインタの形 | `input.ts` `pointer.ts` `display.ts` |
 | チャネル | 静的チャネルの分割、drdynvc、DisplayControl(窓の大きさへの追従)、cliprdr(テキストのみ) | `vchannel.ts` `dvc.ts` `cliprdr.ts` `channels.ts` |
+| バルク圧縮 | MPPC(RDP 4.0 / 5.0)の伸長。Fast-Path、Share Data、静的チャネル | `mppc.ts` |
 | 全体 | 受信ループ、画面への振り分け、診断用の統計 | `client.ts` |
+
+## バルク圧縮
+
+Client Info で INFO_COMPRESSION を立て、RDP 5.0(履歴 64KB)まで受けると伝える(`ConnectOptions.compression`、既定は on)。サーバーは RDP 4.0(8KB)を選ぶこともあるので、伸長はどちらも扱う。RDP 6.0 / 6.1 は宣言しない。
+GFX のデータは ZGFX で別に圧縮されているので、効くのは旧ビットマップ、ポインタ、チャネルのデータ。
+
+- 履歴は I/O チャネル(Fast-Path と Share Data)で 1 つ。サーバーは送った順に圧縮するので、届いた順に伸長する。つなぐ途中に届いた Fast-Path も、溜める前にその場で伸長する(`readIo`)
+- Fast-Path と静的チャネルは、断片ごとに伸長してから組み立てる
+- 静的チャネルは I/O チャネルとは別の履歴を 1 つ持つ。仕様に書かれておらず、xrdp はチャネルを圧縮しないので、実機では確かめていない
+- 圧縮していないパケットは履歴に入れない。FLUSHED で履歴を 0 で埋め、AT_FRONT で書く位置を先頭に戻す(FreeRDP の `mppc.c` と同じ)
+- 1 つのパケットは履歴より大きくならない。履歴の外を指す一致や、途中で切れた符号は例外にする
+- 診断の「圧縮:」に、伸長したパケットの数と前後のバイト数が出る。xrdp(旧来の描画)では約 1.7MB を 2.8MB に伸長した
 
 ## 中継の道(WebTransport と WebSocket)
 

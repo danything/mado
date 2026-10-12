@@ -2,6 +2,7 @@
 
 import { Reader, Writer } from "./bytes";
 import { keyboardSubType, keyboardType } from "./mcs";
+import { type Bulk, PACKET_COMPR_TYPE_64K } from "./mppc";
 
 /** MCS のユーザー ID のうち、サーバー(Share Control の出し元)は 1002 */
 export const SERVER_ID = 0x03ea;
@@ -22,6 +23,8 @@ export type ClientInfo = {
 	domain: string;
 	user: string;
 	password: string;
+	/** バルク圧縮(RDP 5.0、履歴 64KB)を頼む。サーバーから届くデータが圧縮される */
+	compression?: boolean;
 };
 
 const INFO_MOUSE = 0x1;
@@ -32,6 +35,9 @@ const INFO_MAXIMIZESHELL = 0x20;
 const INFO_LOGONNOTIFY = 0x40;
 const INFO_ENABLEWINDOWSKEY = 0x100;
 const INFO_LOGONERRORS = 0x10000;
+const INFO_COMPRESSION = 0x80;
+/** CompressionTypeMask の位置。受けられる最も新しい圧縮の種類を入れる */
+const COMPRESSION_TYPE_SHIFT = 9;
 
 /**
  * 重い描画を切って、送る量を減らす。壁紙、ドラッグ中のウィンドウの中身、メニューのアニメーション、テーマ、カーソルの影を止める。
@@ -61,7 +67,11 @@ export function clientInfo(info: ClientInfo): Uint8Array {
 					INFO_MAXIMIZESHELL |
 					INFO_LOGONNOTIFY |
 					INFO_ENABLEWINDOWSKEY |
-					INFO_LOGONERRORS,
+					INFO_LOGONERRORS |
+					(info.compression
+						? INFO_COMPRESSION |
+							(PACKET_COMPR_TYPE_64K << COMPRESSION_TYPE_SHIFT)
+						: 0),
 			)
 			.u16(domain.length - 2)
 			.u16(user.length - 2)
@@ -222,17 +232,30 @@ export function shareData(
 
 export type ShareData = { type2: number; payload: Uint8Array };
 
-export function parseShareData(body: Uint8Array): ShareData {
+/**
+ * Share Control の本体から Share Data を読む。bulk は I/O チャネルの圧縮の文脈で、Fast-Path と同じものを渡す。
+ * 無ければ圧縮された PDU は例外にする
+ */
+export function parseShareData(body: Uint8Array, bulk?: Bulk): ShareData {
 	const r = new Reader(body);
 	r.u32(); // shareId
 	r.skip(2); // pad, streamId
 	r.u16(); // uncompressedLength
 	const type2 = r.u8();
-	const compressed = r.u8();
-	r.u16();
-	if (compressed & 0x20)
-		throw new Error("圧縮された Share Data PDU は受けられない");
-	return { type2, payload: r.rest() };
+	const compressedType = r.u8();
+	const compressedLength = r.u16();
+	if (!(compressedType & 0xe0)) return { type2, payload: r.rest() };
+	if (!bulk) throw new Error("圧縮された Share Data PDU は受けられない");
+	// compressedLength は Share Control のヘッダー(6 バイト)と Share Data のヘッダー(12 バイト)を含む
+	let data = r.rest();
+	if (compressedType & 0x20) {
+		if (compressedLength < 18 || compressedLength - 18 > data.length)
+			throw new Error(
+				`Share Data: compressedLength が合わない (${compressedLength})`,
+			);
+		data = data.subarray(0, compressedLength - 18);
+	}
+	return { type2, payload: bulk.decompress(data, compressedType) };
 }
 
 /** Frame Acknowledge PDU(TS_FRAME_ACKNOWLEDGE_PDU、[MS-RDPBCGR])の本体。描き終えたフレームの ID を入れる */
