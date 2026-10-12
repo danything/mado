@@ -1,5 +1,5 @@
-// 入力の実機試験。xrdp につないで、画面が出たら「Use default config」のボタンをクリックし、ダイアログが消えるのを PNG で確かめる。
-//   bun build tools/rdp-input-smoke.ts --target node --outfile out/rdp-input-smoke.mjs && node out/rdp-input-smoke.mjs
+// xrdp を相手にする実機試験(docs/rdp-client.md の「試験」)。つないで画面を PNG にし、「Use default config」のボタンのクリック、
+// ドックの端末を開いて echo mado と打つ、こちらでコピーした文字列の貼り付けを順に試す。wslc の node:lts コンテナで動かす
 // 環境変数: HOST / PORT / RDPUSER / RDPPASS / OUT(クリック前は OUT の .before.png)
 
 import * as fs from "node:fs";

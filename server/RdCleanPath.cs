@@ -1,7 +1,7 @@
 namespace Mado;
 
 /// <summary>
-/// RDCleanPath の PDU(Devolutions の IronRDP の crates/ironrdp-rdcleanpath と同じ形)。
+/// RDCleanPath の PDU(Devolutions の IronRDP の crates/ironrdp-rdcleanpath と同じ形。ブラウザ側は web/rdp/rdcleanpath.ts)。
 ///
 /// ブラウザは RDP の TLS を自分で張れない。そこでブラウザは最初に RDCleanPath の要求(X.224 の接続要求入り)を送り、
 /// ゲートウェイが RDP サーバーと X.224 → TLS までを代わりにやって、サーバーの応答(X.224 の接続確認)と証明書の連なりを

@@ -5,6 +5,7 @@ import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
 import { bindInput, Display, watchSize } from "./rdp/display";
+import { UPDATE } from "./rdp/fastpath";
 import { avcSupported, GfxClient } from "./rdp/gfx";
 import { CanvasGfxOps, WebCodecsAvc } from "./rdp/gfx-canvas";
 import * as input from "./rdp/input";
@@ -27,7 +28,7 @@ const screen = $<HTMLElement>("#screen");
 const field = (name: string) =>
 	form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-/** 前回選んだつなぐ先・画面の大きさ・ユーザー名(パスワードは覚えない) */
+/** 前回選んだつなぐ先・画面の大きさ・ユーザー名・H.264 の入り切り(パスワードは覚えない) */
 const REMEMBER = "mado:last";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -190,21 +191,10 @@ window.addEventListener("unhandledrejection", (e) =>
 	noteError(describe(e.reason)),
 );
 
-/** Fast-Path の更新の種類の名前 */
-const UPDATE_NAMES: Record<number, string> = {
-	0: "orders",
-	1: "bitmap",
-	2: "palette",
-	3: "sync",
-	4: "surfcmds",
-	5: "ptr-null",
-	6: "ptr-default",
-	8: "ptr-pos",
-	9: "ptr-color",
-	10: "ptr-cached",
-	11: "ptr-new",
-	12: "ptr-large",
-};
+/** Fast-Path の更新の種類の名前(fastpath.ts の UPDATE から) */
+const UPDATE_NAMES: Record<number, string> = Object.fromEntries(
+	Object.entries(UPDATE).map(([name, code]) => [code, name.toLowerCase()]),
+);
 
 function diagText(
 	client: RdpClient,
@@ -212,14 +202,15 @@ function diagText(
 	workers: boolean,
 ): string {
 	const lines = [
-		`mado ${session.version}  方式: ${gfx ? "H.264(GFX)" : "RemoteFX / ビットマップ"}  復号: ${workers ? "Worker" : "その場"}`,
+		`mado ${session.version}  方式: ${gfx ? "H.264(GFX)" : "ビットマップ / RemoteFX"}  復号の場所: ${workers ? "Worker" : "その場"}`,
 		`画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}`,
 		`更新: ${
 			Object.entries(client.stats)
 				.map(([k, v]) => `${UPDATE_NAMES[Number(k)] ?? k}=${v}`)
 				.join(" ") || "-"
 		}`,
-		`RemoteFX: 間引き=${client.surfaceStats.coalesced} 捨てた=${client.surfaceStats.skipped}`,
+		// 間引き・捨てたは、RemoteFX のタイルと旧ビットマップの両方を数える
+		`復号: 間引き=${client.surfaceStats.coalesced} 捨てた=${client.surfaceStats.skipped}`,
 	];
 	if (gfx)
 		lines.push(

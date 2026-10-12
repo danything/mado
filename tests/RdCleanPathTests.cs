@@ -4,7 +4,7 @@ public class RdCleanPathTests
 {
     static byte[] Field(int n, byte[] v) => Der.Write(Der.Context(n), v);
 
-    /// <summary>IronRDP が送ってくる形の要求(version / destination / proxy_auth / x224)</summary>
+    /// <summary>ブラウザ(web/rdp/rdcleanpath.ts)が送る形の要求(version / destination / proxy_auth / x224)</summary>
     static byte[] Request(byte[] x224) => Der.Write(Der.Sequence,
         Field(0, Der.WriteInteger(RdCleanPath.Version)),
         Field(2, Der.WriteUtf8("mado")),
