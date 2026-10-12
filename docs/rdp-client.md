@@ -73,8 +73,9 @@ WebSocket に移るときは、`newToken` でトークンを取り直す。mado 
 - H.264 を使わないときも、Windows は ClearCodec(NSCodec を含む)と RemoteFX Progressive(写真やスクロールで新しく見えた部分)で送る
 - 版 8.1(AVC420)だけを宣言すると、Windows は版 8 を選んで H.264 を使わなかった。そのため版 10 以上も宣言する。宣言する組み合わせは FreeRDP の `rdpgfx_send_supported_caps` と同じ。選ばれた版は診断の「GFX: 版=」で分かる
 - Progressive は、同じフレームの前の PDU で送ったタイルを、後の PDU の矩形にも描かせる(矩形だけでタイルの無い PDU も来る。符号化の文脈 codecContextId を並行して使う)。そのため、PDU ごとに「このフレームで復号したタイル全部」をその PDU の矩形で切って描く(FreeRDP の `update_tiles` と同じ)。その PDU のタイルだけを描くと、窓を動かしたあとの空いたところが描かれずに残像になった
+- 接続の種類(Client Core の connectionType)を AUTODETECT にすると、Windows は Client Info の performanceFlags を無視して見た目を自分で決め、壁紙も出した。そのため connectionType は LAN にし、回線の測定は SUPPORT_NETCHAR_AUTODETECT だけで続ける。performanceFlags では、壁紙、ドラッグ中の中身、メニューのアニメーション、テーマ、カーソルの影を切る
 - 版 10.7 を選んだ Windows は、既定の設定では静止した画面を ClearCodec / Progressive で送り、H.264 は動きの多い部分に使う
-- グループ ポリシー「H.264/AVC 444 グラフィックス モードを優先する」を有効にすると、全面を AVC444 で送ってくる。ブラウザ側は 2 本の復号と CPU での合成で 1 フレーム約 20ms かかり、動きが続くと遅延が溜まる。既定の設定のほうが軽い
+- グループ ポリシー「H.264/AVC 444 グラフィックス モードを優先する」を有効にすると、全面を AVC444 で送ってくる。ブラウザ側は 2 本の復号と面の読み出しで 1 フレーム約 15ms かかる(合成は GPU で約 1ms)。動きが続くと遅延が溜まるので、既定の設定のほうが軽い
 - GPU を割り当てた VM(`tools/hyperv-test/add-gpu.ps1`)で「すべてのリモート デスクトップ サービス セッションでハードウェアの既定のグラフィックス アダプターを使用する」を有効にすると、接続から最初の画面まで約 40 秒かかった。無効なら約 3 秒
 
 ## AVC444
