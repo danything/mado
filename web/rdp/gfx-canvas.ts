@@ -8,6 +8,7 @@ import {
 	type Rect,
 	type VideoFrameLike,
 } from "./gfx";
+import { videoFrameYuv, type Yuv420 } from "./yuv444";
 
 type Canvas2D = OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
 
@@ -389,6 +390,19 @@ export class WebCodecsAvc implements AvcDecoder {
 				resolve(null);
 			}
 		});
+	}
+
+	/** AVC444 用: 1 枚を復号して YUV420 の 3 面を読み出す(I420 / NV12 でなければ null) */
+	async decodeYuv(stream: Uint8Array, key: boolean): Promise<Yuv420 | null> {
+		const frame = await this.decode(stream, key);
+		if (!frame) return null;
+		try {
+			return (await videoFrameYuv(frame as VideoFrame)) ?? null;
+		} catch {
+			return null;
+		} finally {
+			frame.close();
+		}
 	}
 
 	private reset(codec: string): void {

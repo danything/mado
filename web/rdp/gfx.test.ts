@@ -10,15 +10,19 @@ import {
 	CMD,
 	CODEC,
 	capsAdvertise,
+	capsVersionName,
 	codecString,
 	frameAcknowledge,
 	GfxClient,
 	type GfxOps,
 	isKeyFrame,
 	parseAvc420,
+	parseAvc444,
+	parseCapsConfirm,
 	type Rect,
 	splitPdus,
 } from "./gfx";
+import type { Yuv420 } from "./yuv444";
 import { segmentedUncompressed } from "./zgfx";
 
 const pdu = (cmd: number, body: Uint8Array) =>
@@ -135,20 +139,102 @@ function avc420(regions: Rect[], stream: Uint8Array): Uint8Array {
 }
 
 describe("GFX の PDU", () => {
-	test("CapsAdvertise: 版 8.1(AVC420)と版 8。H.264 を使わないときは AVC420 を立てない", () => {
-		const caps = (avc420: string) =>
+	test("CapsAdvertise: 版 8・8.1・10.0〜10.7(FreeRDP と同じ組み合わせ)", () => {
+		const v8 = "04000800" + "04000000" + "00000000";
+		const v81 = (f: string) => ["05010800", "04000000", f].join("");
+		// 10.0、10.1(capsData は 16 バイトの 0)、10.2〜10.6、10.7
+		const v10 = (f: string, f107: string) =>
+			[
+				["02000a00", "04000000", f],
+				["00010a00", "10000000", "00".repeat(16)],
+				...["00020a00", "01030a00", "00040a00", "02050a00", "00060a00"].map(
+					(v) => [v, "04000000", f],
+				),
+				["01070a00", "04000000", f107],
+			]
+				.flat()
+				.join("");
+		// AVC420 と AVC444: 8.1 に AVC420_ENABLED、10.x は何も付けない(10.7 だけ SCALEDMAP_DISABLE)
+		expect(hex(capsAdvertise(true, true))).toBe(
 			"1200" +
-			"0000" +
-			"22000000" +
-			"0200" +
-			"05010800" +
-			"04000000" +
-			avc420 +
-			"04000800" +
-			"04000000" +
-			"00000000";
-		expect(hex(capsAdvertise(true))).toBe(caps("10000000"));
-		expect(hex(capsAdvertise(false))).toBe(caps("00000000"));
+				"0000" +
+				"8e000000" +
+				"0a00" +
+				v8 +
+				v81("10000000") +
+				v10("00000000", "80000000"),
+		);
+		// H.264 なし: 10.x に AVC_DISABLED
+		expect(hex(capsAdvertise(false))).toBe(
+			"1200" +
+				"0000" +
+				"8e000000" +
+				"0a00" +
+				v8 +
+				v81("00000000") +
+				v10("20000000", "a0000000"),
+		);
+		// AVC420 だけ: 10.x は宣言しない
+		expect(hex(capsAdvertise(true))).toBe(
+			["1200", "0000", "22000000", "0200", v8, v81("10000000")].join(""),
+		);
+	});
+
+	test("CapsConfirm: 選ばれた版と flags", () => {
+		expect(
+			parseCapsConfirm(new Writer().u32(0x000a0701).u32(4).u32(0x80).done()),
+		).toEqual({ version: 0x000a0701, flags: 0x80 });
+		expect(
+			parseCapsConfirm(new Writer().u32(0x000a0100).u32(16).zeros(16).done()),
+		).toEqual({ version: 0x000a0100, flags: 0 });
+		expect(capsVersionName(0x000a0701)).toBe("10.7");
+		expect(capsVersionName(0x00080105)).toBe("8.1");
+		expect(capsVersionName(0x00080004)).toBe("8.0");
+		expect(() => parseCapsConfirm(fromHex("0400"))).toThrow();
+	});
+
+	test("AVC444 のストリーム: LC で中身が変わる。長さが足りなければ例外", () => {
+		const one = avc420([{ left: 0, top: 0, right: 8, bottom: 8 }], IDR);
+		const two = avc420([], P);
+		const both = new Writer().u32(one.length).bytes(one).bytes(two).done();
+		const m = parseAvc444(both);
+		expect(m.luma?.regions).toEqual([{ left: 0, top: 0, right: 8, bottom: 8 }]);
+		expect(hex(m.luma?.stream as Uint8Array)).toBe(hex(IDR));
+		expect(m.chroma?.regions).toEqual([]);
+		expect(hex(m.chroma?.stream as Uint8Array)).toBe(hex(P));
+		const lumaOnly = parseAvc444(
+			new Writer()
+				.u32((1 << 30) | one.length)
+				.bytes(one)
+				.done(),
+		);
+		expect(lumaOnly.chroma).toBeUndefined();
+		expect(hex(lumaOnly.luma?.stream as Uint8Array)).toBe(hex(IDR));
+		const chromaOnly = parseAvc444(
+			new Writer()
+				.u32((2 << 30) | one.length)
+				.bytes(one)
+				.done(),
+		);
+		expect(chromaOnly.luma).toBeUndefined();
+		expect(chromaOnly.chroma?.regions.length).toBe(1);
+		expect(() =>
+			parseAvc444(
+				new Writer()
+					.u32((3 << 30) | one.length)
+					.bytes(one)
+					.done(),
+			),
+		).toThrow("LC");
+		// 1 つ目の長さが残りより長い
+		expect(() =>
+			parseAvc444(
+				new Writer()
+					.u32(one.length + 1)
+					.bytes(one)
+					.done(),
+			),
+		).toThrow();
 	});
 
 	test("Frame Acknowledge(queueDepth を付けられる)", () => {
@@ -769,5 +855,138 @@ describe("WireToSurface2", () => {
 		expect(ops.calls).toEqual(["create 1 16x16", "put 1 4,2 8x8 808080ff"]);
 		expect(gfx.stats.progressive).toBe(1);
 		expect(gfx.stats.skipped).toBe(1);
+	});
+});
+
+/** 偽の AVC444 の復号器: 呼ばれた順に、決まった YUV420 の面を返す(null は「出なかった」) */
+class FakeYuvAvc implements AvcDecoder {
+	calls: string[] = [];
+	constructor(private outputs: (Yuv420 | null)[]) {}
+	async decode() {
+		return null;
+	}
+	async decodeYuv(s: Uint8Array, key: boolean, w: number, h: number) {
+		this.calls.push(
+			`${key ? "key" : "delta"} ${w}x${h} ${hex(s.subarray(4, 5))}`,
+		);
+		await new Promise((r) => setTimeout(r, 2));
+		return this.outputs.shift() ?? null;
+	}
+	close() {}
+}
+
+/** 一色の YUV420(w x h) */
+function flat(w: number, h: number, y: number, u: number, v: number): Yuv420 {
+	return {
+		width: w,
+		height: h,
+		y: new Uint8Array(w * h).fill(y),
+		u: new Uint8Array((w * h) / 4).fill(u),
+		v: new Uint8Array((w * h) / 4).fill(v),
+		yStride: w,
+		uStride: w / 2,
+		vStride: w / 2,
+	};
+}
+
+function avc444(lc: number, first: Uint8Array, second?: Uint8Array) {
+	const w = new Writer().u32((lc << 30) | first.length).bytes(first);
+	if (second) w.bytes(second);
+	return w.done();
+}
+
+describe("GfxClient の AVC444", () => {
+	const create = pdu(
+		CMD.CREATESURFACE,
+		new Writer().u16(1).u16(16).u16(16).u8(0x20).done(),
+	);
+	const dest = { left: 0, top: 0, right: 16, bottom: 16 };
+
+	test("版 10 を宣言し、CapsConfirm の版を覚える。主と補助を順に復号して YUV444 で描く", async () => {
+		const ops = new Recorder();
+		// 主の絵は白(Y=255)。補助の絵は色差 128 のまま。次の主の絵は黒
+		const avc = new FakeYuvAvc([
+			flat(16, 16, 255, 128, 128),
+			flat(16, 32, 128, 128, 128),
+			flat(16, 16, 0, 128, 128),
+		]);
+		const gfx = new GfxClient(ops, avc);
+		expect(gfx.avc444Enabled).toBe(true);
+		const ch = channel();
+		gfx.onOpen(ch);
+		expect(hex(ch.sent[0] as Uint8Array)).toBe(hex(capsAdvertise(true, true)));
+		const region = [{ left: 0, top: 0, right: 8, bottom: 8 }];
+		gfx.onData(
+			segmentedUncompressed(
+				concat(
+					pdu(
+						CMD.CAPSCONFIRM,
+						new Writer().u32(0x000a0701).u32(4).u32(0x80).done(),
+					),
+					create,
+					wire(
+						1,
+						CODEC.AVC444,
+						dest,
+						avc444(0, avc420(region, concat(SPS, IDR)), avc420(region, P)),
+					),
+					// 主の絵だけ(v2)。領域なしは全体
+					wire(1, CODEC.AVC444V2, dest, avc444(1, avc420([], P))),
+				),
+			),
+		);
+		await gfx.idle();
+		expect(gfx.confirmedVersion).toBe("10.7 flags=0x80");
+		expect(avc.calls).toEqual([
+			"key 16x16 67",
+			"delta 16x16 41",
+			"delta 16x16 41",
+		]);
+		expect(ops.calls).toEqual([
+			"create 1 16x16",
+			"put 1 0,0 8x8 ffffffff",
+			"put 1 0,0 16x16 000000ff",
+		]);
+		expect(gfx.stats.avc444).toBe(2);
+		expect(gfx.stats.skipped).toBe(0);
+	});
+
+	test("補助の絵が主の絵より先に来たら描かない。出なかったら飛ばした数に入れる", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(
+			ops,
+			new FakeYuvAvc([flat(16, 16, 0, 128, 128), null]),
+		);
+		gfx.onOpen(channel());
+		gfx.onData(
+			segmentedUncompressed(
+				concat(
+					create,
+					wire(1, CODEC.AVC444, dest, avc444(2, avc420([], concat(SPS, IDR)))),
+					wire(1, CODEC.AVC444, dest, avc444(1, avc420([], P))),
+				),
+			),
+		);
+		await gfx.idle();
+		expect(ops.calls).toEqual(["create 1 16x16"]);
+		expect(gfx.stats.skipped).toBe(1);
+	});
+
+	test("AVC444 を復号できない復号器(decodeYuv なし)では版 10 を宣言せず、来たら PDU の失敗にする", async () => {
+		const ops = new Recorder();
+		const gfx = new GfxClient(ops, new FakeAvc());
+		const errors: unknown[] = [];
+		gfx.onError = (e) => errors.push(e);
+		expect(gfx.avc444Enabled).toBe(false);
+		const ch = channel();
+		gfx.onOpen(ch);
+		expect(hex(ch.sent[0] as Uint8Array)).toBe(hex(capsAdvertise(true)));
+		gfx.onData(
+			segmentedUncompressed(
+				concat(create, wire(1, CODEC.AVC444, dest, avc444(1, avc420([], IDR)))),
+			),
+		);
+		await gfx.idle();
+		expect(String(errors[0])).toContain("AVC444");
 	});
 });

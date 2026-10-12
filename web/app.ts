@@ -306,7 +306,7 @@ function diagText(
 		);
 	if (gfx?.active)
 		lines.push(
-			`GFX: ${Object.entries(gfx.stats)
+			`GFX: 版=${gfx.confirmedVersion ?? "-"} ${Object.entries(gfx.stats)
 				.map(([k, v]) => `${k}=${v}`)
 				.join(" ")} clear未対応=${gfx.clearUnsupported}`,
 		);

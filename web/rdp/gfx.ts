@@ -1,5 +1,5 @@
 // Graphics Pipeline([MS-RDPEGFX]、動的チャネル Microsoft::Windows::RDS::Graphics)。
-// サーバーが面(surface)を作り、コーデック(H.264 の AVC420、ClearCodec、Planar、RemoteFX Progressive、生)で描き、面を画面へ写す。
+// サーバーが面(surface)を作り、コーデック(H.264 の AVC420 / AVC444、ClearCodec、Planar、RemoteFX Progressive、生)で描き、面を画面へ写す。
 // サーバーからの PDU は ZGFX で包まれて来る。こちらからの PDU(Caps・Frame Acknowledge)は包まない。
 // 描画は GfxOps(ブラウザでは canvas、試験では偽物)に任せ、H.264 の復号は AvcDecoder(ブラウザでは VideoDecoder)に任せる。
 
@@ -10,6 +10,7 @@ import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
 import { ProgressiveDecoder } from "./progressive";
 import { decodeStream } from "./rfx";
+import { clampRects, type Yuv420, Yuv444 } from "./yuv444";
 import { Zgfx } from "./zgfx";
 
 export const GRAPHICS = "Microsoft::Windows::RDS::Graphics";
@@ -52,10 +53,24 @@ export const CODEC = {
 	AVC444V2: 0x000f,
 } as const;
 
-/** 版 8.1 で AVC420 を使う。版 10 以上は AVC444 も使えることになるので宣言しない */
+/**
+ * 能力の版([MS-RDPEGFX] 2.2.3)。版 8.1 は AVC420 を使えるかを AVC420_ENABLED で、版 10 以上は使えないことを AVC_DISABLED で伝える。
+ * 版 10 以上で AVC_DISABLED を付けないと AVC444 / AVC444v2 も使えることになる。
+ * GPU の無い Windows 11 は 8.1 の AVC420 では H.264 を使わず版 8 を選んだ。版 10 以上なら H.264(AVC444)を使う
+ */
 const CAPVERSION_8 = 0x00080004;
 const CAPVERSION_81 = 0x00080105;
+/** 版 10.0 〜 10.7。10.1 だけ capsData が 16 バイト(予約で 0) */
+const CAPVERSION_10 = [
+	0x000a0002, 0x000a0100, 0x000a0200, 0x000a0301, 0x000a0400, 0x000a0502,
+	0x000a0600, 0x000a0701,
+];
+const CAPVERSION_101 = 0x000a0100;
+const CAPVERSION_107 = 0x000a0701;
 const CAPS_FLAG_AVC420_ENABLED = 0x10;
+const CAPS_FLAG_AVC_DISABLED = 0x20;
+/** 版 10.7: MapSurfaceToScaledOutput / Window を送らせない(拡縮して写すことはしない) */
+const CAPS_FLAG_SCALEDMAP_DISABLE = 0x80;
 
 const PIXEL_FORMAT_ARGB = 0x21;
 
@@ -116,6 +131,16 @@ export interface AvcDecoder {
 		width: number,
 		height: number,
 	): Promise<VideoFrameLike | null>;
+	/**
+	 * AVC444 用: 復号した 1 枚を YUV420 の 3 面で返す(何も出なければ null)。decode と同じ流れ(同じ復号器)で復号する。
+	 * これがあるときだけ版 10 以上(AVC444 を使える)を宣言する
+	 */
+	decodeYuv?(
+		annexB: Uint8Array,
+		key: boolean,
+		width: number,
+		height: number,
+	): Promise<Yuv420 | null>;
 	close(): void;
 }
 
@@ -157,14 +182,46 @@ function header(cmd: number, body: Uint8Array): Uint8Array {
 		.done();
 }
 
-/** CapsAdvertise: 版 8.1 と版 8。avc なら版 8.1 で AVC420 を使えると伝える(H.264 を復号できないときは伝えない) */
-export function capsAdvertise(avc: boolean): Uint8Array {
-	const w = new Writer(32).u16(2);
-	w.u32(CAPVERSION_81)
-		.u32(4)
-		.u32(avc ? CAPS_FLAG_AVC420_ENABLED : 0);
-	w.u32(CAPVERSION_8).u32(4).u32(0);
+/**
+ * CapsAdvertise(FreeRDP の rdpgfx_send_supported_caps と同じ組み合わせ): 版 8 と 8.1(avc420 なら AVC420_ENABLED)、
+ * それに版 10.0 〜 10.7。版 10 以上は、AVC444 を使える(avc444)ときは何も付けず、H.264 を使わないときは AVC_DISABLED を付ける。
+ * AVC420 だけ使えるときは版 10 以上を宣言しない(AVC444 で送られても困る)
+ */
+export function capsAdvertise(avc420: boolean, avc444 = false): Uint8Array {
+	const sets: [number, number][] = [
+		[CAPVERSION_8, 0],
+		[CAPVERSION_81, avc420 ? CAPS_FLAG_AVC420_ENABLED : 0],
+	];
+	if (!avc420 || avc444) {
+		const flags = avc444 ? 0 : CAPS_FLAG_AVC_DISABLED;
+		for (const v of CAPVERSION_10)
+			sets.push([
+				v,
+				v === CAPVERSION_107 ? flags | CAPS_FLAG_SCALEDMAP_DISABLE : flags,
+			]);
+	}
+	const w = new Writer(160).u16(sets.length);
+	for (const [v, flags] of sets) {
+		if (v === CAPVERSION_101) w.u32(v).u32(16).zeros(16);
+		else w.u32(v).u32(4).u32(flags);
+	}
 	return header(CMD.CAPSADVERTISE, w.done());
+}
+
+/** CapsConfirm: サーバーが選んだ版と flags */
+export function parseCapsConfirm(body: Uint8Array): {
+	version: number;
+	flags: number;
+} {
+	const r = new Reader(body);
+	const version = r.u32();
+	const len = r.u32();
+	return { version, flags: len >= 4 ? r.u32() : 0 };
+}
+
+/** 版の名前(0x000A0701 → "10.7") */
+export function capsVersionName(version: number): string {
+	return `${version >>> 16}.${(version >>> 8) & 0xff}`;
 }
 
 /**
@@ -222,6 +279,30 @@ export function parseAvc420(data: Uint8Array): Avc420 {
 		quality.push({ qp: qp & 0x3f, quality: r.u8() });
 	}
 	return { regions, quality, stream: r.rest() };
+}
+
+type Avc444 = { luma?: Avc420; chroma?: Avc420 };
+
+/**
+ * RDPGFX_AVC444_BITMAP_STREAM(AVC444v2 も同じ形): 先頭の u32 の下 30 ビットが 1 つ目の AVC420(メタブロックを含む)の長さ、
+ * 上 2 ビット(LC)が中身。0 = 1 つ目が主の絵・2 つ目が補助の絵、1 = 主の絵だけ、2 = 補助の絵だけ(どちらも 1 つ目に)
+ */
+export function parseAvc444(data: Uint8Array): Avc444 {
+	const r = new Reader(data);
+	const info = r.u32();
+	const lc = info >>> 30;
+	switch (lc) {
+		case 0: {
+			const luma = parseAvc420(r.bytes(info & 0x3fffffff));
+			return { luma, chroma: parseAvc420(r.rest()) };
+		}
+		case 1:
+			return { luma: parseAvc420(r.rest()) };
+		case 2:
+			return { chroma: parseAvc420(r.rest()) };
+		default:
+			throw new Error("AVC444: LC が不正");
+	}
 }
 
 /** Annex B の NAL を順に(開始符号 00 00 01 / 00 00 00 01 の後ろ) */
@@ -289,10 +370,15 @@ export class GfxClient implements DynamicHandler {
 	readonly latency = new FrameLatency();
 	/** H.264 の復号が続けて失敗した数(1 枚でも出れば 0 に戻す) */
 	private avcFailures = 0;
+	/** AVC444 の YUV444(面ごと。主の絵と補助の絵が別々に来るので前のものを持つ) */
+	private yuv444 = new Map<number, Yuv444>();
+	/** サーバーが選んだ能力の版と flags(CapsConfirm) */
+	confirmed?: { version: number; flags: number };
 	/** 診断用 */
 	readonly stats = {
 		frames: 0,
 		avc: 0,
+		avc444: 0,
 		clear: 0,
 		planar: 0,
 		uncompressed: 0,
@@ -338,9 +424,20 @@ export class GfxClient implements DynamicHandler {
 		return this.avc !== undefined;
 	}
 
+	/** AVC444 も使えると伝えたか(版 10 以上) */
+	get avc444Enabled(): boolean {
+		return this.avc?.decodeYuv !== undefined;
+	}
+
+	/** サーバーが選んだ版(診断用。例 "10.7 flags=0x80") */
+	get confirmedVersion(): string | undefined {
+		const c = this.confirmed;
+		return c && `${capsVersionName(c.version)} flags=0x${c.flags.toString(16)}`;
+	}
+
 	onOpen(channel: DynamicChannel): void {
 		this.channel = channel;
-		channel.send(capsAdvertise(this.avc !== undefined));
+		channel.send(capsAdvertise(this.avcEnabled, this.avc444Enabled));
 	}
 
 	onClose(): void {
@@ -380,6 +477,8 @@ export class GfxClient implements DynamicHandler {
 		const r = new Reader(p.body);
 		switch (p.cmd) {
 			case CMD.CAPSCONFIRM:
+				this.confirmed = parseCapsConfirm(p.body);
+				break;
 			case CMD.DELETEENCODINGCONTEXT: // Progressive の文脈。タイルの状態は面ごとに持つので使わない(FreeRDP と同じ)
 				break;
 			case CMD.RESETGRAPHICS: {
@@ -411,6 +510,7 @@ export class GfxClient implements DynamicHandler {
 				this.surfacePixels = pixels + width * height;
 				this.surfaces.set(id, { width, height, alpha });
 				this.progressive.deleteSurface(id);
+				this.yuv444.delete(id);
 				this.ops.createSurface(id, width, height, alpha);
 				break;
 			}
@@ -420,6 +520,7 @@ export class GfxClient implements DynamicHandler {
 				if (old) this.surfacePixels -= old.width * old.height;
 				this.surfaces.delete(id);
 				this.progressive.deleteSurface(id);
+				this.yuv444.delete(id);
 				this.ops.deleteSurface(id);
 				break;
 			}
@@ -430,7 +531,7 @@ export class GfxClient implements DynamicHandler {
 				break;
 			}
 			case CMD.MAPSURFACETOSCALEDOUTPUT: {
-				// 拡縮は宣言していないので来ないはず。来たら等倍で写す
+				// 版 10.7 は SCALEDMAP_DISABLE で断っている(10.7 より前の版でも拡縮は使われないはず)。来たら等倍で写す
 				const id = r.u16();
 				r.u16();
 				this.ops.mapSurface(id, r.u32(), r.u32());
@@ -662,12 +763,74 @@ export class GfxClient implements DynamicHandler {
 				}
 				break;
 			}
+			case CODEC.AVC444:
+			case CODEC.AVC444V2:
+				await this.avc444(id, codec === CODEC.AVC444V2, dest, data);
+				break;
 			case CODEC.ALPHA:
 				this.ops.setAlpha(id, dest, alphaCodec(data, w, h));
 				break;
 			default:
-				// AVC444 は宣言していないので来ないはず
 				this.stats.skipped++;
+		}
+	}
+
+	/**
+	 * AVC444 / AVC444v2: 主の絵と補助の絵を同じ復号器で順に復号し(1 本の H.264 の流れ。FreeRDP と同じ)、面ごとの YUV444 に重ねて描く。
+	 * 片方だけ来たときは、もう片方は前のものを使う
+	 */
+	private async avc444(
+		id: number,
+		v2: boolean,
+		dest: Rect,
+		data: Uint8Array,
+	): Promise<void> {
+		const decodeYuv = this.avc?.decodeYuv?.bind(this.avc);
+		if (!decodeYuv) throw new Error("GFX: AVC444 の復号器が無い");
+		const w = dest.right - dest.left;
+		const h = dest.bottom - dest.top;
+		const m = parseAvc444(data);
+		this.stats.avc444++;
+		let st = this.yuv444.get(id);
+		if (!st || st.width !== w || st.height !== h) {
+			st = new Yuv444(w, h);
+			this.yuv444.set(id, st);
+		}
+		// 片方が出なくても、もう片方は復号器に渡す(参照の鎖を切らない)
+		const luma =
+			m.luma &&
+			(await decodeYuv(m.luma.stream, isKeyFrame(m.luma.stream), w, h));
+		const chroma =
+			m.chroma &&
+			(await decodeYuv(m.chroma.stream, isKeyFrame(m.chroma.stream), w, h));
+		const drawn: Rect[] = [];
+		if (m.luma && luma) {
+			const rects = clampRects(m.luma.regions, w, h);
+			st.luma(luma, rects);
+			drawn.push(...rects);
+		}
+		if (m.chroma && chroma) {
+			const rects = clampRects(m.chroma.regions, w, h);
+			if (st.chroma(chroma, v2, rects)) drawn.push(...rects);
+		}
+		if ((m.luma && !luma) || (m.chroma && !chroma)) {
+			this.stats.skipped++;
+			// 鍵フレームを待つ間も null なので、すぐには諦めない
+			if (++this.avcFailures === AVC_GIVE_UP) this.onAvcBroken?.();
+		} else this.avcFailures = 0;
+		const seen = new Set<string>();
+		for (const r of drawn) {
+			const key = `${r.left},${r.top},${r.right},${r.bottom}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			this.ops.putRgba(
+				id,
+				dest.left + r.left,
+				dest.top + r.top,
+				r.right - r.left,
+				r.bottom - r.top,
+				st.rgba(r),
+			);
 		}
 	}
 }
