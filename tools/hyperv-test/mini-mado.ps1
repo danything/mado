@@ -44,6 +44,9 @@ while ($listener.IsListening) {
 	$path = $ctx.Request.Url.AbsolutePath
 	$res = $ctx.Response
 	try {
+		# ほかのサイト(ブラウザで開いた別のページ)から中継や試験用の口を使わせない
+		$origin = $ctx.Request.Headers['Origin']
+		if ($origin -and $origin -ne "http://localhost:$Port") { $res.StatusCode = 403; $res.Close(); continue }
 		if ($path -eq '/ws' -and $ctx.Request.IsWebSocketRequest) {
 			$wsctx = $ctx.AcceptWebSocketAsync([NullString]::Value).GetAwaiter().GetResult()
 			$null = [Mado.MiniRelay]::Run($wsctx.WebSocket, $Target, $TargetPort)
