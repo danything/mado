@@ -27,7 +27,7 @@
     <!-- WebTransport に使う msquic(Windows の SChannel 版)。Microsoft 自身のパッケージ。BBR は 2.2 から。
          C++ 向けのパッケージで .NET の出力には自動で入らないので、下の CopyMsQuicBuild / CopyMsQuicPublish で exe の隣に置く。
          .NET の runtime pack の msquic.dll は System.Net.Quic のためのもので、版も出力に入るかも .NET 次第なので頼らない -->
-    <PackageReference Include="Microsoft.Native.Quic.MsQuic.Schannel" Version="2.6.2" GeneratePathProperty="true" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.Native.Quic.MsQuic.Schannel" Version="2.6.3" GeneratePathProperty="true" ExcludeAssets="all" />
   </ItemGroup>
   <PropertyGroup>
     <MsQuicDll>$(PkgMicrosoft_Native_Quic_MsQuic_Schannel)/build/native/bin/x64/msquic.dll</MsQuicDll>
