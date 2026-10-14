@@ -14,6 +14,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Security;
+using System.Security.Authentication;
 using System.Reflection;
 using Mado;
 using Mado.Quic;
@@ -87,6 +88,7 @@ builder.WebHost.ConfigureKestrel(k =>
             OnConnection = _ => ValueTask.FromResult(new SslServerAuthenticationOptions
             {
                 ServerCertificateContext = current ?? throw new InvalidOperationException("証明書がまだ無い"),
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
             }),
         }));
     if (config.StatusPort != 0) k.Listen(IPAddress.Loopback, config.StatusPort);

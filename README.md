@@ -35,7 +35,7 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 | `installer/` | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限 |
 | `tools/wt-e2e/` | WebTransport の試験。Linux のコンテナで mado と xrdp を動かし、headless の Chromium でつなぐ |
 
-RDP サーバーとの TLS は `SslStream`(SChannel)なので、RDP の自己署名証明書でもつながる。
+RDP サーバーとの TLS は `SslStream`(SChannel)なので、RDP の自己署名証明書でもつながる。TLS はブラウザ側も RDP 側も 1.2 以上だけを使う(WebTransport の QUIC は 1.3)。
 
 ## 使い方
 
