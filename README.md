@@ -119,7 +119,7 @@ dotnet run tray/make-icon.cs tray/mado.ico   # アイコンを作り直す
 bun run check                              # 画面の biome、tsc、テスト(bun test web)
 ```
 
-main にマージすると自動でリリースする。`server/Mado.csproj` の `<Version>` を上げていれば、その版のタグを打って MSI を出す(`release.yml`)。版を上げていなければリリースしない。
+リリースは `v1.2.3` の形のタグを push すると自動で行う(`git tag v1.2.3 && git push origin v1.2.3`)。版の数字はタグから取るので、csproj は書き換えない。main に入っているコミットに打ったタグだけを出す(`release.yml`)。
 
 bun や .NET が手元に無ければ、`oven/bun` と `mcr.microsoft.com/dotnet/sdk:10.0` のコンテナで同じことができる。
 exe(Native AOT)と MSI は Windows でしか作れないので、CI(`windows-latest`)で作る。
