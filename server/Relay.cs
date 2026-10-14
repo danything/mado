@@ -125,6 +125,7 @@ internal static class Relay
             await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
             {
                 TargetHost = target.Host,
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
                 // RDP の証明書は自己署名なので検証はしない。CredSSP がこの証明書の公開鍵に結びつけて認証する
                 RemoteCertificateValidationCallback = (_, cert, ch, _) =>
                 {
