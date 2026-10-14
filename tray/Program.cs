@@ -168,13 +168,13 @@ internal static unsafe partial class Program
         var s = status;
         var up = s is not null;
         var tip = s is null
-            ? "mado: 止まっている(サービスに聞けない)"
-            : $"mado {s.Version}\nつないでいる: {s.Sessions}"
-              + (s.CertDaysLeft is { } d ? $"\n証明書: 残り {d} 日" : "")
-              + (s.Available ? $"\n新しい版 {s.Latest} がある" : "");
+            ? "mado: 停止中(サービスに接続できません)"
+            : $"mado {s.Version}\n接続中: {s.Sessions}"
+              + (s.CertDaysLeft is { } d ? $"\n証明書の残り: {d} 日" : "")
+              + (s.Available ? $"\n新しいバージョン {s.Latest} があります" : "");
         Modify(up ? appIcon : warnIcon, tip);
         if (wasUp is { } before && before != up)
-            Balloon(up ? "mado が動き出した" : "mado が止まった", up ? $"{s!.Version}" : "サービス mado に聞けない。右クリックから再起動できる", !up);
+            Balloon(up ? "mado が起動しました" : "mado が停止しました", up ? $"{s!.Version}" : "右クリックのメニューから再起動できます", !up);
         wasUp = up;
         if (s is not null) RestartIfUpdated(s.Version);
     }
@@ -241,9 +241,9 @@ internal static unsafe partial class Program
         var s = status;
         var menu = CreatePopupMenu();
         AppendMenuW(menu, s is null ? 1u /* MF_GRAYED */ : 0, MenuOpen, s is null ? "画面を開く" : $"{new Uri(s.Origin).Host} を開く");
-        AppendMenuW(menu, s is null ? 1u : 0, MenuUpdate, "今すぐ更新を確かめる");
+        AppendMenuW(menu, s is null ? 1u : 0, MenuUpdate, "更新を確認");
         AppendMenuW(menu, 0x800 /* MF_SEPARATOR */, 0, null);
-        AppendMenuW(menu, 0, MenuRestart, "サービスを再起動する…");
+        AppendMenuW(menu, 0, MenuRestart, "サービスを再起動…");
         AppendMenuW(menu, 0, MenuLog, "ログを開く…");
         AppendMenuW(menu, 0x800, 0, null);
         AppendMenuW(menu, 0, MenuExit, "終了");
@@ -490,17 +490,17 @@ internal static class Net
             var st = doc.RootElement.GetProperty("state");
             var latest = st.TryGetProperty("latest", out var l) ? l.GetString() : null;
             var error = st.TryGetProperty("error", out var e) ? e.GetString() : null;
-            if (started) return ("mado を更新する", $"{latest} を入れている。少しのあいだ止まる", false);
+            if (started) return ("mado を更新中", $"{latest} をインストールしています。少しの間止まります", false);
             if (error is not null) return ("mado の更新", error, true);
             if (st.TryGetProperty("available", out var a) && a.GetBoolean())
-                return ("mado の更新", $"{latest} があるが、つないでいる人がいるので後で入れる", false);
+                return ("mado の更新", $"{latest} があります。接続中の人がいるので、あとでインストールします", false);
             // 自動更新が止まっているときは確かめないので、最新の版が空のまま返る
-            if (string.IsNullOrEmpty(latest)) return ("mado の更新", "更新を確かめていない。自動更新が止まっているかもしれない", false);
-            return ("mado の更新", $"新しい版は無い(最新は {latest})", false);
+            if (string.IsNullOrEmpty(latest)) return ("mado の更新", "更新を確認していません。自動更新がオフになっているかもしれません", false);
+            return ("mado の更新", $"最新です({latest})", false);
         }
         catch (Exception ex)
         {
-            return ("mado の更新", $"確かめられなかった: {ex.Message}", true);
+            return ("mado の更新", $"更新を確認できませんでした: {ex.Message}", true);
         }
     }
 }
