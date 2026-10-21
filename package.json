@@ -8,7 +8,7 @@
 	},
 	"devDependencies": {
 		"@anyblades/blades": "3.0.0",
-		"@biomejs/biome": "^2.5.15",
+		"@biomejs/biome": "^2.6.2",
 		"@types/bun": "^1.4.3",
 		"typescript": "~6.0.3"
 	}
