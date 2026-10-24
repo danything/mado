@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    // `new Array(n)` で長さを決めた表を作る (fill するか、あとで添字で埋める)
+    "unicorn/no-new-array": "off",
+    // 試験で `[...typed.slice()]` は型付き配列を配列にして比べ、`...[a, b]` は 1 組ずつ並べて見せる
+    "unicorn/no-useless-spread": "off"
+  },
+  // 見るのは画面 (web/) だけ (biome のときと同じ)。tools/ は手で回す試験・計測
+  "ignorePatterns": ["tools/"]
+}

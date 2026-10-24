@@ -116,7 +116,8 @@ bun run build:web                          # 画面を dist/web にビルド(ser
 dotnet run --project tests/Mado.Tests.csproj   # テスト(TUnit)
 dotnet run --project server/Mado.csproj -- --config mado.dev.json   # "tls": "off" なら http で試せる
 dotnet run tray/make-icon.cs tray/mado.ico   # アイコンを作り直す
-bun run check                              # 画面の biome、tsc、テスト(bun test web)
+bun run lint                               # 画面の oxlint と書式 (bun fmt --check)。直すのは bun run format
+bun run check                              # tsc、テスト(bun test web)
 ```
 
 リリースは `v1.2.3` の形のタグを push すると自動で行う(`git tag v1.2.3 && git push origin v1.2.3`)。版の数字はタグから取るので、csproj は書き換えない。main に入っているコミットに打ったタグだけを出す(`release.yml`)。

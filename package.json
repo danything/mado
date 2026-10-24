@@ -1,15 +1,17 @@
 {
-	"name": "mado-web",
-	"private": true,
-	"type": "module",
-	"scripts": {
-		"build:web": "bun tools/build-web.ts",
-		"check": "biome check --write && tsc --noEmit && bun test web"
-	},
-	"devDependencies": {
-		"@anyblades/blades": "3.0.0",
-		"@biomejs/biome": "^2.6.2",
-		"@types/bun": "^1.4.4",
-		"typescript": "~6.0.3"
-	}
+  "name": "mado-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "bun tools/build-web.ts",
+    "check": "tsc --noEmit && bun test web",
+    "lint": "oxlint && bun fmt --check",
+    "format": "oxlint --fix && bun fmt"
+  },
+  "devDependencies": {
+    "@anyblades/blades": "3.0.0",
+    "@types/bun": "^1.4.4",
+    "oxlint": "^1.89.0",
+    "typescript": "~6.0.3"
+  }
 }

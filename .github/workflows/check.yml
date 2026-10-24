@@ -22,7 +22,7 @@ jobs:
           key: check-${{ runner.os }}-${{ hashFiles('bun.lock', '**/*.csproj') }}
           restore-keys: check-${{ runner.os }}-
       - run: bun i --frozen-lockfile
-      - run: bunx biome ci
+      - run: bun run lint
       - run: bunx tsc --noEmit
       - run: bun test web
       # 画面を先に作る(server が exe に埋め込む)
