@@ -6,30 +6,30 @@ import { DISPLAYCONTROL, DisplayControl, DynamicChannels } from "./dvc";
 import { type GfxClient, GRAPHICS } from "./gfx";
 
 export type Channels = {
-	displayControl: DisplayControl;
-	clipboard: Clipboard;
+  displayControl: DisplayControl;
+  clipboard: Clipboard;
 };
 
 /** onRemoteText はサーバー側でコピーされた文字列を受ける。ブラウザのクリップボードへは呼び出し側が入れる */
 export function attachChannels(
-	client: RdpClient,
-	onRemoteText: (text: string) => void,
-	/** GFX の受け手。connect で gfx を頼んだときに渡す */
-	options: { gfx?: GfxClient } = {},
+  client: RdpClient,
+  onRemoteText: (text: string) => void,
+  /** GFX の受け手。connect で gfx を頼んだときに渡す */
+  options: { gfx?: GfxClient } = {},
 ): Channels {
-	const dvc = new DynamicChannels((data) =>
-		client.sendChannel("drdynvc", data),
-	);
-	const displayControl = new DisplayControl();
-	dvc.register(DISPLAYCONTROL, displayControl);
-	if (options.gfx) dvc.register(GRAPHICS, options.gfx);
-	const clipboard = new Clipboard(
-		(data) => client.sendChannel("cliprdr", data),
-		onRemoteText,
-	);
-	client.onChannel = (name, data) => {
-		if (name === "drdynvc") dvc.onStatic(data);
-		else if (name === "cliprdr") clipboard.onStatic(data);
-	};
-	return { displayControl, clipboard };
+  const dvc = new DynamicChannels((data) =>
+    client.sendChannel("drdynvc", data),
+  );
+  const displayControl = new DisplayControl();
+  dvc.register(DISPLAYCONTROL, displayControl);
+  if (options.gfx) dvc.register(GRAPHICS, options.gfx);
+  const clipboard = new Clipboard(
+    (data) => client.sendChannel("cliprdr", data),
+    onRemoteText,
+  );
+  client.onChannel = (name, data) => {
+    if (name === "drdynvc") dvc.onStatic(data);
+    else if (name === "cliprdr") clipboard.onStatic(data);
+  };
+  return { displayControl, clipboard };
 }

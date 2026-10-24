@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+        # bun fmt (bun run lint) は 1.4.4 から
+        with:
+          bun-version: 1.4.4
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.402
@@ -22,7 +25,7 @@ jobs:
           key: check-${{ runner.os }}-${{ hashFiles('bun.lock', '**/*.csproj') }}
           restore-keys: check-${{ runner.os }}-
       - run: bun i --frozen-lockfile
-      - run: bunx biome ci
+      - run: bun run lint
       - run: bunx tsc --noEmit
       - run: bun test web
       # 画面を先に作る(server が exe に埋め込む)

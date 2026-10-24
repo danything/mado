@@ -8,24 +8,23 @@ import { type DecodeJob, decodeJob } from "./rfxpool";
 export type WorkerRequest = DecodeJob & { id: number };
 
 export type WorkerReply =
-	| { id: number; rgba: Uint8ClampedArray }
-	| { id: number; error: string };
+  { id: number; rgba: Uint8ClampedArray } | { id: number; error: string };
 
 // lib に WebWorker を入れると DOM と衝突するので、必要な口だけを型にする
 const ctx = self as unknown as {
-	onmessage: ((e: { data: WorkerRequest }) => void) | null;
-	postMessage(message: WorkerReply, transfer?: Transferable[]): void;
+  onmessage: ((e: { data: WorkerRequest }) => void) | null;
+  postMessage(message: WorkerReply, transfer?: Transferable[]): void;
 };
 
 ctx.onmessage = (e) => {
-	const req = e.data;
-	try {
-		const rgba = decodeJob(req);
-		ctx.postMessage({ id: req.id, rgba }, [rgba.buffer]);
-	} catch (err) {
-		ctx.postMessage({
-			id: req.id,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+  const req = e.data;
+  try {
+    const rgba = decodeJob(req);
+    ctx.postMessage({ id: req.id, rgba }, [rgba.buffer]);
+  } catch (err) {
+    ctx.postMessage({
+      id: req.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 };

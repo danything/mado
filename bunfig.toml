@@ -1,0 +1,14 @@
+# 整形 (`bun fmt`。`package.json` の format・lint から呼ぶ)。書き方は既定のまま、外すものだけ。
+# 見るのは画面 (web/) と一番上の JSON だけ (biome のときと同じ)
+[fmt]
+ignorePatterns = [
+  ".github/",
+  ".nuget/",
+  "docs/",
+  "installer/",
+  "server/",
+  "tests/",
+  "tools/",
+  "tray/",
+  "README.md",
+]
