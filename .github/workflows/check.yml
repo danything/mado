@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+        # bun fmt (bun run lint) は 1.4.4 から
+        with:
+          bun-version: 1.4.4
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.402
