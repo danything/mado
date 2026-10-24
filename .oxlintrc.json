@@ -9,7 +9,5 @@
     "unicorn/no-new-array": "off",
     // 試験で `[...typed.slice()]` は型付き配列を配列にして比べ、`...[a, b]` は 1 組ずつ並べて見せる
     "unicorn/no-useless-spread": "off"
-  },
-  // 見るのは画面 (web/) だけ (biome のときと同じ)。tools/ は手で回す試験・計測
-  "ignorePatterns": ["tools/"]
+  }
 }

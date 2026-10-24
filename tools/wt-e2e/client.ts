@@ -3,4 +3,8 @@ import { openTransport } from "../../web/rdp/connect";
 import * as cleanpath from "../../web/rdp/rdcleanpath";
 import * as x224 from "../../web/rdp/x224";
 
-(globalThis as unknown as { e2e: unknown }).e2e = { openTransport, cleanpath, x224 };
+(globalThis as unknown as { e2e: unknown }).e2e = {
+  openTransport,
+  cleanpath,
+  x224,
+};
