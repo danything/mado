@@ -9,8 +9,8 @@ const n = 64 * 1024;
 const data = new Uint8Array(n);
 let seed = 1;
 for (let i = 0; i < n; i++) {
-	seed = (seed * 1103515245 + 12345) >>> 0;
-	data[i] = i % 97 < 60 ? (data[i - 7] ?? 0) : seed >>> 24;
+  seed = (seed * 1103515245 + 12345) >>> 0;
+  data[i] = i % 97 < 60 ? (data[i - 7] ?? 0) : seed >>> 24;
 }
 const packed = encode(data);
 const z = new Zgfx();
@@ -20,5 +20,5 @@ const t0 = performance.now();
 for (let i = 0; i < rounds; i++) z.decompress(packed);
 const ms = performance.now() - t0;
 console.log(
-	`${(packed.length / 1024).toFixed(1)} KB → ${(n / 1024).toFixed(0)} KB: ${(ms / rounds).toFixed(3)} ms / 回、${((n * rounds) / 1e6 / (ms / 1000)).toFixed(1)} MB/s`,
+  `${(packed.length / 1024).toFixed(1)} KB → ${(n / 1024).toFixed(0)} KB: ${(ms / rounds).toFixed(3)} ms / 回、${((n * rounds) / 1e6 / (ms / 1000)).toFixed(1)} MB/s`,
 );

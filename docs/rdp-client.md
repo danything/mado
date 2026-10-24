@@ -5,17 +5,17 @@ RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは R
 
 ## 層とファイル
 
-| 層 | 内容 | ファイル |
-| --- | --- | --- |
-| 接続 | RDCleanPath(X.224 の接続要求を送り、接続確認と証明書チェーンを受け取る)、WebTransport / WebSocket の道、TPKT / Fast-Path の切り出し | `rdcleanpath.ts` `x224.ts` `stream.ts` |
-| 認証 | CredSSP と NTLMv2。MD4 / MD5 / RC4 / HMAC-MD5 は自前。Kerberos は未対応 | `credssp.ts` `ntlm.ts` `crypto.ts` `der.ts` |
-| 接続シーケンス | MCS / GCC、Client Info、ライセンス、Demand / Confirm Active、同期、Deactivate-Reactivate、回線の自動検出 | `connect.ts` `mcs.ts` `pdu.ts` `autodetect.ts` |
-| 画面(旧来) | 旧ビットマップ(planar 32bpp、Interleaved RLE)、RemoteFX(Surface Commands)、Frame Acknowledge、古い更新の間引き、Web Worker での復号 | `bitmap.ts` `rfx.ts` `surface.ts` `rfxpool.ts` `rfx.worker.ts` |
-| 画面(GFX) | ZGFX、GFX のコマンド、AVC420 / AVC444(WebCodecs)、ClearCodec(NSCodec)、Planar、RemoteFX Progressive、解像度の自動調整 | `gfx.ts` `gfx-canvas.ts` `yuv444.ts` `zgfx.ts` `clearcodec.ts` `progressive.ts` `autoscale.ts` |
-| 入力とポインタ | スキャンコード(JIS / US は OS の配列から判定)、Unicode、マウス、ホイール、ポインタの形 | `input.ts` `pointer.ts` `display.ts` |
-| チャネル | 静的チャネルの分割、drdynvc、DisplayControl(窓の大きさへの追従)、cliprdr(テキストのみ) | `vchannel.ts` `dvc.ts` `cliprdr.ts` `channels.ts` |
-| バルク圧縮 | MPPC(RDP 4.0 / 5.0)の伸長。Fast-Path、Share Data、静的チャネル | `mppc.ts` |
-| 全体 | 受信ループ、画面への振り分け、診断用の統計 | `client.ts` |
+| 層             | 内容                                                                                                                                | ファイル                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 接続           | RDCleanPath(X.224 の接続要求を送り、接続確認と証明書チェーンを受け取る)、WebTransport / WebSocket の道、TPKT / Fast-Path の切り出し | `rdcleanpath.ts` `x224.ts` `stream.ts`                                                         |
+| 認証           | CredSSP と NTLMv2。MD4 / MD5 / RC4 / HMAC-MD5 は自前。Kerberos は未対応                                                             | `credssp.ts` `ntlm.ts` `crypto.ts` `der.ts`                                                    |
+| 接続シーケンス | MCS / GCC、Client Info、ライセンス、Demand / Confirm Active、同期、Deactivate-Reactivate、回線の自動検出                            | `connect.ts` `mcs.ts` `pdu.ts` `autodetect.ts`                                                 |
+| 画面(旧来)     | 旧ビットマップ(planar 32bpp、Interleaved RLE)、RemoteFX(Surface Commands)、Frame Acknowledge、古い更新の間引き、Web Worker での復号 | `bitmap.ts` `rfx.ts` `surface.ts` `rfxpool.ts` `rfx.worker.ts`                                 |
+| 画面(GFX)      | ZGFX、GFX のコマンド、AVC420 / AVC444(WebCodecs)、ClearCodec(NSCodec)、Planar、RemoteFX Progressive、解像度の自動調整               | `gfx.ts` `gfx-canvas.ts` `yuv444.ts` `zgfx.ts` `clearcodec.ts` `progressive.ts` `autoscale.ts` |
+| 入力とポインタ | スキャンコード(JIS / US は OS の配列から判定)、Unicode、マウス、ホイール、ポインタの形                                              | `input.ts` `pointer.ts` `display.ts`                                                           |
+| チャネル       | 静的チャネルの分割、drdynvc、DisplayControl(窓の大きさへの追従)、cliprdr(テキストのみ)                                              | `vchannel.ts` `dvc.ts` `cliprdr.ts` `channels.ts`                                              |
+| バルク圧縮     | MPPC(RDP 4.0 / 5.0)の伸長。Fast-Path、Share Data、静的チャネル                                                                      | `mppc.ts`                                                                                      |
+| 全体           | 受信ループ、画面への振り分け、診断用の統計                                                                                          | `client.ts`                                                                                    |
 
 ## バルク圧縮
 

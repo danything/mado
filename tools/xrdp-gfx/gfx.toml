@@ -1,6 +1,6 @@
 # GFX の設定。H.264(AVC420)を先に、だめなら RFX(Progressive)
 [codec]
-order = [ "H.264", "RFX" ]
+order = ["H.264", "RFX"]
 h264_encoder = "x264"
 
 [x264.default]
