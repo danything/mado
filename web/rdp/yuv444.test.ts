@@ -2,6 +2,7 @@
 // 1 画素ずつ書いた素直な復元とで、Yuv444(v1 / v2)を確かめる。
 
 import { describe, expect, test } from "bun:test";
+
 import { clampRects, type Rect } from "./gfx";
 import {
   videoFrameYuv,

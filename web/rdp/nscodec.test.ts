@@ -1,6 +1,7 @@
 // NSCodec の試験。ClearCodec のサブコーデック 1 として来る。試験側の符号化器での往復と、Windows の実データを確かめる。
 
 import { describe, expect, test } from "bun:test";
+
 import { Writer } from "./bytes";
 import { nscodec, nscRle } from "./clearcodec";
 

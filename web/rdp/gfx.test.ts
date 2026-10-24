@@ -1,16 +1,17 @@
 // GFX と ClearCodec の試験。PDU、流れ、キャッシュ、Frame Acknowledge、AVC420 を見る。描画と H.264 の復号は偽物を使う。
 
 import { describe, expect, test } from "bun:test";
+
 import { concat, fromHex, hex, Writer } from "./bytes";
 import { ClearDecoder, rlex } from "./clearcodec";
 import type { DynamicChannel } from "./dvc";
 import {
-  type AvcDecoder,
   alphaCodec,
-  CMD,
-  CODEC,
+  type AvcDecoder,
   capsAdvertise,
   capsVersionName,
+  CMD,
+  CODEC,
   codecString,
   frameAcknowledge,
   GfxClient,

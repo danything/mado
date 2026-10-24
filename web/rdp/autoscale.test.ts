@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+
 import { AutoScale, FrameLatency, gfxTimestampMs } from "./autoscale";
 
 describe("フレームの遅れ", () => {

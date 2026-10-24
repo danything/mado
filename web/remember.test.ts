@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+
 import { parseRemembered, remember, usernameFor } from "./remember";
 
 describe("つなぐ前の画面で覚えるもの", () => {

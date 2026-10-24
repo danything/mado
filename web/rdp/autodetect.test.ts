@@ -1,6 +1,7 @@
 // 回線の自動検出の試験。要求の読み取り、応答のバイト列、帯域の測り方、つなぐ途中の readIo での答え方を見る。
 
 import { describe, expect, test } from "bun:test";
+
 import {
   AutoDetect,
   bandwidthResults,

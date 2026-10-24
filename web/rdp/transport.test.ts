@@ -1,6 +1,7 @@
 // 中継への道の選び方。WebTransport を先に試し、だめなら WebSocket にする。
 
 import { describe, expect, test } from "bun:test";
+
 import { openTransport, type TransportOpeners, WT_TIMEOUT_MS } from "./connect";
 import type { Transport } from "./stream";
 

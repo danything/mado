@@ -1,6 +1,7 @@
 // ビットマップの復号と Fast-Path の断片の組み立ての試験。
 
 import { describe, expect, test } from "bun:test";
+
 import {
   decodeBitmap,
   decodePlanar,

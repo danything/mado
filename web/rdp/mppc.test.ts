@@ -2,6 +2,7 @@
 // Fast-Path、Share Data、静的チャネル、つなぐ途中の readIo でも伸長されることを見る。
 
 import { describe, expect, test } from "bun:test";
+
 import { concat, fromHex, hex, Writer } from "./bytes";
 import { readIo } from "./connect";
 import { Reassembler } from "./fastpath";

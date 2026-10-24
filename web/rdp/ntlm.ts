@@ -2,7 +2,7 @@
 // NEGOTIATE → CHALLENGE → AUTHENTICATE(MIC 付き)のあと、署名と封印(RC4)で pubKeyAuth と資格情報を包む。
 
 import { concat, equal, Reader, utf16le, Writer } from "./bytes";
-import { hmacMd5, md4, md5, Rc4, random } from "./crypto";
+import { hmacMd5, md4, md5, random, Rc4 } from "./crypto";
 
 const SIGNATURE = new TextEncoder().encode("NTLMSSP\0");
 

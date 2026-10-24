@@ -1,6 +1,7 @@
 // 静的チャネルの断片、drdynvc、DisplayControl、クリップボードの試験。
 
 import { describe, expect, test } from "bun:test";
+
 import { concat, fromHex, hex, Writer } from "./bytes";
 import * as cliprdr from "./cliprdr";
 import {
@@ -10,7 +11,7 @@ import {
   DynamicChannels,
   monitorLayout,
 } from "./dvc";
-import { CHUNK_SIZE, ChannelAssembler, splitChannelData } from "./vchannel";
+import { ChannelAssembler, CHUNK_SIZE, splitChannelData } from "./vchannel";
 
 const text = (s: string) => new TextEncoder().encode(s);
 

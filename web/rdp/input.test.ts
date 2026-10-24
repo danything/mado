@@ -1,6 +1,7 @@
 // 入力の符号化の試験。
 
 import { describe, expect, test } from "bun:test";
+
 import { hex } from "./bytes";
 import * as input from "./input";
 
