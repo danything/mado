@@ -9,10 +9,10 @@ import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
 import {
+  parseProgressive,
   ProgressiveFrame,
   type ProgressiveMessage,
   ProgressiveTiles,
-  parseProgressive,
 } from "./progressive";
 import { cutTile, decodeStream } from "./rfx";
 import type { TilePool } from "./rfxpool";

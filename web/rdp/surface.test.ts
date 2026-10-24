@@ -1,6 +1,7 @@
 // Surface Commands の試験。コマンドの切り出し、RemoteFX の矩形の切り取り、生のビットマップ、不正な入力を見る。
 
 import { describe, expect, test } from "bun:test";
+
 import type { BitmapRect } from "./bitmap";
 import { concat, Writer } from "./bytes";
 import { parseTiles } from "./rfx";

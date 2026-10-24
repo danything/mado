@@ -5,7 +5,7 @@
 // 同じ左上にある古いもの(RemoteFX のタイルや旧ビットマップ)は、新しいものが描く範囲にすっぽり入るときに限って復号しない。
 // 旧ビットマップも同じ列に載せて、受けた順に描く。Windows は RemoteFX を使わないとき planar などで送ってくる。
 
-import { type BitmapRect, bgraToRgba } from "./bitmap";
+import { bgraToRgba, type BitmapRect } from "./bitmap";
 import { Reader } from "./bytes";
 import {
   cutTile,

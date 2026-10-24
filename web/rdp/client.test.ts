@@ -1,6 +1,7 @@
 // ポインタの復号と、セッションのループの試験。ループは偽の通信路で動かす。
 
 import { describe, expect, test } from "bun:test";
+
 import { concat, fromHex, Reader, Writer } from "./bytes";
 import { RdpClient, type Screen } from "./client";
 import type { Session } from "./connect";

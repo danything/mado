@@ -1,6 +1,7 @@
 // 表示上の位置から RDP の座標への変換と、fit の試験。DOM を使わない部分だけを試す。
 
 import { describe, expect, test } from "bun:test";
+
 import { fitSize, syncModifiers, toRdpPoint } from "./display";
 
 describe("toRdpPoint", () => {

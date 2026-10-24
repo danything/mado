@@ -1,6 +1,7 @@
 // WebCodecsAvc の試験。VideoDecoder と EncodedVideoChunk は偽物で、復号器は返事をしない。
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
 import { concat, fromHex } from "./bytes";
 import type { Display } from "./display";
 import { CanvasGfxOps, WebCodecsAvc } from "./gfx-canvas";

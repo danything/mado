@@ -13,8 +13,8 @@ import * as input from "./rdp/input";
 import { createPool } from "./rdp/rfxpool";
 import {
   parseRemembered,
-  type Remembered,
   remember,
+  type Remembered,
   usernameFor,
 } from "./remember";
 

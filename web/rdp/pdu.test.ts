@@ -1,6 +1,7 @@
 // 接続の PDU と TSRequest の試験。Share Data の並びは、実際のクライアントが送る Synchronize / Control / Font List と同じ。
 
 import { describe, expect, test } from "bun:test";
+
 import { concat, fromHex, hex } from "./bytes";
 import { parseTsRequest, writeTsRequest } from "./credssp";
 import * as pdu from "./pdu";

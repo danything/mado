@@ -1,12 +1,13 @@
 // RemoteFX Progressive の試験。量子化の並び、SRL、最初の段(外挿と通常の逆 DWT)、Region の矩形での切り取り、差分、upgrade を見る。
 
 import { describe, expect, test } from "bun:test";
+
 import { concat, Writer } from "./bytes";
 import {
-  ProgressiveFrame,
-  ProgressiveTiles,
   parseProgressive,
   parseProgressiveQuant,
+  ProgressiveFrame,
+  ProgressiveTiles,
   srlValues,
 } from "./progressive";
 import type { TilePart } from "./rfx";
