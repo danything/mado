@@ -107,6 +107,22 @@
         </li>
       </ul>
     </nav>
+    <!-- はじめてつなぐ先、または証明書が前と違うときに出す(app.ts の confirmCert) -->
+    <dialog id="cert" aria-labelledby="cert-title" aria-describedby="cert-lead">
+      <article>
+        <header>
+          <h2 id="cert-title"></h2>
+        </header>
+        <p id="cert-lead"></p>
+        <dl id="cert-info"></dl>
+        <footer>
+          <button type="button" class="secondary outline" value="cancel">
+            やめる
+          </button>
+          <button type="button" class="outline" value="trust"></button>
+        </footer>
+      </article>
+    </dialog>
     <div id="screen" class="idle"></div>
     <pre id="diag" hidden></pre>
     <script type="module" src="./app.ts"></script>

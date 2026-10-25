@@ -37,6 +37,11 @@ export type ConnectOptions = {
   onLog?: (line: string) => void;
   /** 中止の合図。時間がかかりすぎたときや、利用者が取り消したときに使う */
   signal?: AbortSignal;
+  /**
+   * RDP サーバーの証明書(DER の leaf)を確かめる。RDCleanPath の応答のあと、CredSSP の前に呼ぶ。
+   * 例外を投げればそこでやめ、ユーザー名もパスワードも使わない。mado は証明書を検証しないので、ここで確かめる
+   */
+  checkCert?: (cert: Uint8Array) => Promise<void>;
   /** GFX(Graphics Pipeline)を頼む。受け手の GfxClient は attachChannels に渡す */
   gfx?: boolean;
   /** 試験用。NLA を使わない RDP サーバー(TLS だけ)も許す */
@@ -165,6 +170,10 @@ export async function connect(
     const cert = resp.certChain[0];
     if (!cert) throw new Error("RDP サーバーの証明書が届かない");
     log("RDCleanPath OK");
+    if (o.checkCert) {
+      await o.checkCert(cert);
+      if (o.signal?.aborted) throw new Error(ABORTED);
+    }
     const session = await establish(stream, o, resp.x224, cert);
     session.transport = kind;
     return session;

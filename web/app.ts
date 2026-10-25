@@ -1,10 +1,20 @@
 // 画面。web/rdp の RDP クライアントで、mado の /ws(RDCleanPath)を通して PC につなぐ。
 // Windows のユーザー名とパスワードはブラウザの中の CredSSP で使う。mado のサーバーには届かない。
 
+import {
+  CERT_PINS,
+  decide,
+  fingerprint,
+  parsePins,
+  pin,
+  serializePins,
+  type Verdict,
+} from "./certpin";
 import { AutoScale } from "./rdp/autoscale";
 import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
+import { type CertInfo, certInfo } from "./rdp/der";
 import { bindInput, Display, watchSize } from "./rdp/display";
 import { UPDATE } from "./rdp/fastpath";
 import { avcSupport, GfxClient } from "./rdp/gfx";
@@ -183,8 +193,14 @@ async function runSession(
     const height = screen.clientHeight || innerHeight;
     const abort = new AbortController();
     connecting = abort;
-    const timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
+    let timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
     const rdp = await connect({
+      // 証明書を利用者に見せている間は時間切れにしない。確かめ終わったら、そこから数え直す
+      checkCert: async (cert) => {
+        clearTimeout(timer);
+        await verifyCert(login.target, cert);
+        timer = setTimeout(() => abort.abort(), CONNECT_TIMEOUT_MS);
+      },
       url: session.ws,
       wt: session.wt,
       token,
@@ -281,6 +297,92 @@ async function runSession(
   } finally {
     for (const stop of stops) stop();
   }
+}
+
+// ---- RDP サーバーの証明書(certpin.ts) ----
+
+const certDialog = $<HTMLDialogElement>("#cert");
+const certCancel = certDialog.querySelector(
+  "button[value=cancel]",
+) as HTMLButtonElement;
+const certTrust = certDialog.querySelector(
+  "button[value=trust]",
+) as HTMLButtonElement;
+certDialog.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest("button");
+  if (b) certDialog.close(b.value);
+});
+
+function loadPins() {
+  try {
+    return parsePins(localStorage.getItem(CERT_PINS));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * つなぐ先の証明書を確かめる。覚えた指紋と同じなら何も聞かない。はじめての先や、前と違うときは画面で聞き、
+ * 信頼されたら覚える。断られたら例外にして、CredSSP に進まない(ユーザー名とパスワードは使わない)
+ */
+async function verifyCert(target: string, cert: Uint8Array): Promise<void> {
+  const fp = await fingerprint(cert);
+  const stored = loadPins()[target];
+  const verdict = decide(stored, fp);
+  if (verdict === "same") return;
+  if (!(await askCert(target, verdict, fp, stored, certInfo(cert))))
+    throw new Error("証明書を信頼しなかった");
+  try {
+    localStorage.setItem(CERT_PINS, serializePins(pin(loadPins(), target, fp)));
+  } catch {}
+}
+
+/** 証明書を見せて、つなぐかを聞く。Esc で閉じたときもつながない */
+function askCert(
+  target: string,
+  verdict: Exclude<Verdict, "same">,
+  fp: string,
+  stored: string | undefined,
+  info: CertInfo,
+): Promise<boolean> {
+  const changed = verdict === "changed";
+  certDialog.classList.toggle("changed", changed);
+  $<HTMLElement>("#cert-title").textContent = changed
+    ? "証明書が前と違う"
+    : "はじめてつなぐ先";
+  $<HTMLElement>("#cert-lead").textContent = changed
+    ? `${target} の証明書が、前に信頼したものと違う。PC で証明書を作り直したのでなければ、途中で誰かが通信を横取りしている(中間者攻撃)おそれがある。つなぐと、Windows の認証のやりとりをその相手に渡すことになる。`
+    : `${target} の証明書は、このブラウザではまだ信頼していない。PC の証明書の指紋と同じか確かめてからつなぐ。信頼すると覚えておき、次からは聞かない。`;
+  const day = (d?: Date) => d?.toLocaleDateString() ?? "?";
+  const rows: [string, string, boolean?][] = [["つなぐ先", target]];
+  if (info.commonName) rows.push(["名前(CN)", info.commonName]);
+  if (info.notBefore || info.notAfter)
+    rows.push(["有効期間", `${day(info.notBefore)} 〜 ${day(info.notAfter)}`]);
+  if (changed && stored) rows.push(["前の SHA-256", stored, true]);
+  rows.push([changed ? "今の SHA-256" : "SHA-256", fp, true]);
+  $<HTMLElement>("#cert-info").replaceChildren(
+    ...rows.flatMap(([k, v, mono]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      if (mono) dd.className = "fingerprint";
+      return [dt, dd];
+    }),
+  );
+  certTrust.textContent = changed ? "置き換えてつなぐ" : "信頼してつなぐ";
+  certTrust.className = changed ? "contrast outline" : "outline";
+  certDialog.returnValue = "";
+  return new Promise((resolve) => {
+    certDialog.addEventListener(
+      "close",
+      () => resolve(certDialog.returnValue === "trust"),
+      { once: true },
+    );
+    certDialog.showModal();
+    // 前と違うときは、やめるほうを選んでおく。Enter を押しただけではつながない
+    (changed ? certCancel : certTrust).focus();
+  });
 }
 
 // ---- 診断表示(ツールバーの「診断」) ----

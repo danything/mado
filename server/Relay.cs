@@ -126,7 +126,8 @@ internal static class Relay
             {
                 TargetHost = target.Host,
                 EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
-                // RDP の証明書は自己署名なので検証はしない。CredSSP がこの証明書の公開鍵に結びつけて認証する
+                // RDP の証明書は自己署名なので、ここでは検証しない。チェーンをブラウザに返し、ブラウザがつなぐ先ごとに
+                // 指紋を覚えて比べる(TOFU、web/certpin.ts)。CredSSP はその証明書の公開鍵に結びつけて認証する
                 RemoteCertificateValidationCallback = (_, cert, ch, _) =>
                 {
                     if (ch is not null)
