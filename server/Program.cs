@@ -157,7 +157,7 @@ app.Use(async (ctx, next) =>
             await (challenges.TryGetValue(path[prefix.Length..], out var answer) ? Text(200, answer) : Text(404, "not found")).ExecuteAsync(ctx);
             return;
         }
-        ctx.Response.Redirect($"{origin}{path}{ctx.Request.QueryString}", permanent: true);
+        ctx.Response.Redirect(Config.SameOrigin(origin, ctx.Request.Path.ToUriComponent() + ctx.Request.QueryString.ToUriComponent()), permanent: true);
         return;
     }
     await next(ctx);

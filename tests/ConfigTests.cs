@@ -93,4 +93,24 @@ public class ConfigTests
             """);
         await Assert.That(Config.Load(["--config", file]).Oidc.ClientSecret).IsEqualTo("s3cret");
     }
+
+    [Test]
+    [Arguments("/", "https://md.example.com/")]
+    [Arguments("/login?to=%2Fx", "https://md.example.com/login?to=%2Fx")]
+    [Arguments("/a%20b?q=1&r=%3F", "https://md.example.com/a%20b?q=1&r=%3F")]
+    [Arguments("/@evil.example", "https://md.example.com/@evil.example")]
+    public async Task SameOrigin_はパスとクエリを付ける(string pathAndQuery, string expected) =>
+        await Assert.That(Config.SameOrigin("https://md.example.com", pathAndQuery)).IsEqualTo(expected);
+
+    [Test]
+    public async Task SameOrigin_はポートを残す() =>
+        await Assert.That(Config.SameOrigin("https://md.example.com:8443", "/x?y")).IsEqualTo("https://md.example.com:8443/x?y");
+
+    [Test]
+    [Arguments("//evil.example/x")]
+    [Arguments("https://evil.example/")]
+    [Arguments("http://md.example.com/")]
+    [Arguments("https://md.example.com:444/")]
+    public async Task SameOrigin_は外を指したら_origin_の根にする(string pathAndQuery) =>
+        await Assert.That(Config.SameOrigin("https://md.example.com", pathAndQuery)).IsEqualTo("https://md.example.com/");
 }

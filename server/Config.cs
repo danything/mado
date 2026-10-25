@@ -129,6 +129,20 @@ internal sealed record Config(
         ? $"http://{Host}{(Listen.Http == 80 ? "" : $":{Listen.Http}")}"
         : $"https://{Host}{(Listen.Https == 443 ? "" : $":{Listen.Https}")}";
 
+    /// <summary>
+    /// http で来た要求を送り直す先。origin に要求のパスとクエリ(エンコードしたもの)を付ける。
+    /// パスとクエリは要求から来るので、組み立てた URL のスキーム・ホスト・ポートが origin と同じかを確かめ、
+    /// 違えば(`//evil.example` のようなパスで外を指したら)origin の `/` にする
+    /// </summary>
+    public static string SameOrigin(string origin, string pathAndQuery)
+    {
+        var home = new Uri(origin);
+        if (Uri.TryCreate(home, pathAndQuery, out var target)
+            && target.Scheme == home.Scheme && target.Host == home.Host && target.Port == home.Port)
+            return target.AbsoluteUri;
+        return new Uri(home, "/").AbsoluteUri;
+    }
+
     // ファイルの形。キーは snake_case で、MadoJson で読む
     internal sealed class Raw
     {
