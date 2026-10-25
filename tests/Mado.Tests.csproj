@@ -9,7 +9,7 @@
     <RootNamespace>Mado.Tests</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="TUnit" Version="1.76.0" />
+    <PackageReference Include="TUnit" Version="1.76.28" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../server/Mado.csproj" />
