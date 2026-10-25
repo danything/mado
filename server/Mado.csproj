@@ -18,7 +18,7 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Windows のサービスとして動く(UseWindowsService)。Microsoft 自身のパッケージ -->
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.14" />
   </ItemGroup>
   <ItemGroup>
     <!-- 画面(web/ を bun build したもの)を exe に埋め込む。先に `bun run build:web` で dist/web を作る -->
