@@ -140,6 +140,82 @@ export function subjectPublicKey(cert: Uint8Array): Uint8Array {
   return bits.value.subarray(1);
 }
 
+/** 証明書を確かめる画面に出すもの。読めなかった欄は無い */
+export type CertInfo = {
+  /** subject の CN(commonName)。RDP の自己署名証明書なら PC の名前 */
+  commonName?: string;
+  notBefore?: Date;
+  notAfter?: Date;
+};
+
+/** commonName の OID 2.5.4.3 */
+const CN_OID = "550403";
+
+/**
+ * DER の証明書から、subject の CN と有効期間を読む。見せるためだけのものなので、読めなければ空で返す
+ *
+ *   Validity ::= SEQUENCE { notBefore Time, notAfter Time }
+ *   Name ::= SEQUENCE OF SET OF SEQUENCE { type OID, value }
+ */
+export function certInfo(cert: Uint8Array): CertInfo {
+  try {
+    const tbs = mustRead(mustRead(cert).value);
+    const items = readAll(tbs.value);
+    const offset = items[0]?.tag === ctx(0) ? 1 : 0;
+    const info: CertInfo = {};
+    const validity = items[offset + 3];
+    if (validity?.tag === SEQUENCE) {
+      const [from, to] = readAll(validity.value);
+      info.notBefore = from && readTime(from);
+      info.notAfter = to && readTime(to);
+    }
+    const subject = items[offset + 4];
+    if (subject?.tag === SEQUENCE)
+      for (const rdn of readAll(subject.value))
+        for (const atv of readAll(rdn.value)) {
+          const [type, value] = readAll(atv.value);
+          if (type?.tag === 0x06 && value && toHex(type.value) === CN_OID)
+            info.commonName = readString(value);
+        }
+    return info;
+  } catch {
+    return {};
+  }
+}
+
+const toHex = (b: Uint8Array) =>
+  Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+/** UTCTime(0x17、年は 2 桁)と GeneralizedTime(0x18)。どちらも UTC の Z で終わる形だけ読む */
+function readTime(t: Tlv): Date | undefined {
+  const s = new TextDecoder().decode(t.value);
+  const m =
+    t.tag === 0x17
+      ? /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s)
+      : t.tag === 0x18
+        ? /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(s)
+        : null;
+  if (!m) return undefined;
+  const [y, mo, d, h, mi, se] = m.slice(1).map(Number) as number[];
+  // UTCTime の年は 50 以上なら 19xx、それ未満なら 20xx(RFC 5280 4.1.2.5.1)
+  const year =
+    t.tag === 0x17 ? (y as number) + ((y as number) >= 50 ? 1900 : 2000) : y;
+  return new Date(Date.UTC(year as number, (mo as number) - 1, d, h, mi, se));
+}
+
+/** 名前の値。BMPString(0x1e)は UTF-16BE、そのほか(UTF8String、PrintableString など)は UTF-8 として読む */
+function readString(t: Tlv): string {
+  if (t.tag === 0x1e) {
+    let s = "";
+    for (let i = 0; i + 1 < t.value.length; i += 2)
+      s += String.fromCharCode(
+        ((t.value[i] as number) << 8) | (t.value[i + 1] as number),
+      );
+    return s;
+  }
+  return new TextDecoder().decode(t.value);
+}
+
 /** 流れから TLV を 1 つ、タグから中身の終わりまで読む。中身が max バイトを超えたら tooLarge の例外にする */
 export async function readFrom(
   s: ByteStream,
