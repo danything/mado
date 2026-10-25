@@ -1,7 +1,8 @@
 // xrdp を相手にする実機試験。docs/rdp-client.md の「試験」を参照。wslc の node:lts コンテナで動かす。
 // つないで画面を PNG に保存したあと、Use default config のボタンを押す、ドックの端末を開いて echo mado と打つ、
 // こちらでコピーした文字列を貼り付ける、を順に試す。
-// 環境変数は HOST、PORT、RDPUSER、RDPPASS、OUT、COMPRESS。COMPRESS=0 ならバルク圧縮を頼まない。
+// 環境変数は HOST、PORT、RDPUSER、RDPPASS、OUT、COMPRESS、CERT_SHA256、INSECURE_TLS。COMPRESS=0 ならバルク圧縮を頼まない。
+// 証明書の確かめ方は下の tls.connect のところを参照。
 // クリック前の画面は OUT の名前に .before.png を付けて保存する
 
 import * as fs from "node:fs";
@@ -124,8 +125,23 @@ s0.write(x224.connectionRequest(x224.PROTOCOL.SSL));
 const h = await s0.peek(4);
 const cc = await s0.read(((h[2] as number) << 8) | (h[3] as number));
 raw.removeAllListeners("data");
-const t = tls.connect({ socket: raw, rejectUnauthorized: false });
-await new Promise((r) => t.once("secureConnect", r));
+// RDP の証明書はふつう自己署名で、CA では確かめられない。そこで次のどちらかを求める。
+// CERT_SHA256 があれば、CA の検証の代わりにその指紋と同じ証明書かを確かめる(つなぐ前に xrdp の証明書の指紋を調べておく)。
+// INSECURE_TLS=1 なら確かめない(手元のコンテナの xrdp を相手にするとき用。指紋を表示するので CERT_SHA256 に使える)。
+// どちらも無ければ、ふつうに CA で確かめる
+const pin = process.env.CERT_SHA256?.replace(/:/g, "").toUpperCase();
+const insecure = process.env.INSECURE_TLS === "1";
+const t = tls.connect({ socket: raw, rejectUnauthorized: !pin && !insecure });
+await new Promise((r, j) => {
+  t.once("secureConnect", r);
+  t.once("error", j);
+});
+const fingerprint = t.getPeerCertificate().fingerprint256.replace(/:/g, "");
+console.log("RDP の証明書の SHA-256:", fingerprint);
+if (pin && fingerprint !== pin) {
+  t.destroy();
+  throw new Error(`証明書の指紋が CERT_SHA256 と違う: ${fingerprint}`);
+}
 const session = await establish(
   new Sock(t),
   {

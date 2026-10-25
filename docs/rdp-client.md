@@ -95,10 +95,11 @@ wslc run -d --name xrdp -p 13389:3389 danielguerra/ubuntu-xrdp:latest     # 0.9.
 wslc build -t mado-xrdp-gfx tools/xrdp-gfx                                  # GFX と H.264 を試すとき(xrdp 0.10 を --enable-x264 で)
 wslc run -d --name xrdp-gfx -p 13390:3389 mado-xrdp-gfx
 wslc run --rm -v "${PWD}:/app" -w /app oven/bun:1 bun build tools/rdp-input-smoke.ts --target node --outfile out/in.mjs
-wslc run --rm -v "${PWD}:/app" -w /app -e HOST=<xrdp のコンテナの IP> -e PORT=3389 -e OUT=/app/out/xrdp.png node:lts node out/in.mjs
+wslc run --rm -v "${PWD}:/app" -w /app -e HOST=<xrdp のコンテナの IP> -e PORT=3389 -e OUT=/app/out/xrdp.png -e INSECURE_TLS=1 node:lts node out/in.mjs
 ```
 
 `tools/rdp-input-smoke.ts` は接続して画面を PNG に保存し、ボタンのクリック、端末への入力、貼り付けを試す。bun の TLS は RDP の自己署名証明書を受け付けないので node で動かす。
+RDP の証明書は自己署名なので、手元のコンテナの xrdp を相手にするときは `INSECURE_TLS=1` で検証を外す(明示しないと CA で確かめて失敗する)。そのとき表示される指紋を `CERT_SHA256` に渡すと、その証明書かどうかだけを確かめる。手元のコンテナ以外につなぐときは `CERT_SHA256` を使う。
 xrdp は LICENSE_REQUEST を返すので、試験では `dummyLicense` で応答する。Windows は「ライセンス不要」を返す。
 
 ### Windows(Hyper-V)
