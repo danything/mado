@@ -1,0 +1,34 @@
+name: CodeQL
+
+# CodeQL の解析 (advanced setup)。中身は 5ym/repo-config の共有の workflow で、.NET のほかのリポジトリと同じものを使う
+# (main を指すので、共有の workflow を直せば次の実行から揃って変わる)。
+#
+# default setup をやめたのは C# をビルドして解析するため。default setup は C# をビルドせずにソースだけ読むので、
+# 呼び出し先を解決しきれず「Low C# analysis quality」の警告が出ることがある (danything/denpa で 83%、しきい値 85%)。
+# 言語は default setup で解析していたものと同じ。default setup は切ってある (同時には使えない)。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    uses: 5ym/repo-config/.github/workflows/codeql.yml@main
+    with:
+      languages: '["actions", "csharp", "javascript-typescript"]'
+      # テストのプロジェクトをビルドすれば server もビルドされる。画面 (dist/web) は無くてもビルドできる。.NET は共有の側の既定 (10.x の最新)
+      csharp-build: dotnet build tests/Mado.Tests.csproj && dotnet build tray/MadoTray.csproj
