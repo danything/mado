@@ -11,6 +11,7 @@
 //   https://<host>/api/amt/<name>/wsman  Intel AMT の WS-Man(電源)の中継。Amt.cs
 //   wss://<host>/ws/amt         Intel AMT のリダイレクト(SOL)の中継。Amt.cs
 //   wss://<host>/ws/talos       Talos のダッシュボード(talosctl dashboard を ConPTY で動かす)。Talos.cs と ConPty.cs
+//   https://<host>/api/talos/<name>/shutdown|reboot  Talos の電源の操作(talosctl shutdown / reboot --wait=false)
 //   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
 //   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態。POST /update で更新をすぐ確かめる
 
@@ -40,6 +41,8 @@ var version = "v" + (typeof(Config).Assembly.GetCustomAttribute<AssemblyInformat
     .Split('+')[0] ?? "0.0.0");
 log.Write($"mado {version}: {config.File} を読んだ({config.Host}、つなぐ先 {string.Join(' ', config.Targets.Select(t => $"{t.Name}={t.Type}:{t.Host}:{t.Port}"))})");
 
+foreach (var w in config.Warnings ?? [])
+    log.Write($"注意: {w}");
 foreach (var t in config.Targets.Where(t => t is { Kind: TargetKind.Amt, Tls: true, CertSha256: null }))
     log.Write($"注意: {t.Name} は tls だが cert_sha256 が無いので、AMT の証明書を確かめない(docs/amt.md)");
 
@@ -116,12 +119,12 @@ CookieOptions Cookie(int maxAge) => new()
 {
     HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax, Path = "/", MaxAge = TimeSpan.FromSeconds(maxAge),
 };
-// RDP の中継(/ws、/wt)は RDP の先だけ、AMT の中継は AMT の先だけにつなぐ
+// RDP の中継(/ws、/wt)は RDP の先だけ、AMT の中継は AMT の先だけ、/ws/talos は Talos の先だけにつなぐ
 Target? RdpOf(string? name) => config.Rdp(name);
 var wsman = new AmtWsman();
 app.Lifetime.ApplicationStopping.Register(wsman.Dispose);
 
-// 画面に出すつなぐ先。Talos のダッシュボードがある先には、talosconfig の期限も付ける
+// 画面に出すつなぐ先。Talos のダッシュボードの先には、talosconfig の期限も付ける
 TargetInfo TargetInfoOf(Target t) => new(t.Name, t.Type,
     t.Talos is null ? null : new TalosInfo(TalosSecret.NotAfterOf(t.Talos.Talosconfig)?.ToString("yyyy-MM-ddTHH:mm:ssZ")));
 
@@ -231,7 +234,7 @@ app.MapGet("/api/token", (HttpContext ctx) =>
 {
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return NeedLogin();
-    // RDP の先でも AMT の先でも出す。使う側(/ws、/wt、/ws/amt)が種類を確かめる
+    // どの種類の先でも出す。使う側(/ws、/wt は RDP、/ws/amt と WS-Man は AMT、/ws/talos は Talos)が種類を確かめる
     if (config.Targets.FirstOrDefault(t => t.Name == ctx.Request.Query["target"]) is not { } target) return Text(404, "その接続先はありません");
     var token = tokens.Issue(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name));
     return Results.Json(new TokenInfo(token), ApiJson.Default.TokenInfo);
@@ -309,9 +312,37 @@ app.Map(TalosRelay.Path, async (HttpContext ctx) =>
     if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていません").ExecuteAsync(ctx); return; }
     if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で接続してください").ExecuteAsync(ctx); return; }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-    await TalosRelay.Serve(user.Name, ws, auth => tokens.Consume(auth, user.Sub) is { } t ? config.Amt(t.Target) : null,
+    await TalosRelay.Serve(user.Name, ws, auth => tokens.Consume(auth, user.Sub) is { } t ? config.Talos(t.Target) : null,
         startTalos,
         log.Write, CountSession, ctx.RequestAborted);
+});
+
+// Talos の電源の操作(talosctl shutdown / reboot --wait=false)。WS-Man と同じく Origin とログインを確かめ、talos の先だけ。
+// ブラウザが選べるのは先の名前と操作の 2 つだけで、コマンドは TalosCommand.PowerArguments で決まる。誰が頼んだかを残す
+var talosPowerGate = new SemaphoreSlim(1, 1);
+TalosPowerRunner runTalosPower = (talos, action, ct) => TalosPowerCommand.Run(talos, action, log.Write, ct);
+app.MapPost("/api/talos/{name}/{action}", async (HttpContext ctx, string name, string action) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store";
+    if (ctx.Request.Headers.Origin != origin) return Text(403, "origin が違います");
+    if (SessionOf(ctx) is not { } user) return NeedLogin();
+    if (config.Talos(name) is not { Talos: { } talos } target) return Text(404, "その Talos の先はありません");
+    TalosPower? power = action switch { "shutdown" => TalosPower.Shutdown, "reboot" => TalosPower.Reboot, _ => null };
+    if (power is not { } p) return Text(404, "その操作はありません");
+    // 同時には 1 つだけ(押し間違いで続けて動かさない)
+    if (!await talosPowerGate.WaitAsync(0)) return Results.Json(new TalosPowerResult(false, "busy"), ApiJson.Default.TalosPowerResult, statusCode: 409);
+    try
+    {
+        log.Write($"{user.Name}: talos {action} {target.Name} (node {talos.Node}) を頼んだ");
+        // ブラウザが閉じても、頼んだ操作は最後まで動かす(talosctl は --wait=false ですぐ返る)
+        var r = await runTalosPower(talos, p, app.Lifetime.ApplicationStopping);
+        log.Write($"{user.Name}: talos {action} {target.Name} → {(r.Ok ? "受け付けた" : $"{r.Reason}{(r.Detail is null ? "" : $": {r.Detail}")}")}");
+        return Results.Json(r, ApiJson.Default.TalosPowerResult);
+    }
+    finally
+    {
+        talosPowerGate.Release();
+    }
 });
 
 app.MapGet("/{**path}", async (HttpContext ctx) =>

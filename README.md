@@ -2,7 +2,7 @@
 
 OIDC でログインして、ブラウザから RDP するゲートウェイ。Windows のサービスとして動き、MSI で入れる。
 Intel AMT の機械も並べられ、電源の操作、SOL(シリアルの端末)、IDE-R(手元の ISO を CD として見せて起動する)が使える([docs/amt.md](docs/amt.md))。
-AMT の先で Talos が動いていれば、`talosctl dashboard` も同じ端末で開ける([docs/talos.md](docs/talos.md))。
+Talos のノードも並べられ、`talosctl dashboard` を SOL と同じ見た目の端末で開ける(AMT の認証は要らない。[docs/talos.md](docs/talos.md))。
 
 | つなぐ前                                                           | つないだ画面                                                       |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
@@ -26,20 +26,20 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
 - AMT のパスワードも同じで、ブラウザが HTTP Digest の応答を計算する。mado は決まった AMT の WS-Man(`/wsman`)とリダイレクト(SOL)の port にだけ中継する。AMT の port は外に開けない([docs/amt.md](docs/amt.md#ネットワークとセキュリティ))
-- Talos のダッシュボードは、mado が `talosctl dashboard` を ConPTY で動かして中継する。コマンドは mado.json で決まり、ブラウザは選べない。talosconfig は `os:reader` だけのものを DPAPI で保護して置き、名前付きパイプで talosctl に渡す(ディスクに平文を書かない。[docs/talos.md](docs/talos.md#鍵の扱い))
+- Talos のダッシュボードは、mado が `talosctl dashboard` を ConPTY で動かして中継する。コマンドは mado.json で決まり、ブラウザは選べない。バーの「シャットダウン」「再起動」は `talosctl shutdown` / `reboot` を決まった引数で動かす(2 回押しで確定)。talosconfig は `os:operator`(設定は変えられない)のものを DPAPI で保護して置き、名前付きパイプで talosctl に渡す(ディスクに平文を書かない。[docs/talos.md](docs/talos.md#鍵の扱い))
 - mado は RDP サーバーの証明書を検証しない(自己署名なので)。代わりにブラウザが、つなぐ先ごとに証明書の SHA-256 の指紋を覚えて比べる(trust on first use)。はじめての先では証明書を見せて信頼するかを聞き、前と違えば強く警告する。断ればユーザー名もパスワードも使わない。mado と RDP サーバーの間に割り込まれても、気づかずに認証を渡さないため。詳しくは [docs/rdp-client.md](docs/rdp-client.md#rdp-サーバーの証明書)
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
 
 ## 構成
 
-| ディレクトリ     | 内容                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server/`        | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ |
-| `web/`           | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。見た目と言葉の決まりは [docs/design.md](docs/design.md)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))、AMT は `web/amt/`(SOL の端末は xterm.js。[docs/amt.md](docs/amt.md))。bun でビルドして exe に埋め込む                                                                               |
-| `tray/`          | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する                                                                                                                                                                                                                                                         |
-| `installer/`     | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限                                                                                                                                                                                                                                                      |
-| `tools/wt-e2e/`  | WebTransport の試験。Linux のコンテナで mado と xrdp を動かし、headless の Chromium でつなぐ                                                                                                                                                                                                                                                                                            |
-| `tools/amt-e2e/` | AMT の試験。Linux のコンテナで mado と偽の AMT を動かし、電源と SOL を試す                                                                                                                                                                                                                                                                                                              |
+| ディレクトリ     | 内容                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server/`        | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ                           |
+| `web/`           | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。見た目と言葉の決まりは [docs/design.md](docs/design.md)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))、AMT は `web/amt/`(SOL の端末は xterm.js。[docs/amt.md](docs/amt.md))、Talos のダッシュボードは `web/talos/`(端末は SOL と同じ `web/term.ts`。[docs/talos.md](docs/talos.md))。bun でビルドして exe に埋め込む |
+| `tray/`          | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する                                                                                                                                                                                                                                                                                   |
+| `installer/`     | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限                                                                                                                                                                                                                                                                                |
+| `tools/wt-e2e/`  | WebTransport の試験。Linux のコンテナで mado と xrdp を動かし、headless の Chromium でつなぐ                                                                                                                                                                                                                                                                                                                      |
+| `tools/amt-e2e/` | AMT の試験。Linux のコンテナで mado と偽の AMT を動かし、電源と SOL を試す。Talos のダッシュボードは一覧から開いて /ws/talos につなぐところまで                                                                                                                                                                                                                                                                   |
 
 RDP サーバーとの TLS は `SslStream`(SChannel)なので、RDP の自己署名証明書でもつながる(証明書はブラウザが確かめる)。TLS はブラウザ側も RDP 側も 1.2 以上だけを使う(WebTransport の QUIC は 1.3)。
 
@@ -65,23 +65,29 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
   "targets": [
     { "name": "この PC", "host": "127.0.0.1" },
     { "name": "書斎の PC", "host": "10.0.0.20", "port": 3389 },
-    { "name": "サーバー(AMT)", "type": "amt", "host": "10.0.0.30" }
+    { "name": "サーバー(AMT)", "type": "amt", "host": "10.0.0.30" },
+    {
+      "name": "サーバー(Talos)",
+      "type": "talos",
+      "talosconfig": "talosconfig.dpapi",
+      "node": "10.0.0.31"
+    }
   ]
 }
 ```
 
-| 項目           | 内容                                                                                                                                                                                                                                                                                           |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host`         | 外から開くホスト名。証明書と OIDC の戻り先に使う                                                                                                                                                                                                                                               |
-| `data_dir`     | 証明書、ACME のアカウント、セッションの鍵を置く場所。既定は設定ファイルと同じ場所の `data`                                                                                                                                                                                                     |
-| `acme.email`   | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う                                                                                                                                                                                                                              |
-| `oidc`         | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない                                                                                                                            |
-| `targets`      | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら一覧は出ない。省略するとこのマシン(127.0.0.1:3389)。`"type": "amt"` で Intel AMT の先(`tls`、`cert_sha256`。[docs/amt.md](docs/amt.md#設定))。AMT の先に `talos` を書くと Talos のダッシュボード([docs/talos.md](docs/talos.md#設定)) |
-| `listen`       | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける)。MSI が開けるファイアウォールは TCP 80 / 443 と UDP 443 だけなので、port を変えたら自分で開ける                                                                                                               |
-| `status.port`  | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、外向きの origin、起動した時刻、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う                                                           |
-| `update`       | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }`                                                                                                                                                                                                             |
-| `tls`          | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用                                                                                                                                                                                                                      |
-| `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く                                                          |
+| 項目           | 内容                                                                                                                                                                                                                                                                                                               |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `host`         | 外から開くホスト名。証明書と OIDC の戻り先に使う                                                                                                                                                                                                                                                                   |
+| `data_dir`     | 証明書、ACME のアカウント、セッションの鍵を置く場所。既定は設定ファイルと同じ場所の `data`                                                                                                                                                                                                                         |
+| `acme.email`   | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う                                                                                                                                                                                                                                                  |
+| `oidc`         | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない                                                                                                                                                |
+| `targets`      | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら一覧は出ない。省略するとこのマシン(127.0.0.1:3389)。`"type": "amt"` で Intel AMT の先(`tls`、`cert_sha256`。[docs/amt.md](docs/amt.md#設定))。`"type": "talos"` で Talos のダッシュボードの先(`talosconfig`、`node`。[docs/talos.md](docs/talos.md#設定)) |
+| `listen`       | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける)。MSI が開けるファイアウォールは TCP 80 / 443 と UDP 443 だけなので、port を変えたら自分で開ける                                                                                                                                   |
+| `status.port`  | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、外向きの origin、起動した時刻、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う                                                                               |
+| `update`       | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }`                                                                                                                                                                                                                                 |
+| `tls`          | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用                                                                                                                                                                                                                                          |
+| `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く                                                                              |
 
 IdP には戻り先として `https://<host>/callback` を登録する。Entra ID ならアプリロールを作ってユーザーに割り当て、その値を `required_role` に書く。
 `/logout` は mado のセッションの Cookie を消すだけで、IdP からはログアウトしない。

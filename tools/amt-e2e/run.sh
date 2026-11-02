@@ -1,5 +1,6 @@
 #!/bin/sh
-# mado を Linux のコンテナで動かす。AMT の電源と SOL の試験用(tls は off、http の 8080)。
+# mado を Linux のコンテナで動かす。AMT の電源と SOL、Talos のダッシュボードの入口の試験用(tls は off、http の 8080)。
+# Linux には ConPTY が無いので、Talos の先は talosctl を動かすところで「not supported」で閉じる。
 # session.key は決まった値にして、e2e.ts が Cookie とトークンを作れるようにする。OIDC はログインのときにしか使わないので、でたらめな値でよい。
 #   wslc network create amtnet
 #   wslc run -d --rm --name amt --network amtnet --network-alias amt.test -v "<リポジトリ>:/app" -w /app oven/bun:1 bun tools/amt-e2e/fake-amt.ts
@@ -19,7 +20,8 @@ cat > $D/mado.json <<'EOF'
   "data_dir": "data",
   "targets": [
     { "name": "pc", "host": "127.0.0.1" },
-    { "name": "z440-amt", "type": "amt", "host": "amt.test" }
+    { "name": "z440-amt", "type": "amt", "host": "amt.test" },
+    { "name": "z440-talos", "type": "talos", "talosconfig": "talosconfig.dpapi", "node": "10.10.0.4" }
   ],
   "status": { "port": 0 },
   "update": { "enabled": false }

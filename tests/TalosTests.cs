@@ -33,41 +33,61 @@ public class TalosTests
     // ---- 設定 ----
 
     [Test]
-    public async Task talos_は_AMT_の先に書ける()
+    public async Task talos_の先を書ける()
     {
-        var (c, dir) = Load("""{ "name": "z", "type": "amt", "host": "10.10.0.3", "talos": { "talosconfig": "talosconfig.dpapi", "node": "10.10.0.4", "endpoints": ["10.10.0.4", "10.0.0.2"], "talosctl": "bin/talosctl.exe" } }""");
-        var t = c.Amt("z")!.Talos!;
+        var (c, dir) = Load("""{ "name": "z", "type": "talos", "talosconfig": "talosconfig.dpapi", "node": "10.10.0.4", "endpoints": ["10.10.0.4", "10.0.0.2"], "talosctl": "bin/talosctl.exe" }""");
+        var target = c.Talos("z")!;
+        await Assert.That(target.Type).IsEqualTo("talos");
+        await Assert.That(target.Host).IsEqualTo("10.10.0.4");
+        await Assert.That(c.Amt("z")).IsNull();
+        await Assert.That(c.Rdp("z")).IsNull();
+        var t = target.Talos!;
         await Assert.That(t.Talosconfig).IsEqualTo(Path.Combine(dir, "talosconfig.dpapi"));
         await Assert.That(t.Node).IsEqualTo("10.10.0.4");
         await Assert.That(t.Endpoints).IsEquivalentTo(["10.10.0.4", "10.0.0.2"]);
         await Assert.That(t.Talosctl).IsEqualTo(Path.GetFullPath("bin/talosctl.exe", dir));
+        await Assert.That(c.Warnings!).IsEmpty();
     }
 
     [Test]
     public async Task endpoints_の既定は_node_で_talosctl_の既定は_PATH()
     {
-        var (c, _) = Load("""{ "name": "z", "type": "amt", "host": "10.10.0.3", "talos": { "talosconfig": "t", "node": "fd00::4" } }""");
-        var t = c.Amt("z")!.Talos!;
+        var (c, _) = Load("""{ "name": "z", "type": "talos", "talosconfig": "t", "node": "fd00::4" }""");
+        var t = c.Talos("z")!.Talos!;
         await Assert.That(t.Endpoints).IsEquivalentTo(["fd00::4"]);
         await Assert.That(t.Talosctl).IsNull();
     }
 
     [Test]
-    public async Task talos_が無い先には出さない()
+    public async Task AMT_の先の中の古い_talos_は別の_talos_の先として読む()
     {
-        var (c, _) = Load("""{ "name": "z", "type": "amt", "host": "10.10.0.3" }""");
-        await Assert.That(c.Amt("z")!.Talos).IsNull();
+        // v0.13 の形。gitops の mado.json を書き直す前に新しい mado が動いても落ちないように、読んで知らせる
+        var (c, dir) = Load("""{ "name": "z", "type": "amt", "host": "10.10.0.3", "talos": { "talosconfig": "talosconfig.dpapi", "node": "10.10.0.4", "talosctl": "bin/talosctl.exe" } }""");
+        await Assert.That(c.Amt("z")).IsEqualTo(new Target("z", "10.10.0.3", Target.AmtHttp, TargetKind.Amt));
+        var t = c.Talos("z のダッシュボード")!.Talos!;
+        await Assert.That(t.Talosconfig).IsEqualTo(Path.Combine(dir, "talosconfig.dpapi"));
+        await Assert.That(t.Endpoints).IsEquivalentTo(["10.10.0.4"]);
+        await Assert.That(c.Targets.Select(x => x.Name)).IsEquivalentTo(["z", "z のダッシュボード"]);
+        await Assert.That(c.Warnings!.Single()).Contains("古い形");
     }
 
     [Test]
     [Arguments("""{ "host": "10.0.0.1", "talos": { "talosconfig": "t", "node": "n" } }""", "type が amt のときだけ")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "node": "n" } }""", "talosconfig が要る")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t" } }""", "node が要る")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t", "node": "--help" } }""", "アドレスかホスト名")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t", "node": "a b" } }""", "アドレスかホスト名")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t", "node": "n", "endpoints": [] } }""", "1 つ以上")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t", "node": "n", "endpoints": ["-e"] } }""", "アドレスかホスト名の配列")]
-    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t", "node": "n", "talosctl": "" } }""", "talosctl は空でない")]
+    [Arguments("""{ "host": "10.0.0.1", "talosconfig": "t" }""", "type が talos のときだけ")]
+    [Arguments("""{ "type": "amt", "host": "h", "node": "n" }""", "type が talos のときだけ")]
+    [Arguments("""{ "type": "talos", "node": "n", "talosconfig": "t" }""", "name が要る")]
+    [Arguments("""{ "name": "z", "type": "talos", "host": "h", "node": "n", "talosconfig": "t" }""", "host・port")]
+    [Arguments("""{ "name": "z", "type": "talos", "node": "n", "talosconfig": "t", "talos": { } }""", "host・port")]
+    [Arguments("""{ "name": "z", "type": "talos", "node": "n" }""", "talosconfig が要る")]
+    [Arguments("""{ "name": "z", "type": "talos", "talosconfig": "t" }""", "node が要る")]
+    [Arguments("""{ "name": "z", "type": "talos", "talosconfig": "t", "node": "--help" }""", "アドレスかホスト名")]
+    [Arguments("""{ "name": "z", "type": "talos", "talosconfig": "t", "node": "a b" }""", "アドレスかホスト名")]
+    [Arguments("""{ "name": "z", "type": "talos", "talosconfig": "t", "node": "n", "endpoints": [] }""", "1 つ以上")]
+    [Arguments("""{ "name": "z", "type": "talos", "talosconfig": "t", "node": "n", "endpoints": ["-e"] }""", "アドレスかホスト名の配列")]
+    [Arguments("""{ "name": "z", "type": "talos", "talosconfig": "t", "node": "n", "talosctl": "" }""", "talosctl は空でない")]
+    [Arguments("""{ "type": "amt", "host": "h", "talos": { "talosconfig": "t" } }""", "talos.node が要る")]
+    [Arguments("""{ "name": "z", "type": "amt", "host": "h", "talos": { "talosconfig": "t", "node": "n" } }, { "name": "z のダッシュボード", "type": "talos", "talosconfig": "t", "node": "n" }""", "name が重なっている")]
+    [Arguments("""{ "type": "vnc", "host": "h" }""", "rdp・amt・talos")]
     public async Task talos_の間違いは起動時に止める(string target, string message)
     {
         var e = Assert.Throws<ConfigException>(() => Load(target));
@@ -105,6 +125,25 @@ public class TalosTests
     public async Task 引数は_CommandLineToArgvW_で戻る形に囲む(string arg, string quoted)
     {
         await Assert.That(TalosCommand.Quote(arg)).IsEqualTo(quoted);
+    }
+
+    [Test]
+    public async Task 電源の操作のコマンドも決まった形()
+    {
+        var o = new TalosOptions(@"C:\ProgramData\mado\talosconfig.dpapi", "10.10.0.4", ["10.10.0.4", "10.0.0.2"]);
+        await Assert.That(TalosCommand.PowerArguments(o, @"\\.\pipe\p", TalosPower.Shutdown)).IsEquivalentTo(
+            ["--talosconfig", @"\\.\pipe\p", "--nodes", "10.10.0.4", "--endpoints", "10.10.0.4,10.0.0.2", "shutdown", "--wait=false"]);
+        await Assert.That(TalosCommand.PowerArguments(o, @"\\.\pipe\p", TalosPower.Reboot)).IsEquivalentTo(
+            ["--talosconfig", @"\\.\pipe\p", "--nodes", "10.10.0.4", "--endpoints", "10.10.0.4,10.0.0.2", "reboot", "--wait=false"]);
+    }
+
+    [Test]
+    public async Task 電源の操作の失敗は端末の出力の最後の行を理由にする()
+    {
+        var output = "\x1b[?25l\x1b[2J\x1b[1;1Herror executing reboot: 1 error occurred:\x1b[2;1H\t* 10.10.0.4: rpc error: code = PermissionDenied desc = not authorized\x1b[K\r\n\x1b]0;talosctl\x07\r\n"u8;
+        await Assert.That(TalosPowerCommand.LastLine(output.ToArray())).IsEqualTo("* 10.10.0.4: rpc error: code = PermissionDenied desc = not authorized");
+        await Assert.That(TalosPowerCommand.LastLine("\x1b[2J\r\n"u8.ToArray())).IsNull();
+        await Assert.That(TalosPowerCommand.LastLine(Encoding.UTF8.GetBytes(new string('x', 500)))!.Length).IsEqualTo(300);
     }
 
     [Test]
@@ -235,10 +274,10 @@ public class TalosTests
     }
 
     static readonly TalosOptions Opts = new("t", "10.10.0.4", ["10.10.0.4"]);
-    static readonly Target WithTalos = new("z", "10.10.0.3", Target.AmtHttp, TargetKind.Amt, Talos: Opts);
+    static readonly Target WithTalos = new("z", "10.10.0.4", Target.TalosApi, TargetKind.Talos, Talos: Opts);
 
     [Test]
-    public async Task トークンの先が_Talos_の_AMT_なら端末を動かして流す()
+    public async Task トークンの先が_Talos_の先なら端末を動かして流す()
     {
         var (server, client) = await WebSocketPair();
         var term = new FakeTerminal();
@@ -285,13 +324,14 @@ public class TalosTests
     [Arguments("rdp")]
     [Arguments("amt")]
     [Arguments("none")]
-    public async Task Talos_の無い先のトークンでは動かさない(string kind)
+    public async Task Talos_の先でないトークンでは動かさない(string kind)
     {
         var (server, client) = await WebSocketPair();
+        // 設定を読んだあとは talos の先にしか Talos は入らないが、種類で弾くことを確かめるため、ほかの種類にも入れておく
         Target? target = kind switch
         {
             "rdp" => new Target("pc", "10.0.0.1", 3389, Talos: Opts),
-            "amt" => new Target("z", "10.10.0.3", Target.AmtHttp, TargetKind.Amt),
+            "amt" => new Target("z", "10.10.0.3", Target.AmtHttp, TargetKind.Amt, Talos: Opts),
             _ => null,
         };
         var started = false;

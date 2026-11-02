@@ -2,7 +2,7 @@
 
 mado は RDP の PC のほかに、Intel AMT(vPro)の機械を `targets` に並べられる。今できるのは電源の状態を見ることと電源の操作、SOL(Serial over LAN)の端末、IDE-R(手元の ISO を CD-ROM として見せて起動する)。
 KVM はまだ無い。
-AMT の先で Talos が動いていれば、バーの「ダッシュボード」で `talosctl dashboard` を同じ端末に出せる([talos.md](talos.md))。
+AMT の先で Talos が動いているなら、`talosctl dashboard` は AMT とは別の先(`"type": "talos"`)として一覧に並べ、AMT の認証なしで開く([talos.md](talos.md))。
 
 ```
 ブラウザ ──https──> mado
@@ -45,7 +45,7 @@ SOL と IDE-R は、無効なら mado の画面のバーの「SOL・IDE-R を有
      - 出すものは AMT が返す `AvailableRequestedPowerStates` に従う(挙げていなければ今の電源の状態で決める)。状態は 15 秒ごとと、操作の 3 秒あとに読み直す
      - 2 回押しで確定する。1 回目でボタンの文が「もう一度押すと強制再起動」のように変わり、バーの状態の文(読み上げにも伝わる)に「もう一度押すと強制再起動します」と出る。3 秒以内にもう一度押すと実行し、押さなければ元に戻る。別のボタンを押すと待ちは取り消す。キーボード(Enter・Space)でも同じ。ダブルクリック(1 回目から 0.4 秒以内)とキーの押しっぱなしは 2 回目とみなさない
      - OS を止めない操作(強制再起動・強制電源オフ)は戻せない操作として、乗せたときと 2 回目を待つ間は赤い字になる
-   - 「ダッシュボード」(設定に `talos` がある先だけ。[talos.md](talos.md))、「SOL を切断」「SOL に接続」「閉じる」
+   - 「SOL を切断」「SOL に接続」「閉じる」
 5. SOL・IDE-R の受け口(16994 / 16995)か SOL・IDE-R が無効なら、SOL にはつながず、バーに「SOL・IDE-R を有効にする」が出る(押すと確かめる窓が出て、有効にできたら SOL につなぐ)
 6. 「ISO から起動」で ISO を選ぶ。確かめる窓のあと、ISO を CD-ROM として見せ、次の 1 回の起動をそこからにして、電源を入れる(入っていればリセットする)
    - 転送は起動している間ずっと続く。**タブを閉じると CD が抜けて起動が止まる**(閉じようとするとブラウザが確かめる)。転送した量と最後に読まれたセクタがバーに出る
@@ -130,7 +130,8 @@ addon-fit は枠の大きさから行と桁を出す公式の部品(1KB 足ら�
 
 - `bun test web/amt`: Digest(RFC 2617 の例)、WS-Man の封筒と返事、偽の AMT(`web/amt/amt.fixture.ts`)とのリダイレクトと SOL、IDE-R(OPEN_SESSION、TEST_UNIT_READY・READ_CAPACITY・緩衝より大きい READ_10・範囲の外の読み出し・PING)、起動の設定の手順
 - `dotnet run --project tests/Mado.Tests.csproj`: 設定、WS-Man の中継(Digest を確かめる偽の AMT)、SOL の中継、トークンと先の種類
-- `tools/amt-e2e/`: Linux のコンテナで mado(`tls: off`)と偽の AMT を動かし、本物の `web/amt` のクライアントで電源と SOL を試す(`e2e.ts`)。`ui.cjs` は headless の Chromium で画面を操作し、`out/` に画面を残す
+- `tools/amt-e2e/`: Linux のコンテナで mado(`tls: off`)と偽の AMT を動かし、本物の `web/amt` のクライアントで電源と SOL を試す(`e2e.ts`)。`ui.cjs` は headless の Chromium で画面を操作し、`out/` に画面を残す。
+  Talos のダッシュボードの先(`z440-talos`)も並べ、一覧から開くと `/ws/talos` につなぎ、閉じた理由と「もう一度開く」が出るところまで試す(Linux の mado には ConPTY が無いので、talosctl は動かさず「not supported」で閉じる。[talos.md](talos.md#試験))
 
 ```powershell
 wslc network create amtnet   # 「address pool」で失敗したら --subnet 10.231.77.0/24 などを付ける

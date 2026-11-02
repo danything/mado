@@ -2,7 +2,7 @@
  * 合言葉は「塗らない。囲みすぎない。浮かせすぎない。でも、ちゃんと伝わる」(denpa の見た目の決まりを mado に写したもの)。
  * 値はこの頭の --mado-* から選び、画面ごとに新しい値を作らない */
 @import "@anyblades/blades";
-/* SOL の端末(AMT の画面)。xterm.js の決まりの CSS */
+/* 端末(AMT の SOL と Talos のダッシュボード。term.ts)。xterm.js の決まりの CSS */
 @import "@xterm/xterm/css/xterm.css";
 
 /* --- 値 ------------------------------------------------------------------------------------- */
@@ -608,7 +608,10 @@ nav.bar li {
 #diag[hidden],
 #target-field[hidden],
 #amt[hidden],
-#sol[hidden] {
+#talos[hidden],
+#sol[hidden],
+#username-field[hidden],
+#password-field[hidden] {
   display: none;
 }
 /* つなぐまでは場所を取らない(canvas は DOM に置いたまま) */
@@ -734,9 +737,10 @@ dialog[open] > article {
   }
 }
 
-/* --- AMT の画面(amt/view.ts)---------------------------------------------------------------
- * SOL の端末がバーの下いっぱい(舞台なのでテーマにかかわらず黒い)。操作は上の常に出ているバー(.overlay.pinned) */
-#amt {
+/* --- AMT の画面(amt/view.ts)と Talos のダッシュボード(talos/view.ts)------------------------------
+ * 端末がバーの下いっぱい(舞台なのでテーマにかかわらず黒い)。操作は上の常に出ているバー(.overlay.pinned) */
+#amt,
+#talos {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -761,22 +765,24 @@ dialog[open] > article {
 #amt-state[data-on="true"]::before {
   background: var(--mado-ok);
 }
-#amt-status {
+#amt-status,
+#talos-status {
   margin-left: 0.75rem;
   font-size: 0.8125rem;
 }
 /* 電源の操作は、いま使えるものだけをバーにそのまま並べる */
-#amt-actions {
+#amt-actions,
+#talos-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.125rem;
 }
 #ider-stop[hidden],
 #amt-enable-redirection[hidden],
-#amt-dash[hidden] {
+#talos-reopen[hidden] {
   display: none;
 }
-/* SOL のバーは引っ込めず、端末の上に並べる(重ねない)。地は端末と同じ黒で、影は要らない */
+/* 端末のバーは引っ込めず、端末の上に並べる(重ねない)。地は端末と同じ黒で、影は要らない */
 .bar.overlay.pinned {
   position: relative;
   inset: auto;
@@ -787,20 +793,20 @@ dialog[open] > article {
 .bar.overlay.pinned::before {
   display: none;
 }
-#sol {
+.tty {
   flex: 1;
   min-height: 0;
   padding: 0.5rem;
 }
 /* xterm.js がキー入力を受ける隠れた欄。xterm.js は日本語の変換窓のために端末のカーソルの位置へ動かすが、そこに青い点が
- * 出て文字に重なった(Edge の書く手伝いの目印。view.ts で書く手伝いも切っている)。
- * SOL では変換窓は要らないので、画面の外に置く。端末はカーソルの点滅で焦点が分かる */
-#sol .xterm-helper-textarea {
+ * 出て文字に重なった(Edge の書く手伝いの目印。term.ts で書く手伝いも切っている)。
+ * 端末では変換窓は要らないので、画面の外に置く。端末はカーソルの点滅で焦点が分かる */
+.tty .xterm-helper-textarea {
   left: -9999em !important;
   top: 0 !important;
   caret-color: transparent;
 }
-#sol :focus-visible {
+.tty :focus-visible {
   outline: none;
 }
 

@@ -43,6 +43,9 @@ const sign = (v) => {
       throw e;
     });
   console.log(`電源: ${await page.textContent("#amt-state")}`);
+  // Talos のダッシュボードはトップの一覧から開く。AMT の画面には出さない
+  if (await page.$("#amt-dash, #amt [data-amt=dash]"))
+    throw new Error("AMT の画面にダッシュボードのボタンが残っている");
   // 開くとすぐ SOL につなぐ。バーは常に出ている
   await page.waitForFunction(
     () => document.querySelector("#sol")?.textContent?.includes("Talos"),
@@ -172,6 +175,118 @@ const sign = (v) => {
   await page.screenshot({ path: "/src/out/ider.png" });
   await page.click('#amt button[data-amt="close"]');
   await page.waitForSelector("#home:not([hidden])");
+
+  // Talos のダッシュボード: 一覧で選ぶとユーザー名とパスワードの欄が隠れ、ボタンは「開く」。
+  // 押すとすぐ画面いっぱいの端末になり、/ws/talos につなぐ。Linux の mado は ConPTY が無いので、
+  // talosctl を動かすところで閉じ、その理由と「もう一度開く」が出る
+  const talosSockets = [];
+  page.on("websocket", (ws) => {
+    if (new URL(ws.url()).pathname === "/ws/talos") talosSockets.push(ws);
+  });
+  await page.click('label.target:has(input[value="z440-talos"])');
+  if (
+    (await page.isVisible("input[name=username]")) ||
+    (await page.isVisible("input[name=password]"))
+  )
+    throw new Error("Talos の先でユーザー名とパスワードの欄が出ている");
+  const open = (await page.textContent("button[type=submit]")).trim();
+  if (open !== "開く") throw new Error(`Talos の先のボタンが「${open}」`);
+  console.log(`Talos の先: ${open}`);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "/src/out/talos-home.png" });
+  await page.click("button[type=submit]");
+  await page.waitForSelector("#talos:not([hidden])", { timeout: 10000 });
+  if (!(await page.isHidden("#home")))
+    throw new Error("ダッシュボードを開いても一覧が残っている");
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#talos-term .xterm-rows")
+        ?.textContent?.includes("Windows"),
+    null,
+    { timeout: 10000 },
+  );
+  if (talosSockets.length !== 1)
+    throw new Error(`/ws/talos につないだ数が ${talosSockets.length}`);
+  await page.waitForSelector("#talos-reopen:not([hidden])");
+  // 終わった直後(0.5 秒)は押せず、そのあと「もう一度開く」に焦点を置く(Enter で開き直せる)
+  if (!(await page.isDisabled("#talos-reopen")))
+    throw new Error("終わった直後から「もう一度開く」を押せる");
+  await page.waitForSelector("#talos-reopen:not([disabled])");
+  await page.waitForTimeout(50);
+  if (!(await page.$eval("#talos-reopen", (b) => b === document.activeElement)))
+    throw new Error("「もう一度開く」に焦点が無い");
+  console.log(
+    `Talos: ${await page.textContent("#talos-name")}・${await page.textContent("#talos-status")}`,
+  );
+  // 隠れた入力欄は SOL と同じく画面の外で、書く手伝いを切ってある
+  const ta = await page.$eval("#talos-term .xterm-helper-textarea", (t) => ({
+    left: t.getBoundingClientRect().left,
+    writing: t.getAttribute("writingsuggestions"),
+  }));
+  if (ta.left >= 0 || ta.writing !== "false")
+    throw new Error(`隠れた入力欄: ${JSON.stringify(ta)}`);
+  await page.screenshot({ path: "/src/out/talos.png" });
+  await page.keyboard.press("Enter");
+  for (let i = 0; i < 50 && talosSockets.length < 2; i++)
+    await page.waitForTimeout(100);
+  if (talosSockets.length !== 2)
+    throw new Error("「もう一度開く」で /ws/talos につなぎ直さない");
+  await page.waitForSelector("#talos-reopen:not([hidden])");
+
+  // 電源の操作: バーにシャットダウンと再起動。AMT と同じ 2 回押しで確定する
+  const talosPower = await page.$$eval("#talos-actions button", (bs) =>
+    bs.map((b) => `${b.textContent}(${b.title})`),
+  );
+  console.log(`Talos の電源のボタン: ${talosPower.join(" / ")}`);
+  if (talosPower.length !== 2)
+    throw new Error("Talos の電源のボタンが 2 つでない");
+  const powerPosts = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().includes("/api/talos/"))
+      powerPosts.push(new URL(r.url()).pathname);
+  });
+  const rebootButton = '#talos-actions button[data-power="reboot"]';
+  await page.click(rebootButton);
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#talos-status")?.textContent ===
+      "もう一度押すと再起動します",
+  );
+  if ((await page.textContent(rebootButton)) !== "もう一度押すと再起動")
+    throw new Error("Talos: 1 回目でボタンの文が変わらない");
+  await page.mouse.move(0, 400);
+  await page.waitForTimeout(300);
+  console.log(
+    `Talos の 1 回目: 字の色 ${await page.$eval(rebootButton, (b) => getComputedStyle(b).color)}`,
+  );
+  await page.screenshot({ path: "/src/out/talos-power-armed.png" });
+  // 3 秒たつと戻る(ダブルクリックとキーの押しっぱなしは AMT と同じ部品で、上の AMT の試験で見る)
+  await page.waitForTimeout(3300);
+  if (powerPosts.length) throw new Error("Talos: 1 回目で頼んだ");
+  if ((await page.textContent(rebootButton)) !== "再起動")
+    throw new Error("Talos: 3 秒たってもボタンの文が戻らない");
+  // キーボードで 2 回押すと頼む。Linux の mado は talosctl を動かせないので、失敗の理由がバーに出る
+  await page.focus(rebootButton);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(500);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#talos-status")
+        ?.textContent?.startsWith("再起動できませんでした"),
+    null,
+    { timeout: 10000 },
+  );
+  if (powerPosts.join() !== "/api/talos/z440-talos/reboot")
+    throw new Error(`Talos: 頼んだもの ${powerPosts.join()}`);
+  console.log(`Talos の電源: ${await page.textContent("#talos-status")}`);
+  await page.screenshot({ path: "/src/out/talos-power.png" });
+  await page.click('#talos button[data-talos="close"]');
+  await page.waitForSelector("#home:not([hidden])");
+  if (!(await page.isHidden("#talos")))
+    throw new Error("閉じてもダッシュボードの画面が残っている");
   // 暗いテーマのつなぐ前の画面
   await page.emulateMedia({ colorScheme: "dark" });
   await page.screenshot({ path: "/src/out/amt-home-dark.png" });
