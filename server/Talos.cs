@@ -91,8 +91,10 @@ internal static partial class TalosSecret
     {
         var text = Encoding.UTF8.GetString(talosconfig);
         var start = 0;
+        // 段は contexts: の下だけで探す(ca や crt のような名前の context でも、ほかの項目に当たらない)
         if (CurrentRe().Match(text) is { Success: true } cur
-            && Regex.Match(text, $@"(?m)^\s+{Regex.Escape(cur.Groups[1].Value)}:\s*$") is { Success: true } section)
+            && ContextsRe().Match(text) is { Success: true } contexts
+            && new Regex($@"(?m)^\s+{Regex.Escape(cur.Groups[1].Value)}:\s*$").Match(text, contexts.Index + contexts.Length) is { Success: true } section)
             start = section.Index + section.Length;
         var m = CrtRe().Match(text, start);
         if (!m.Success) return null;
@@ -137,6 +139,9 @@ internal static partial class TalosSecret
 
     [GeneratedRegex(@"(?m)^context:\s*[""']?([^\s""']+)[""']?\s*$")]
     private static partial Regex CurrentRe();
+
+    [GeneratedRegex(@"(?m)^contexts:\s*$")]
+    private static partial Regex ContextsRe();
 }
 
 /// <summary>talosctl を動かせなかった。Reason は WebSocket を閉じる理由(短い英語。画面が日本語にする)</summary>

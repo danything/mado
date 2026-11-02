@@ -157,6 +157,9 @@ public class TalosTests
             yaml[(yaml.IndexOf("    doany:\n", StringComparison.Ordinal) + "    doany:\n".Length)..].Insert(0, $"    {name}:\n");
         var both = $"context: other\ncontexts:\n{Section(first, "doany")}{Section(second, "other")}";
         await Assert.That(TalosSecret.NotAfter(Encoding.UTF8.GetBytes(both))).IsEqualTo(new DateTimeOffset(2027, 6, 1, 0, 0, 0, TimeSpan.Zero));
+        // 項目と同じ名前(ca)の context でも、contexts: の下の段を読む
+        var named = $"context: ca\ncontexts:\n{Section(first, "doany")}{Section(second, "ca")}";
+        await Assert.That(TalosSecret.NotAfter(Encoding.UTF8.GetBytes(named))).IsEqualTo(new DateTimeOffset(2027, 6, 1, 0, 0, 0, TimeSpan.Zero));
         // 名前の段が無ければ最初の crt
         await Assert.That(TalosSecret.NotAfter(Encoding.UTF8.GetBytes(both.Replace("context: other", "context: none"))))
             .IsEqualTo(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero));

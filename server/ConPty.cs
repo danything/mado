@@ -408,10 +408,11 @@ internal sealed partial class ConfigPipe : IDisposable
     {
         try
         {
+            // 動かした talosctl の ID が決まるまで待つ(口は作ってあるので、相手はその前からつなげる)
+            var pid = await _pid.Task.WaitAsync(_stop.Token);
             while (true)
             {
                 await s.WaitForConnectionAsync(_stop.Token);
-                var pid = await _pid.Task.WaitAsync(_stop.Token);
                 if (GetNamedPipeClientProcessId(s.SafePipeHandle, out var client) && client == pid) break;
                 // 知らない相手には渡さず、切って同じ口で待ち直す(口を潰されて talosctl が開けなくならないように)
                 _log($"talosconfig pipe: 知らないプロセス ({client}) が開いたので渡さない");
