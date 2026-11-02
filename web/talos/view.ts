@@ -150,6 +150,8 @@ export class TalosView {
     clearTimeout(this.reopenTimer);
     this.reopenButton.hidden = true;
     this.reopenButton.disabled = false;
+    // 開き直したら、前の電源の操作の結果は消す
+    this.powerAccepted = false;
     this.showExpiry();
     term.reset();
     term.writeln(gray("ダッシュボードを開いています…"));
