@@ -113,9 +113,9 @@
         </footer>
       </article>
     </dialog>
-    <!-- Intel AMT の画面(amt/view.ts)。SOL の端末が全面で、操作は上に重ねるバー(RDP と同じ) -->
+    <!-- Intel AMT の画面(amt/view.ts)。SOL の端末が主で、操作は上の常に出ているバー -->
     <section id="amt" hidden>
-      <nav class="bar overlay" id="amt-bar">
+      <nav class="bar overlay pinned" id="amt-bar" data-shown>
         <ul>
           <li><strong id="amt-name"></strong><span class="kind">AMT</span></li>
           <li>

@@ -797,7 +797,7 @@ dialog[open] > article {
 }
 
 /* --- AMT の画面(amt/view.ts)---------------------------------------------------------------
- * SOL の端末が全面(舞台なのでテーマにかかわらず黒い)。操作は上に重ねるバー(上の .overlay) */
+ * SOL の端末がバーの下いっぱい(舞台なのでテーマにかかわらず黒い)。操作は上の常に出ているバー(.overlay.pinned) */
 #amt {
   flex: 1;
   display: flex;
@@ -831,10 +831,25 @@ dialog[open] > article {
 #amt-enable-redirection[hidden] {
   display: none;
 }
+/* SOL のバーは引っ込めず、端末の上に並べる(重ねない)。地は端末と同じ黒で、影は要らない */
+.bar.overlay.pinned {
+  position: relative;
+  inset: auto;
+  flex: none;
+  padding: 0.375rem 0.75rem;
+  background: var(--mado-video);
+}
+.bar.overlay.pinned::before {
+  display: none;
+}
 #sol {
   flex: 1;
   min-height: 0;
   padding: 0.5rem;
+}
+/* xterm.js がキー入力を受ける隠れた欄に、共通の焦点の線が付いて左上に青い点が出ていた。端末はカーソルの点滅で焦点が分かる */
+#sol :focus-visible {
+  outline: none;
 }
 
 /* --- 動きを減らす設定 -------------------------------------------------------------------------

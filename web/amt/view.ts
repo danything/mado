@@ -1,8 +1,7 @@
-// Intel AMT の画面。SOL の端末(xterm.js)が全面で、電源(WS-Man)・IDE-R・リダイレクトの設定は上に重ねるバー。
-// 開くとすぐ SOL につなぐ(RDP の画面と同じく、見るものが主)。
+// Intel AMT の画面。SOL の端末(xterm.js)が主で、電源(WS-Man)・IDE-R・リダイレクトの設定は上の常に出ているバー。
+// 開くとすぐ SOL につなぐ。バーは RDP と違って引っ込めない(SOL は画面を広く使う必要が薄く、状態をいつも見せたい)。
 // AMT のユーザー名とパスワードはこの画面を閉じるまでメモリに置くだけで、保存も mado への送信もしない。
 
-import { type AutoHide, autoHide } from "../autohide";
 import { WsStream } from "../rdp/stream";
 import { LoginRequired, WsmanClient } from "./client";
 import { IderSession } from "./ider";
@@ -102,15 +101,12 @@ const $ = <T extends HTMLElement>(sel: string) =>
 
 /** 状態を読み直す間隔。操作の後は早めに読む */
 const POLL_MS = 15_000;
-/** 知らせを書いたときにバーを出しておく長さ */
-const NOTE_MS = 6000;
 
 /** 端末に書く、mado からの控えた知らせ(灰色) */
 const gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
 
 export class AmtView {
   private readonly root = $<HTMLElement>("#amt");
-  private readonly barEl = $<HTMLElement>("#amt-bar");
   private readonly state = $<HTMLElement>("#amt-state");
   private readonly status = $<HTMLElement>("#amt-status");
   private readonly powerMenu = $<HTMLDetailsElement>("#amt-power");
@@ -134,7 +130,6 @@ export class AmtView {
   private solFlush?: ReturnType<typeof setTimeout>;
   private xterm?: Xterm;
   private resize?: ResizeObserver;
-  private bar?: AutoHide;
   private closed?: () => void;
 
   constructor(
@@ -153,7 +148,6 @@ export class AmtView {
     this.root.addEventListener("click", this.onClick);
     this.powerMenu.addEventListener("toggle", this.onMenu);
     this.iderFile.addEventListener("change", this.onFile);
-    this.bar = autoHide(this.barEl, "move");
     this.schedule(POLL_MS);
     let term: Xterm;
     try {
@@ -178,7 +172,6 @@ export class AmtView {
       const r = await this.wsman.redirection();
       const ok = r.listener && r.sol && r.ider;
       this.enableRedirectionButton.hidden = ok;
-      if (!ok) this.bar?.reveal(NOTE_MS);
       return ok;
     } catch {
       return true;
@@ -296,12 +289,9 @@ export class AmtView {
       this.iderStop.hidden = false;
       window.addEventListener("beforeunload", keepOpen);
       const started = ider;
-      // 進み具合はバーの文だけ書き換える(バーは出さない。端末を隠さないため)
       started.onProgress = (s) =>
         this.note(
           `IDE-R ${(s.bytesRead / 1024 / 1024).toFixed(1)} MB・セクタ ${s.lastLba}。タブを閉じると起動が止まります`,
-          undefined,
-          false,
         );
       void started.done.then((reason) => {
         if (this.ider !== started) return;
@@ -429,12 +419,11 @@ export class AmtView {
     });
   }
 
-  /** バーの状態の文。kind があれば頭にアイコン(style.css の .note)。書いたらしばらくバーを出す */
-  private note(text: string, kind?: "error" | "ok", reveal = true): void {
+  /** バーの状態の文。kind があれば頭にアイコン(style.css の .note) */
+  private note(text: string, kind?: "error" | "ok"): void {
     this.status.textContent = text;
     if (kind) this.status.dataset.kind = kind;
     else delete this.status.dataset.kind;
-    if (reveal && text) this.bar?.reveal(NOTE_MS);
   }
 
   private handle(e: unknown): void {
@@ -497,14 +486,12 @@ export class AmtView {
         clearTimeout(this.solFlush);
         this.solButton.textContent = "SOL に接続";
         this.xterm?.writeln(`\r\n${gray(`SOL が切断されました: ${reason}`)}`);
-        this.bar?.reveal(NOTE_MS);
       });
     } catch (e) {
       this.solButton.textContent = "SOL に接続";
       this.xterm?.writeln(
         `\x1b[31m✕\x1b[0m SOL に接続できませんでした: ${explainRedirectError(e)}`,
       );
-      this.bar?.reveal(NOTE_MS);
     } finally {
       this.solConnecting = false;
       this.solButton.removeAttribute("aria-busy");
@@ -562,7 +549,6 @@ export class AmtView {
     this.term.replaceChildren();
     // つないだら「SOL を切断」にする(connectSol)
     this.solButton.textContent = "SOL に接続";
-    this.bar?.stop();
     this.note("");
     this.root.removeEventListener("click", this.onClick);
     this.root.hidden = true;

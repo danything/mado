@@ -284,7 +284,7 @@ async function runSession(
     // RDP の解像度は窓の大きさそのまま。混んでいたら、つないだあとで下げる
     home.hidden = true;
     toolbar.hidden = false;
-    stops.push(autoHide(toolbar, "edge").stop);
+    stops.push(autoHide(toolbar).stop);
     $<HTMLElement>("#current").textContent = login.target;
     screen.classList.remove("idle");
     const width = screen.clientWidth || innerWidth;
