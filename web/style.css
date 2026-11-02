@@ -852,7 +852,7 @@ dialog[open] > article {
   padding: 0.5rem;
 }
 /* xterm.js がキー入力を受ける隠れた欄。xterm.js は日本語の変換窓のために端末のカーソルの位置へ動かすが、そこに青い点が
- * 出て文字に重なった(焦点の線を消しても残った。OS か IME がこの欄の入力位置に描いているとみられる)。
+ * 出て文字に重なった(Edge の書く手伝いの目印。view.ts で書く手伝いも切っている)。
  * SOL では変換窓は要らないので、画面の外に置く。端末はカーソルの点滅で焦点が分かる */
 #sol .xterm-helper-textarea {
   left: -9999em !important;
