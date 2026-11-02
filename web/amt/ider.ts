@@ -355,38 +355,49 @@ export class IderSession {
   }
 
   static async start(io: Transport, o: IderOptions): Promise<IderSession> {
-    const s = new IderSession(io, o.cd);
-    await openRedirection(io, "IDER", o);
-    const ready = new Promise<boolean>((r) => {
-      s.toggled = r;
-    });
-    // OPEN_SESSION: 受信の待ち 30000ms、送信の待ち 0、生存確認 20000ms、版 1(UI Toolkit と同じ)
-    s.send(
-      IDER.openSession,
-      new Writer(10).u16(30000).u16(0).u16(20000).u32(1).done(),
-    );
-    void s.loop();
-    const ok = await Promise.race([
-      ready,
-      s.done.then((reason) => {
-        throw new Error(`IDE-R が始まる前に切断されました: ${reason}`);
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("IDE-R: AMT が 15 秒応答しません")),
-          15_000,
-        ),
-      ),
-    ]);
-    if (!ok) {
-      s.close();
+    // 1 セクタに満たないものは CD にならない(最後のセクタの番号が負になる)
+    if (o.cd.size < SECTOR)
       throw new Error(
-        "AMT が IDE-R を有効にできませんでした。ほかで IDE-R を使っていないか確かめてください",
+        "ISO が小さすぎます。CD のイメージ(.iso)を選んでください",
       );
+    const s = new IderSession(io, o.cd);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await openRedirection(io, "IDER", o);
+      const ready = new Promise<boolean>((r) => {
+        s.toggled = r;
+      });
+      // OPEN_SESSION: 受信の待ち 30000ms、送信の待ち 0、生存確認 20000ms、バージョン 1(UI Toolkit と同じ)
+      s.send(
+        IDER.openSession,
+        new Writer(10).u16(30000).u16(0).u16(20000).u32(1).done(),
+      );
+      void s.loop();
+      const ok = await Promise.race([
+        ready,
+        s.done.then((reason) => {
+          throw new Error(`IDE-R が始まる前に切断されました: ${reason}`);
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("IDE-R: AMT が 15 秒応答しません")),
+            15_000,
+          );
+        }),
+      ]);
+      if (!ok)
+        throw new Error(
+          "AMT が IDE-R を有効にできませんでした。ほかで IDE-R を使っていないか確かめてください",
+        );
+      return s;
+    } catch (e) {
+      // 途中で失敗したら、AMT に IDE-R のセッションを残さない
+      s.close();
+      throw e;
+    } finally {
+      clearTimeout(timer);
     }
-    return s;
   }
-
   /** メッセージを送る。頭は 種類、0、0、属性、送った順の番号(LE32) */
   send(
     cmd: number,

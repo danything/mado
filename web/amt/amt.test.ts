@@ -348,6 +348,39 @@ describe("IDE-R", () => {
     expect(await amt).toBe("auth-failed");
   });
 
+  test("1 セクタに満たない ISO は始める前に断る", async () => {
+    const [client] = pipe();
+    await expect(
+      IderSession.start(client, {
+        username: FAKE.username,
+        password: FAKE.password,
+        cd: new Blob([new Uint8Array(100)]),
+      }),
+    ).rejects.toThrow("小さすぎます");
+  });
+  test("AMT が IDE-R を始めなければ、失敗にして口を閉じる", async () => {
+    const [client, server] = pipe();
+    let closed = false;
+    const close = client.close.bind(client);
+    client.close = () => {
+      closed = true;
+      close();
+    };
+    // 認証のあと、OPEN_SESSION に答えずに切る
+    const amt = (async () => {
+      await server.read(8);
+      server.close();
+    })();
+    await expect(
+      IderSession.start(client, {
+        username: FAKE.username,
+        password: FAKE.password,
+        cd: new Blob([fakeIso(1) as Uint8Array<ArrayBuffer>]),
+      }),
+    ).rejects.toThrow();
+    await amt;
+    expect(closed).toBe(true);
+  });
   test("起動の設定は、読んだ値の UseIDER を立てて読み取り専用の欄を除いて書き戻す", () => {
     const amt = new FakeWsman();
     const got = amt["soap"](getBootSettings());
