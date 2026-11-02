@@ -185,6 +185,71 @@ function authReply(m: Message): {
   };
 }
 
+export type AuthOptions = {
+  username: string;
+  password: string;
+  /** cnonce を決める(試験用) */
+  cnonce?: string;
+};
+
+/** リダイレクトの種類。StartRedirectionSession に入れる 4 文字 */
+export type RedirectKind = "SOL" | "IDER";
+
+/**
+ * リダイレクトを始めて、Digest で認証するところまで。SOL と IDE-R で同じ。
+ * 認証が通ったあとの手順は種類ごとに違う(SOL は 0x20、IDE-R は IDE-R の OPEN_SESSION)
+ */
+export async function openRedirection(
+  io: Transport,
+  kind: RedirectKind,
+  o: AuthOptions,
+): Promise<void> {
+  // 0x10 StartRedirectionSession: "SOL " か "IDER"
+  io.write(
+    concat(
+      new Uint8Array([MSG.startRedirection, 0, 0, 0]),
+      ascii.encode(kind.padEnd(4, " ")),
+    ),
+  );
+  const start = await expect(io, MSG.startRedirectionReply);
+  if (start.data[1] !== 0)
+    throw new Error(
+      `AMT が ${kind === "SOL" ? "SOL" : "IDE-R"} を始めませんでした(状態 ${start.data[1]})。AMT の設定で有効になっているか、ほかで使っていないか確かめてください`,
+    );
+  // 使える認証の種類を問う
+  io.write(authenticate(AUTH.query, new Uint8Array()));
+  const query = authReply(await expect(io, MSG.authenticateReply));
+  const kinds = [...query.data];
+  // Basic はパスワードがそのまま流れるので使わない
+  const authType = kinds.includes(AUTH.digest)
+    ? AUTH.digest
+    : kinds.includes(AUTH.digestLegacy)
+      ? AUTH.digestLegacy
+      : undefined;
+  if (authType === undefined)
+    throw new Error(
+      `AMT が Digest 認証を使えません(使えるもの: ${kinds.join(",") || "なし"})`,
+    );
+  io.write(digestHello(o.username, authType));
+  const ch = authReply(await expect(io, MSG.authenticateReply));
+  if (ch.status !== 1 || ch.authType !== authType)
+    throw new RedirectAuthError(
+      `AMT から Digest の challenge が届きません(状態 ${ch.status})`,
+    );
+  io.write(
+    digestAnswer(
+      o.username,
+      o.password,
+      parseDigestChallenge(ch.data, authType),
+      authType,
+      o.cnonce,
+    ),
+  );
+  const result = authReply(await expect(io, MSG.authenticateReply));
+  if (result.status !== 0)
+    throw new RedirectAuthError("AMT のユーザー名かパスワードが違います");
+}
+
 export type SolOptions = {
   username: string;
   password: string;
@@ -215,47 +280,7 @@ export class SolSession {
   /** リダイレクトを始めて、Digest で認証し、SOL を開く */
   static async start(io: Transport, o: SolOptions): Promise<SolSession> {
     const s = new SolSession(io);
-    // 0x10 StartRedirectionSession: "SOL "
-    io.write(
-      new Uint8Array([MSG.startRedirection, 0, 0, 0, 0x53, 0x4f, 0x4c, 0x20]),
-    );
-    const start = await expect(io, MSG.startRedirectionReply);
-    if (start.data[1] !== 0)
-      throw new Error(
-        `AMT が SOL を始めませんでした(状態 ${start.data[1]})。AMT の設定で SOL が有効か確かめてください`,
-      );
-    // 使える認証の種類を問う
-    io.write(authenticate(AUTH.query, new Uint8Array()));
-    const query = authReply(await expect(io, MSG.authenticateReply));
-    const kinds = [...query.data];
-    // Basic はパスワードがそのまま流れるので使わない
-    const authType = kinds.includes(AUTH.digest)
-      ? AUTH.digest
-      : kinds.includes(AUTH.digestLegacy)
-        ? AUTH.digestLegacy
-        : undefined;
-    if (authType === undefined)
-      throw new Error(
-        `AMT が Digest 認証を使えません(使えるもの: ${kinds.join(",") || "なし"})`,
-      );
-    io.write(digestHello(o.username, authType));
-    const ch = authReply(await expect(io, MSG.authenticateReply));
-    if (ch.status !== 1 || ch.authType !== authType)
-      throw new RedirectAuthError(
-        `AMT から Digest の challenge が届きません(状態 ${ch.status})`,
-      );
-    io.write(
-      digestAnswer(
-        o.username,
-        o.password,
-        parseDigestChallenge(ch.data, authType),
-        authType,
-        o.cnonce,
-      ),
-    );
-    const result = authReply(await expect(io, MSG.authenticateReply));
-    if (result.status !== 0)
-      throw new RedirectAuthError("AMT のユーザー名かパスワードが違います");
+    await openRedirection(io, "SOL", o);
     // 0x20 SOL の設定。値は UI Toolkit と同じ(送る緩衝 10000、送信の待ち 100ms、受信の待ち 10000ms、受信をまとめる 100ms、AMT からの生存確認なし)
     io.write(
       new Writer(24)

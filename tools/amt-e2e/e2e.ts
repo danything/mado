@@ -4,8 +4,9 @@
 
 import { createHmac } from "node:crypto";
 
-import { BufferedTransport, FAKE } from "../../web/amt/amt.fixture";
+import { BufferedTransport, FAKE, fakeIso } from "../../web/amt/amt.fixture";
 import { AmtAuthError, WsmanClient } from "../../web/amt/client";
+import { IderSession } from "../../web/amt/ider";
 import { SolSession } from "../../web/amt/redirect";
 
 const ORIGIN = process.env.ORIGIN ?? "http://mado.test:8080";
@@ -167,6 +168,30 @@ async function openWs(): Promise<{
     Bun.sleep(5000).then(() => "timeout"),
   ]);
   check(reason === "token rejected", `RDP の先のトークンは断る (${reason})`);
+}
+
+// 7. IDE-R: ISO を CD として見せ、偽の AMT(BIOS の代わり)の読み出しに答える。起動の設定と電源の操作も通す
+{
+  const { io } = await openWs();
+  io.write(new TextEncoder().encode(`${await token("z440-amt")}\n`));
+  const ider = await IderSession.start(io, {
+    username: FAKE.username,
+    password: FAKE.password,
+    cd: new Blob([fakeIso(64) as Uint8Array<ArrayBuffer>]),
+  });
+  const reason = await Promise.race([
+    ider.done,
+    Bun.sleep(10000).then(() => "timeout"),
+  ]);
+  check(
+    ider.stats.bytesRead === 5 * 2048 && ider.stats.lastLba === 20,
+    `IDE-R の読み出しに答えた (${JSON.stringify(ider.stats)}、${reason})`,
+  );
+  const boot = await amt.bootFromIder();
+  check(
+    boot.result === 0,
+    `IDE-R から起動の設定と電源の操作 (${JSON.stringify(boot)})`,
+  );
 }
 
 console.log(process.exitCode ? "e2e: 失敗あり" : "e2e: すべて通った");

@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { FAKE, FakeWsman, pipe, serveRedirect } from "./amt.fixture";
+import {
+  FAKE,
+  fakeIso,
+  FakeWsman,
+  pipe,
+  serveIder,
+  serveRedirect,
+} from "./amt.fixture";
 import { AmtAuthError, LoginRequired, WsmanClient } from "./client";
 import {
   authorization,
@@ -9,6 +16,7 @@ import {
   parseChallenge,
   parseDigestParams,
 } from "./digest";
+import { IderSession } from "./ider";
 import {
   AUTH,
   digestAnswer,
@@ -17,16 +25,22 @@ import {
   RedirectAuthError,
   SolSession,
 } from "./redirect";
-import { powerButtons } from "./view";
+import { explainRedirectError, powerButtons } from "./view";
 import {
+  bootSettingFields,
+  clearBootOrder,
   element,
   enumerate,
   fault,
+  getBootSettings,
+  instanceFields,
   parsePower,
   powerStateName,
   pull,
+  putBootSettingsForIder,
   requestPowerStateChange,
   RESOURCE,
+  setBootConfigRole,
 } from "./wsman";
 
 describe("Digest", () => {
@@ -295,5 +309,159 @@ describe("リダイレクト(SOL)", () => {
       SolSession.start(client, { username: FAKE.username, password: "x" }),
     ).rejects.toBeInstanceOf(RedirectAuthError);
     expect(await amt).toBe("auth-failed");
+  });
+});
+
+describe("IDE-R", () => {
+  test("認証して OPEN_SESSION を済ませ、BIOS の読み出しに ISO の中身で答える", async () => {
+    const [client, server] = pipe();
+    const iso = fakeIso(64);
+    const amt = serveIder(server);
+    const ider = await IderSession.start(client, {
+      username: FAKE.username,
+      password: FAKE.password,
+      cd: new Blob([iso as Uint8Array<ArrayBuffer>]),
+    });
+    const report = await amt;
+    if (report === "auth-failed") throw new Error("認証に失敗した");
+    expect(report.blocks).toBe(64);
+    // 5 セクタ(10240 バイト)は緩衝(8192)より大きいので 2 つに分けて返す
+    expect(report.read.length).toBe(5 * 2048);
+    expect(report.read).toEqual(iso.subarray(16 * 2048, 21 * 2048));
+    // 範囲の外は ILLEGAL REQUEST(5)
+    expect(report.outOfRangeSense).toBe(0x05);
+    expect(report.pong).toBe(true);
+    expect(ider.stats.bytesRead).toBe(5 * 2048);
+    expect(ider.stats.lastLba).toBe(20);
+    expect(await ider.done).toBeString();
+  });
+
+  test("パスワードが違えば RedirectAuthError", async () => {
+    const [client, server] = pipe();
+    const amt = serveIder(server);
+    await expect(
+      IderSession.start(client, {
+        username: FAKE.username,
+        password: "x",
+        cd: new Blob([fakeIso(1) as Uint8Array<ArrayBuffer>]),
+      }),
+    ).rejects.toBeInstanceOf(RedirectAuthError);
+    expect(await amt).toBe("auth-failed");
+  });
+
+  test("欄はすぐ下の単純なものだけを拾い、入れ子は拾わない", () => {
+    const xml =
+      "<b:Body><g:AMT_X><g:A>1</g:A><g:Arr><g:In>x</g:In></g:Arr><g:B>&amp;2</g:B><g:Empty/></g:AMT_X></b:Body>";
+    expect(instanceFields(xml, "AMT_X")).toEqual([
+      ["A", "1"],
+      ["B", "&2"],
+      ["Empty", ""],
+    ]);
+  });
+  test("1 セクタに満たない ISO は始める前に断る", async () => {
+    const [client] = pipe();
+    await expect(
+      IderSession.start(client, {
+        username: FAKE.username,
+        password: FAKE.password,
+        cd: new Blob([new Uint8Array(100)]),
+      }),
+    ).rejects.toThrow("小さすぎます");
+  });
+  test("AMT が IDE-R を始めなければ、失敗にして口を閉じる", async () => {
+    const [client, server] = pipe();
+    let closed = false;
+    const close = client.close.bind(client);
+    client.close = () => {
+      closed = true;
+      close();
+    };
+    // 認証のあと、OPEN_SESSION に答えずに切る
+    const amt = (async () => {
+      await server.read(8);
+      server.close();
+    })();
+    await expect(
+      IderSession.start(client, {
+        username: FAKE.username,
+        password: FAKE.password,
+        cd: new Blob([fakeIso(1) as Uint8Array<ArrayBuffer>]),
+      }),
+    ).rejects.toThrow();
+    await amt;
+    expect(closed).toBe(true);
+  });
+  test("起動の設定は、読んだ値の UseIDER を立てて読み取り専用の欄を除いて書き戻す", () => {
+    const amt = new FakeWsman();
+    const got = amt["soap"](getBootSettings());
+    expect(bootSettingFields(got)).toContainEqual(["UseIDER", "false"]);
+    const put = putBootSettingsForIder(got);
+    expect(put).toContain("<r:UseIDER>true</r:UseIDER>");
+    expect(put).toContain("<r:IDERBootDevice>1</r:IDERBootDevice>");
+    expect(put).toContain("<r:UseSOL>true</r:UseSOL>");
+    expect(put).not.toContain("BIOSLastStatus");
+    expect(put).not.toContain("OptionsCleared");
+    expect(setBootConfigRole()).toContain("<r:Role>1</r:Role>");
+    expect(clearBootOrder()).toContain(
+      '<w:Selector Name="InstanceID">Intel(r) AMT: Boot Configuration 0</w:Selector>',
+    );
+  });
+
+  test("IDE-R から起動: 設定を書き、起動の役目と順を変え、切れていれば電源を入れる", async () => {
+    const amt = new FakeWsman();
+    amt.powerState = 8;
+    const c = new WsmanClient("z", FAKE.username, FAKE.password, viaMado(amt));
+    expect(await c.bootFromIder()).toEqual({ state: 2, result: 0 });
+    expect(amt.boot).toEqual(["put", "role", "order"]);
+    expect(amt.requests).toEqual([2]);
+    // 入っていればリセット
+    expect(await c.bootFromIder()).toEqual({ state: 10, result: 0 });
+  });
+});
+
+describe("リダイレクトの受け口", () => {
+  test("無効なら RequestStateChange(32771)で SOL・IDE-R を有効にし、AccessLog を除いて ListenerEnabled を書き戻す", async () => {
+    const amt = new FakeWsman();
+    amt.redirection = { listener: false, state: 32768 };
+    const c = new WsmanClient("z", FAKE.username, FAKE.password, viaMado(amt));
+    expect(await c.redirection()).toEqual({
+      listener: false,
+      sol: false,
+      ider: false,
+      state: 32768,
+    });
+    expect(await c.enableRedirection()).toEqual({
+      listener: true,
+      sol: true,
+      ider: true,
+      state: 32771,
+    });
+    expect(amt.redirectionOps).toEqual(["state", "put"]);
+  });
+
+  test("有効なら何も書かない", async () => {
+    const amt = new FakeWsman();
+    const c = new WsmanClient("z", FAKE.username, FAKE.password, viaMado(amt));
+    await c.enableRedirection();
+    expect(amt.redirectionOps).toEqual([]);
+  });
+
+  test("SOL だけ有効なら状態だけ変える", async () => {
+    const amt = new FakeWsman();
+    amt.redirection = { listener: true, state: 32770 };
+    const c = new WsmanClient("z", FAKE.username, FAKE.password, viaMado(amt));
+    expect((await c.redirection()).sol).toBe(true);
+    expect((await c.redirection()).ider).toBe(false);
+    await c.enableRedirection();
+    expect(amt.redirectionOps).toEqual(["state"]);
+  });
+
+  test("受け口に届かないときは、次にすることを言う", () => {
+    expect(
+      explainRedirectError(
+        new Error("connection closed: cannot reach AMT (1000)"),
+      ),
+    ).toContain("SOL・IDE-R を有効にする");
+    expect(explainRedirectError(new Error("ほか"))).toBe("ほか");
   });
 });

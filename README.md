@@ -1,7 +1,7 @@
 # mado
 
 OIDC でログインして、ブラウザから RDP するゲートウェイ。Windows のサービスとして動き、MSI で入れる。
-Intel AMT の機械も並べられ、電源の操作と SOL(シリアルの端末)が使える([docs/amt.md](docs/amt.md))。
+Intel AMT の機械も並べられ、電源の操作、SOL(シリアルの端末)、IDE-R(手元の ISO を CD として見せて起動する)が使える([docs/amt.md](docs/amt.md))。
 
 | つなぐ前                                                           | つないだ画面                                                       |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
@@ -133,4 +133,4 @@ exe(Native AOT)と MSI は Windows でしか作れないので、CI(`windows-lat
 
 ## ライセンス
 
-AGPL-3.0。Blades CSS と xterm.js は MIT。
+AGPL-3.0。Blades CSS と xterm.js は MIT。`web/amt/ider.ts` は Intel の UI Toolkit(Apache-2.0)を元にしている(出典はファイルの頭)。

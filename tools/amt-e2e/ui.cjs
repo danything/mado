@@ -83,6 +83,29 @@ const sign = (v) => {
   );
   console.log(`操作のあとの電源: ${await page.textContent("#amt-state")}`);
   await page.screenshot({ path: "/src/out/amt-view.png" });
+  // IDE-R: ISO を選んで起動する。確認の窓のあと、受け付けたと出る
+  const iso = Buffer.alloc(64 * 2048);
+  for (let i = 0; i < iso.length; i++) iso[i] = ((i >> 11) + i) % 251;
+  await page.setInputFiles("#ider-file", {
+    name: "talos-metal-amd64.iso",
+    mimeType: "application/octet-stream",
+    buffer: iso,
+  });
+  await page.click("#ider-boot");
+  await page.waitForSelector("#confirm[open]");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: "/src/out/ider-confirm.png" });
+  await page.click('#confirm button[value="ok"]');
+  await page.waitForFunction(
+    () =>
+      /受け付けました|終了しました/.test(
+        document.querySelector("#ider-status")?.textContent ?? "",
+      ),
+    null,
+    { timeout: 15000 },
+  );
+  console.log(`IDE-R: ${await page.textContent("#ider-status")}`);
+  await page.screenshot({ path: "/src/out/ider.png" });
   await page.click('#amt button[data-amt="close"]');
   await page.waitForSelector("#home:not([hidden])");
   // 暗いテーマのつなぐ前の画面

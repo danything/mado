@@ -3,6 +3,7 @@
 
 import { WsStream } from "../rdp/stream";
 import { LoginRequired, WsmanClient } from "./client";
+import { IderSession } from "./ider";
 import { SolSession } from "./redirect";
 import { isOn, type PowerInfo, powerStateName, returnValueText } from "./wsman";
 
@@ -107,6 +108,15 @@ export class AmtView {
   private readonly term = $<HTMLElement>("#sol");
   private readonly solButton = $<HTMLButtonElement>("#amt-sol");
   private readonly confirmDialog = $<HTMLDialogElement>("#confirm");
+  private readonly iderFile = $<HTMLInputElement>("#ider-file");
+  private readonly iderBoot = $<HTMLButtonElement>("#ider-boot");
+  private readonly iderStop = $<HTMLButtonElement>("#ider-stop");
+  private readonly iderStatus = $<HTMLElement>("#ider-status");
+  private ider?: IderSession;
+  private readonly redirectionText = $<HTMLElement>("#amt-redirection");
+  private readonly enableRedirectionButton = $<HTMLButtonElement>(
+    "#amt-enable-redirection",
+  );
   private wsman: WsmanClient;
   private info?: PowerInfo;
   private poll?: ReturnType<typeof setTimeout>;
@@ -130,7 +140,46 @@ export class AmtView {
     this.renderPower();
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
+    this.iderFile.addEventListener("change", this.onFile);
+    this.onFile();
+    void this.refreshRedirection();
     this.schedule(POLL_MS);
+  }
+
+  /** リダイレクト(SOL・IDE-R)の受け口の状態を読んで出す。読めなくても電源の画面は使える */
+  private async refreshRedirection(): Promise<void> {
+    try {
+      const r = await this.wsman.redirection();
+      const on = (v: boolean) => (v ? "有効" : "無効");
+      this.redirectionText.textContent = `受け口 ${on(r.listener)}・SOL ${on(r.sol)}・IDE-R ${on(r.ider)}`;
+      this.enableRedirectionButton.hidden = r.listener && r.sol && r.ider;
+    } catch (e) {
+      this.redirectionText.textContent = `読めませんでした(${e instanceof Error ? e.message : String(e)})`;
+      this.enableRedirectionButton.hidden = false;
+    }
+  }
+
+  /** SOL・IDE-R を有効にする。AMT の設定を変えるので先に確かめる */
+  private async enableRedirection(): Promise<void> {
+    if (
+      !(await this.ask(
+        `${this.login.target}: SOL・IDE-R を有効にする`,
+        "AMT の設定を変え、SOL と IDE-R を有効にして、リダイレクトの受け口(16994 / 16995)を開きます。LAN の中から、AMT のユーザー名とパスワードで SOL と IDE-R を使えるようになります。",
+        "SOL・IDE-R を有効にする",
+      ))
+    )
+      return;
+    const b = this.enableRedirectionButton;
+    b.setAttribute("aria-busy", "true");
+    try {
+      await this.wsman.enableRedirection();
+      this.note("SOL・IDE-R を有効にしました", "ok");
+    } catch (e) {
+      this.handle(e);
+    } finally {
+      b.removeAttribute("aria-busy");
+      await this.refreshRedirection();
+    }
   }
 
   /** 閉じるまで待つ */
@@ -147,7 +196,102 @@ export class AmtView {
     else if (b.dataset.amt === "refresh") void this.refresh();
     else if (b.dataset.amt === "sol") void this.toggleSol();
     else if (b.dataset.amt === "close") this.close();
+    else if (b === this.iderBoot) void this.bootFromIder();
+    else if (b === this.enableRedirectionButton) void this.enableRedirection();
+    else if (b === this.iderStop) this.ider?.close();
   };
+
+  private onFile = () => {
+    this.iderBoot.disabled = !this.iderFile.files?.length || !!this.ider;
+  };
+
+  // ---- IDE-R ----
+
+  /**
+   * 選んだ ISO を IDE-R の CD-ROM として見せ、次の起動をそこからにして電源を入れる(入っていればリセット)。
+   * ISO はブラウザが読んで AMT に送る。mado は AMT へのバイト列を中継するだけ。転送の間はタブを閉じられない
+   */
+  private async bootFromIder(): Promise<void> {
+    const file = this.iderFile.files?.[0];
+    if (!file || this.ider) return;
+    const on = isOn(this.info?.state);
+    const mb = (file.size / 1024 / 1024).toFixed(
+      file.size < 10 * 1024 * 1024 ? 1 : 0,
+    );
+    if (
+      !(await this.ask(
+        `${this.login.target}: IDE-R の CD から起動`,
+        `${file.name}(${mb} MB)を CD-ROM として見せ、そこから起動します。` +
+          (on
+            ? "いまは電源が入っているので、OS を止めずにリセットします。保存していないデータは失われます。"
+            : "電源を入れます。") +
+          "起動の間はこのタブを開いたままにしてください。閉じると CD が抜け、起動が止まります。",
+        "IDE-R の CD から起動",
+        on,
+      ))
+    )
+      return;
+    this.iderBoot.disabled = true;
+    this.iderBoot.setAttribute("aria-busy", "true");
+    this.iderNote("IDE-R を準備しています…");
+    let ider: IderSession | undefined;
+    try {
+      const token = await this.deps.newToken(this.login.target);
+      const io = await WsStream.open(this.deps.ws.replace(/\/ws$/, "/ws/amt"));
+      io.write(new TextEncoder().encode(`${token}\n`));
+      try {
+        ider = await IderSession.start(io, {
+          username: this.login.username,
+          password: this.login.password,
+          cd: file,
+        });
+      } catch (e) {
+        io.close();
+        throw e;
+      }
+      this.ider = ider;
+      this.iderStop.hidden = false;
+      window.addEventListener("beforeunload", keepOpen);
+      const started = ider;
+      started.onProgress = (s) =>
+        this.iderNote(
+          `転送 ${(s.bytesRead / 1024 / 1024).toFixed(1)} MB・最後に読まれたセクタ ${s.lastLba}。タブを閉じると起動が止まります`,
+        );
+      void started.done.then((reason) => {
+        if (this.ider !== started) return;
+        this.ider = undefined;
+        window.removeEventListener("beforeunload", keepOpen);
+        this.iderStop.hidden = true;
+        this.onFile();
+        this.iderNote(`IDE-R を終了しました: ${reason}`);
+      });
+      const r = await this.wsman.bootFromIder();
+      this.iderNote(
+        r.result === 0 || r.result === 4096
+          ? `${r.state === 10 ? "リセット" : "電源オン"}を受け付けました。SOL に接続すると起動の様子が見えます。タブは閉じないでください`
+          : `電源の操作に失敗しました: ${returnValueText(r.result)}`,
+        r.result === 0 || r.result === 4096 ? "ok" : "error",
+      );
+      this.schedule(3000);
+    } catch (e) {
+      ider?.close();
+      if (e instanceof LoginRequired) this.handle(e);
+      else
+        this.iderNote(
+          `IDE-R で起動できませんでした: ${explainRedirectError(e)}`,
+          "error",
+        );
+    } finally {
+      this.iderBoot.removeAttribute("aria-busy");
+      this.onFile();
+    }
+  }
+
+  private iderNote(text: string, kind?: "error" | "ok"): void {
+    this.iderStatus.textContent = text;
+    if (kind) this.iderStatus.dataset.kind = kind;
+    else delete this.iderStatus.dataset.kind;
+  }
 
   private schedule(ms: number): void {
     clearTimeout(this.poll);
@@ -291,7 +435,7 @@ export class AmtView {
       });
     } catch (e) {
       this.xterm?.writeln(
-        `\x1b[31m✕\x1b[0m SOL に接続できませんでした: ${e instanceof Error ? e.message : String(e)}`,
+        `\x1b[31m✕\x1b[0m SOL に接続できませんでした: ${explainRedirectError(e)}`,
       );
     } finally {
       this.solConnecting = false;
@@ -332,6 +476,12 @@ export class AmtView {
 
   close(): void {
     clearTimeout(this.poll);
+    this.ider?.close();
+    this.ider = undefined;
+    window.removeEventListener("beforeunload", keepOpen);
+    this.iderStop.hidden = true;
+    this.iderFile.removeEventListener("change", this.onFile);
+    this.iderNote("");
     this.sol?.close();
     this.sol = undefined;
     this.resize?.disconnect();
@@ -345,4 +495,22 @@ export class AmtView {
     this.root.hidden = true;
     this.closed?.();
   }
+}
+
+/** IDE-R の転送の間は、タブを閉じる前にブラウザに確かめさせる */
+function keepOpen(e: BeforeUnloadEvent): void {
+  e.preventDefault();
+}
+
+/**
+ * リダイレクトにつなげなかった理由を、次にすることが分かる文にする。
+ * mado は AMT の 16994 / 16995 に届かないと「cannot reach AMT」で閉じる(ふつうはリダイレクトが無効なとき)
+ */
+export function explainRedirectError(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e);
+  if (m.includes("cannot reach AMT"))
+    return "AMT のリダイレクトが無効です。「SOL・IDE-R を有効にする」を押すか、MEBx で有効にしてください";
+  if (m.includes("AMT TLS failed"))
+    return "AMT と TLS でつなげませんでした。AMT の TLS の設定と cert_sha256 を確かめてください";
+  return m;
 }
