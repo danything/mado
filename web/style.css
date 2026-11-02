@@ -466,8 +466,9 @@ select:focus {
   color: var(--mado-muted);
 }
 
-/* --- つないでいる間(RDP)----------------------------------------------------------------------
- * 操作の 1 行は画面(canvas)の上に重ならないので、地に平らに置く。線も影も付けない */
+/* --- つないでいる間(RDP・AMT)------------------------------------------------------------------
+ * 画面(canvas・SOL の端末)が全面で、操作の 1 行はその上に重ねる(denpa のプレーヤーの操作列と同じ形)。
+ * 箱は浮かせず、上の端から濃くなる影を敷き、ボタンは塗らずに白い字と小さな影。触らないと引っ込む(autohide.ts) */
 nav.bar {
   display: flex;
   flex-wrap: wrap;
@@ -513,6 +514,157 @@ nav.bar li {
   vertical-align: 0.05em;
 }
 
+/* 映像の上の色(denpa の --dp-video* と同じ値)。舞台はテーマで変えない */
+:root {
+  --mado-video: #000;
+  --mado-on-video: #fff;
+  --mado-on-video-muted: rgb(255 255 255 / 0.72);
+  --mado-on-video-hover: rgb(255 255 255 / 0.14);
+  --mado-on-video-danger: #ff8a7a;
+  --mado-video-panel: #17191e;
+  /* 映像の上のメニュー。ぼかさず地を 75% 残す(白い字で 4.5:1 を割らない) */
+  --mado-video-menu: color-mix(
+    in srgb,
+    var(--mado-video-panel) 75%,
+    transparent
+  );
+}
+.bar.overlay {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 900;
+  align-items: flex-start;
+  /* 下に余白を取って影を画面へ流す。押せるのは中のボタンだけ */
+  padding: 0.5rem 0.75rem 2.5rem;
+  color: var(--mado-on-video);
+  pointer-events: none;
+  transition: opacity var(--mado-duration-move) var(--mado-ease);
+}
+.overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--mado-video) 82%, transparent),
+    color-mix(in srgb, var(--mado-video) 55%, transparent) 55%,
+    transparent
+  );
+  pointer-events: none;
+}
+.overlay > ul > li {
+  pointer-events: auto;
+}
+.overlay:not([data-shown]) {
+  opacity: 0;
+}
+.overlay:not([data-shown]) * {
+  pointer-events: none !important;
+}
+/* 読みもの(名前・種類・状態)もボタンと同じく白い字と小さな影。明るい画面の上でも読める */
+.overlay > ul:first-child {
+  color: var(--mado-on-video);
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
+}
+.overlay strong {
+  color: var(--mado-on-video);
+}
+.overlay .kind,
+.overlay .note {
+  color: var(--mado-on-video-muted);
+}
+.overlay :is(button, summary) {
+  --pico-background-color: transparent;
+  --pico-border-color: transparent;
+  --pico-color: var(--mado-on-video);
+  --pico-box-shadow: none;
+  border: 0;
+  border-radius: var(--mado-radius-full);
+  background: transparent;
+  color: var(--mado-on-video);
+  box-shadow: none;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
+}
+.overlay :is(button, summary):is(:hover, :focus-visible) {
+  background: var(--mado-on-video-hover);
+}
+.overlay button.danger:is(:hover, :focus-visible) {
+  color: var(--mado-on-video-danger);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .overlay::before {
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--mado-video-panel) 95%, transparent),
+      color-mix(in srgb, var(--mado-video-panel) 85%, transparent) 60%,
+      transparent
+    );
+  }
+}
+/* 映像の上のメニュー(AMT の電源)。Blades の details.dropdown の面だけ差し替える */
+.overlay details.dropdown {
+  margin: 0;
+}
+/* Blades の summary は入力欄の面と線を持つので、映像の上のボタンと同じく塗らない */
+.overlay details.dropdown > summary:not([role]) {
+  height: auto;
+  border: 0;
+  background: transparent;
+  color: var(--mado-on-video);
+  box-shadow: none;
+  line-height: 1;
+}
+.overlay details.dropdown > summary:not([role]):is(:hover, :focus-visible),
+.overlay details.dropdown[open] > summary:not([role]) {
+  background: var(--mado-on-video-hover);
+}
+.overlay details.dropdown > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--mado-btn-h-sm);
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.overlay details.dropdown > summary::after {
+  filter: invert(1);
+}
+.overlay details.dropdown > ul {
+  --pico-dropdown-background-color: var(--mado-video-menu);
+  --pico-dropdown-border-color: transparent;
+  --pico-dropdown-color: var(--mado-on-video);
+  --pico-dropdown-hover-background-color: var(--mado-on-video-hover);
+  right: 0;
+  left: auto;
+  min-width: max-content;
+  padding: 0.25rem;
+  border: 0;
+  border-radius: var(--mado-radius);
+  background: var(--mado-video-menu);
+  box-shadow:
+    0 2px 6px rgb(0 0 0 / 0.35),
+    0 18px 40px rgb(0 0 0 / 0.45);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .overlay details.dropdown > ul {
+    background: var(--mado-video-panel);
+  }
+}
+.overlay details.dropdown > ul li {
+  padding: 0;
+}
+.overlay details.dropdown > ul button {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: calc(var(--mado-radius) - 0.25rem);
+  filter: none;
+  text-align: left;
+}
+.overlay details.dropdown > ul button:disabled {
+  opacity: 0.4;
+}
+
 #home[hidden],
 #toolbar[hidden],
 #diag[hidden],
@@ -524,6 +676,9 @@ nav.bar li {
 /* つなぐまでは場所を取らない(canvas は DOM に置いたまま) */
 #screen.idle {
   flex: 0;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
   visibility: hidden;
 }
 #screen {
@@ -642,95 +797,44 @@ dialog[open] > article {
 }
 
 /* --- AMT の画面(amt/view.ts)---------------------------------------------------------------
- * 操作の 1 行と電源の行は地に平らに置く。SOL の端末は舞台なのでテーマにかかわらず黒い */
+ * SOL の端末が全面(舞台なのでテーマにかかわらず黒い)。操作は上に重ねるバー(上の .overlay) */
 #amt {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-.amt-section {
-  display: grid;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem 0.5rem;
-}
-.amt-section > p {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.25rem 0.75rem;
-  margin: 0;
-}
-.amt-section h2 {
-  margin: 0;
-  font-size: 0.875rem;
-  font-weight: 650;
-}
-.amt-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-  margin-left: -0.75rem;
-}
-.amt-actions button {
-  min-height: var(--mado-btn-h-sm);
-  padding: 0 0.75rem;
-  font-size: 0.875rem;
+  margin: 0; /* Blades の section の下の余白を消す */
+  background: var(--mado-video);
 }
 /* 電源の状態。状態の色の点と言葉 */
+#amt-state {
+  font-size: 0.8125rem;
+}
 #amt-state::before {
   content: "";
   display: inline-block;
   width: 0.5rem;
   height: 0.5rem;
-  margin-right: 0.375rem;
+  margin: 0 0.375rem 0 0.75rem;
   border-radius: 50%;
-  background: var(--mado-muted);
+  background: var(--mado-on-video-muted);
   vertical-align: 0.05em;
 }
 #amt-state[data-on="true"]::before {
   background: var(--mado-ok);
 }
 #amt-status {
-  font-size: 0.875rem;
-}
-/* ISO を選ぶ欄。ブラウザの部品のまま、余白だけ詰める */
-#amt-ider input[type="file"] {
-  margin: 0;
-  font-size: 0.875rem;
-}
-/* ブラウザの「ファイルを選択」も入力欄と同じ平らな面のカプセルにする */
-#amt-ider input[type="file"]::file-selector-button {
-  margin-right: 0.75rem;
-  padding: 0.375rem 0.875rem;
-  border: 0;
-  border-radius: var(--mado-radius-full);
-  background: var(--mado-field);
-  color: var(--mado-fg);
-  font-weight: 500;
-  transition: background-color var(--mado-duration) var(--mado-ease);
-}
-#amt-ider input[type="file"]::file-selector-button:hover {
-  background: var(--mado-hover);
-}
-#amt-ider label {
-  margin: 0;
+  margin-left: 0.75rem;
+  font-size: 0.8125rem;
 }
 #ider-stop[hidden],
 #amt-enable-redirection[hidden] {
   display: none;
 }
-#ider-status {
-  margin: 0;
-  font-size: 0.875rem;
-}
 #sol {
   flex: 1;
-  min-height: 12rem;
-  margin: 0.25rem 1rem 1rem;
+  min-height: 0;
   padding: 0.5rem;
-  border-radius: var(--mado-radius);
-  background: #000;
 }
 
 /* --- 動きを減らす設定 -------------------------------------------------------------------------

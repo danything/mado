@@ -67,7 +67,7 @@
         </footer>
       </div>
     </main>
-    <nav id="toolbar" class="bar" hidden>
+    <nav id="toolbar" class="bar overlay" hidden>
       <ul>
         <li><strong id="current" class="live"></strong></li>
       </ul>
@@ -113,21 +113,50 @@
         </footer>
       </article>
     </dialog>
-    <!-- Intel AMT の画面(amt/view.ts)。電源の状態と操作、SOL の端末 -->
+    <!-- Intel AMT の画面(amt/view.ts)。SOL の端末が全面で、操作は上に重ねるバー(RDP と同じ) -->
     <section id="amt" hidden>
-      <nav class="bar">
+      <nav class="bar overlay" id="amt-bar">
         <ul>
           <li><strong id="amt-name"></strong><span class="kind">AMT</span></li>
+          <li>
+            <span id="amt-state" data-on="false"></span>
+          </li>
+          <li><span id="amt-status" class="note" role="status"></span></li>
         </ul>
         <ul>
+          <!-- 電源の操作。開いたときに状態を読み直す -->
           <li>
-            <button type="button" class="secondary" data-amt="refresh">
-              更新
+            <details class="dropdown" id="amt-power">
+              <summary>電源</summary>
+              <ul id="amt-actions"></ul>
+            </details>
+          </li>
+          <!-- IDE-R: 手元の ISO を CD-ROM として見せて、そこから起動させる。選ぶと確かめる窓が出る -->
+          <li>
+            <button type="button" class="secondary" id="ider-boot">
+              ISO から起動
+            </button>
+            <input type="file" id="ider-file" accept=".iso" hidden />
+          </li>
+          <li>
+            <button type="button" class="secondary" id="ider-stop" hidden>
+              IDE-R を終了
+            </button>
+          </li>
+          <!-- SOL・IDE-R の受け口(AMT_RedirectionService)が無効なときだけ出す -->
+          <li>
+            <button
+              type="button"
+              class="secondary"
+              id="amt-enable-redirection"
+              hidden
+            >
+              SOL・IDE-R を有効にする
             </button>
           </li>
           <li>
             <button type="button" class="secondary" id="amt-sol" data-amt="sol">
-              SOL に接続
+              SOL を切断
             </button>
           </li>
           <li>
@@ -137,46 +166,7 @@
           </li>
         </ul>
       </nav>
-      <div class="amt-section" id="amt-power">
-        <p>
-          <span>電源: <strong id="amt-state" data-on="false"></strong></span>
-          <span id="amt-status" class="note" role="status"></span>
-        </p>
-        <div class="amt-actions" id="amt-actions"></div>
-      </div>
-      <!-- SOL・IDE-R の受け口(AMT_RedirectionService)。無効なら有効にできる -->
-      <div class="amt-section" id="amt-redir">
-        <p>
-          <span>SOL・IDE-R: <span id="amt-redirection">-</span></span>
-          <button
-            type="button"
-            class="secondary small"
-            id="amt-enable-redirection"
-            hidden
-          >
-            SOL・IDE-R を有効にする
-          </button>
-        </p>
-      </div>
-      <!-- IDE-R: 手元の ISO を CD-ROM として見せて、そこから起動させる(amt/view.ts) -->
-      <div class="amt-section" id="amt-ider">
-        <p>
-          <span>IDE-R の CD:</span>
-          <label class="file">
-            <input type="file" id="ider-file" accept=".iso" />
-          </label>
-        </p>
-        <div class="amt-actions">
-          <button type="button" class="secondary" id="ider-boot" disabled>
-            IDE-R の CD から起動
-          </button>
-          <button type="button" class="secondary" id="ider-stop" hidden>
-            IDE-R を終了
-          </button>
-        </div>
-        <p id="ider-status" class="note" role="status"></p>
-      </div>
-      <div id="sol" hidden></div>
+      <div id="sol"></div>
     </section>
     <!-- AMT の電源の操作の前に出す(amt/view.ts の ask) -->
     <dialog

@@ -1,4 +1,4 @@
-// AMT の画面を headless の Chromium で開いて、電源の状態と SOL の端末が出ることを見る。画面は out/ に PNG で残す。
+// AMT の画面を headless の Chromium で開いて、電源の状態と SOL の端末、重ねるバーの出し入れを見る。画面は out/ に PNG で残す。
 // e2e.ts と同じく、偽の AMT(amt.test)と mado(mado.test)が amtnet にいること。
 //   wslc run --rm --network amtnet -v "<リポジトリ>:/src" -w /tmp mcr.microsoft.com/playwright:v1.64.1-noble \
 //     sh -c "npm i playwright@1.64.1 >/dev/null 2>&1 && NODE_PATH=/tmp/node_modules node /src/tools/amt-e2e/ui.cjs"
@@ -43,20 +43,36 @@ const sign = (v) => {
       throw e;
     });
   console.log(`電源: ${await page.textContent("#amt-state")}`);
-  await page.click("#amt-sol");
+  // 開くとすぐ SOL につなぐ。開いた直後はバーが出ている
   await page.waitForFunction(
     () => document.querySelector("#sol")?.textContent?.includes("Talos"),
     null,
     { timeout: 10000 },
   );
+  await page.screenshot({ path: "/src/out/amt-sol-bar.png" });
   await page.keyboard.type("hello");
   await page.waitForFunction(
     () => document.querySelector("#sol")?.textContent?.includes("HELLO"),
     null,
     { timeout: 10000 },
   );
-  // 電源を切る(切れていれば入れる): 確かめる窓が出る。危ない操作では、やめるにフォーカスがある
+  // 触らなければバーは引っ込む(2.5 秒の 2 倍のあと)
+  await page.waitForFunction(
+    () => !document.querySelector("#amt-bar")?.hasAttribute("data-shown"),
+    null,
+    { timeout: 10000 },
+  );
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: "/src/out/amt-sol.png" });
+  // マウスを動かすと出る
+  await page.mouse.move(500, 400);
+  await page.mouse.move(520, 410);
+  await page.waitForSelector("#amt-bar[data-shown]");
+  // 電源を切る(切れていれば入れる): メニューから選ぶと確かめる窓が出る。危ない操作では、やめるにフォーカスがある
   const on = (await page.textContent("#amt-state")).includes("オン");
+  await page.click("#amt-power > summary");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "/src/out/amt-power-menu.png" });
   await page.click(`#amt-actions button[data-power="${on ? 8 : 2}"]`);
   await page.waitForSelector("#confirm[open]");
   const focused = await page.evaluate(() =>
@@ -75,15 +91,17 @@ const sign = (v) => {
     null,
     { timeout: 10000 },
   );
-  await page.click('#amt button[data-amt="refresh"]');
+  // メニューを開くと状態を読み直す
+  await page.click("#amt-power > summary");
   await page.waitForFunction(
     (want) => document.querySelector("#amt-state")?.textContent?.includes(want),
     on ? "オフ" : "オン",
     { timeout: 10000 },
   );
+  await page.click("#amt-power > summary");
   console.log(`操作のあとの電源: ${await page.textContent("#amt-state")}`);
   await page.screenshot({ path: "/src/out/amt-view.png" });
-  // IDE-R: ISO を選んで起動する。確認の窓のあと、受け付けたと出る
+  // IDE-R: 「ISO から起動」で ISO を選ぶと、確認の窓のあと、受け付けたと出る
   const iso = Buffer.alloc(64 * 2048);
   for (let i = 0; i < iso.length; i++) iso[i] = ((i >> 11) + i) % 251;
   await page.setInputFiles("#ider-file", {
@@ -91,20 +109,19 @@ const sign = (v) => {
     mimeType: "application/octet-stream",
     buffer: iso,
   });
-  await page.click("#ider-boot");
   await page.waitForSelector("#confirm[open]");
   await page.waitForTimeout(400);
   await page.screenshot({ path: "/src/out/ider-confirm.png" });
   await page.click('#confirm button[value="ok"]');
   await page.waitForFunction(
     () =>
-      /受け付けました|終了しました/.test(
-        document.querySelector("#ider-status")?.textContent ?? "",
+      /リセットを受け付け|電源オンを受け付け|IDE-R [0-9.]+ MB|IDE-R を終了/.test(
+        document.querySelector("#amt-status")?.textContent ?? "",
       ),
     null,
     { timeout: 15000 },
   );
-  console.log(`IDE-R: ${await page.textContent("#ider-status")}`);
+  console.log(`IDE-R: ${await page.textContent("#amt-status")}`);
   await page.screenshot({ path: "/src/out/ider.png" });
   await page.click('#amt button[data-amt="close"]');
   await page.waitForSelector("#home:not([hidden])");
