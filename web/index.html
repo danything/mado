@@ -124,13 +124,8 @@
           <li><span id="amt-status" class="note" role="status"></span></li>
         </ul>
         <ul>
-          <!-- 電源の操作。開いたときに状態を読み直す -->
-          <li>
-            <details class="dropdown" id="amt-power">
-              <summary>電源</summary>
-              <ul id="amt-actions"></ul>
-            </details>
-          </li>
+          <!-- 電源の操作。いま使えるものだけ並べ、2 回押しで確定する(amt/view.ts の pressPower) -->
+          <li id="amt-actions"></li>
           <!-- IDE-R: 手元の ISO を CD-ROM として見せて、そこから起動させる。選ぶと確かめる窓が出る -->
           <li>
             <button type="button" class="secondary" id="ider-boot">
@@ -180,7 +175,7 @@
       </nav>
       <div id="sol"></div>
     </section>
-    <!-- AMT の電源の操作の前に出す(amt/view.ts の ask) -->
+    <!-- AMT の「ISO から起動」と「SOL・IDE-R を有効にする」の前に出す(amt/view.ts の ask) -->
     <dialog
       id="confirm"
       aria-labelledby="confirm-title"

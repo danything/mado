@@ -160,17 +160,25 @@ describe("WS-Man の封筒", () => {
   });
 
   test("出す電源の操作は AMT が頼めるものに従う", () => {
+    // 14 は AMT が挙げていないので出さない。電源の入れ直し(5)は挙げていても出さない
     const on = powerButtons({ state: 2, available: [5, 8, 10, 12] });
-    expect(on.filter((b) => b.enabled).map((b) => b.action.value)).toEqual([
-      12, 10, 5, 8,
+    expect(on.map((a) => a.value)).toEqual([12, 10, 8]);
+    expect(on.map((a) => a.label)).toEqual([
+      "シャットダウン",
+      "強制再起動",
+      "強制電源オフ",
     ]);
-    // 14 は AMT が挙げていないので出さない
-    expect(on.some((b) => b.action.value === 14)).toBe(false);
-    // 挙げていなければ、今の状態で決める
-    const off = powerButtons({ state: 8, available: [] });
-    expect(off.filter((b) => b.enabled).map((b) => b.action.value)).toEqual([
-      2,
-    ]);
+    // 切れていれば電源オンだけ
+    expect(
+      powerButtons({ state: 8, available: [2] }).map((a) => a.value),
+    ).toEqual([2]);
+    // 挙げていなければ、今の状態で決める(OS の対応が要るものは出さない)
+    expect(
+      powerButtons({ state: 8, available: [] }).map((a) => a.value),
+    ).toEqual([2]);
+    expect(
+      powerButtons({ state: 2, available: [] }).map((a) => a.value),
+    ).toEqual([10, 8]);
   });
 });
 

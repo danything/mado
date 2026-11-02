@@ -526,12 +526,6 @@ nav.bar li {
   --mado-on-video-hover: rgb(255 255 255 / 0.14);
   --mado-on-video-danger: #ff8a7a;
   --mado-video-panel: #17191e;
-  /* 映像の上のメニュー。ぼかさず地を 75% 残す(白い字で 4.5:1 を割らない) */
-  --mado-video-menu: color-mix(
-    in srgb,
-    var(--mado-video-panel) 75%,
-    transparent
-  );
 }
 .bar.overlay {
   position: fixed;
@@ -578,7 +572,8 @@ nav.bar li {
 .overlay .note {
   color: var(--mado-on-video-muted);
 }
-.overlay :is(button, summary) {
+/* .bar を足して、控えのボタン(:is(button, [type=button]).secondary)の本文の色に負けないようにする */
+.overlay.bar button {
   --pico-background-color: transparent;
   --pico-border-color: transparent;
   --pico-color: var(--mado-on-video);
@@ -590,10 +585,11 @@ nav.bar li {
   box-shadow: none;
   filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
 }
-.overlay :is(button, summary):is(:hover, :focus-visible) {
+.overlay.bar button:is(:hover, :focus-visible) {
   background: var(--mado-on-video-hover);
 }
-.overlay button.danger:is(:hover, :focus-visible) {
+.overlay.bar
+  button.danger:not(:disabled):is(:hover, :focus-visible, [data-armed]) {
   color: var(--mado-on-video-danger);
 }
 @media (prefers-reduced-transparency: reduce) {
@@ -605,68 +601,6 @@ nav.bar li {
       transparent
     );
   }
-}
-/* 映像の上のメニュー(AMT の電源)。Blades の details.dropdown の面だけ差し替える */
-.overlay details.dropdown {
-  margin: 0;
-}
-/* Blades の summary は入力欄の面と線を持つので、映像の上のボタンと同じく塗らない */
-.overlay details.dropdown > summary:not([role]) {
-  height: auto;
-  border: 0;
-  background: transparent;
-  color: var(--mado-on-video);
-  box-shadow: none;
-  line-height: 1;
-}
-.overlay details.dropdown > summary:not([role]):is(:hover, :focus-visible),
-.overlay details.dropdown[open] > summary:not([role]) {
-  background: var(--mado-on-video-hover);
-}
-.overlay details.dropdown > summary {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--mado-btn-h-sm);
-  padding: 0 0.75rem;
-  font-size: 0.8125rem;
-  cursor: pointer;
-}
-.overlay details.dropdown > summary::after {
-  filter: invert(1);
-}
-.overlay details.dropdown > ul {
-  --pico-dropdown-background-color: var(--mado-video-menu);
-  --pico-dropdown-border-color: transparent;
-  --pico-dropdown-color: var(--mado-on-video);
-  --pico-dropdown-hover-background-color: var(--mado-on-video-hover);
-  right: 0;
-  left: auto;
-  min-width: max-content;
-  padding: 0.25rem;
-  border: 0;
-  border-radius: var(--mado-radius);
-  background: var(--mado-video-menu);
-  box-shadow:
-    0 2px 6px rgb(0 0 0 / 0.35),
-    0 18px 40px rgb(0 0 0 / 0.45);
-}
-@media (prefers-reduced-transparency: reduce) {
-  .overlay details.dropdown > ul {
-    background: var(--mado-video-panel);
-  }
-}
-.overlay details.dropdown > ul li {
-  padding: 0;
-}
-.overlay details.dropdown > ul button {
-  width: 100%;
-  justify-content: flex-start;
-  border-radius: calc(var(--mado-radius) - 0.25rem);
-  filter: none;
-  text-align: left;
-}
-.overlay details.dropdown > ul button:disabled {
-  opacity: 0.4;
 }
 
 #home[hidden],
@@ -830,6 +764,12 @@ dialog[open] > article {
 #amt-status {
   margin-left: 0.75rem;
   font-size: 0.8125rem;
+}
+/* 電源の操作は、いま使えるものだけをバーにそのまま並べる */
+#amt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem;
 }
 #ider-stop[hidden],
 #amt-enable-redirection[hidden],
