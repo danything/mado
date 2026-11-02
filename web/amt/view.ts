@@ -31,7 +31,8 @@ export type AmtDeps = {
 type PowerAction = {
   value: number;
   label: string;
-  confirm: string;
+  /** ボタンの title に出す説明 */
+  description: string;
   /** 電源が入っているときだけ意味がある */
   whenOn?: boolean;
   /** AMT がリクエストできる状態として挙げたときだけ出す(OS 側の対応が要るもの) */
@@ -39,69 +40,60 @@ type PowerAction = {
   danger?: boolean;
 };
 
+// 電源の入れ直し(5)は強制再起動とほぼ同じで紛らわしいので出さない
 export const POWER_ACTIONS: PowerAction[] = [
-  { value: 2, label: "電源オン", confirm: "電源を入れます。" },
+  { value: 2, label: "電源オン", description: "電源を入れます" },
   {
     value: 12,
-    label: "OS のシャットダウン",
-    confirm:
-      "OS にシャットダウンをリクエストします。OS 側が対応していないと何も起きません。",
+    label: "シャットダウン",
+    description:
+      "OS にシャットダウンを頼みます。OS が対応していないと何も起きません",
     whenOn: true,
     optional: true,
   },
   {
     value: 14,
-    label: "OS の再起動",
-    confirm:
-      "OS に再起動をリクエストします。OS 側が対応していないと何も起きません。",
+    label: "再起動",
+    description: "OS に再起動を頼みます。OS が対応していないと何も起きません",
     whenOn: true,
     optional: true,
   },
   {
     value: 10,
-    label: "リセット",
-    confirm:
-      "リセットボタンを押したのと同じです。OS を止めずに再起動するので、保存していないデータは失われます。",
-    whenOn: true,
-    danger: true,
-  },
-  {
-    value: 5,
-    label: "電源の入れ直し",
-    confirm:
-      "電源を切ってから入れ直します。OS を止めないので、保存していないデータは失われます。",
+    label: "強制再起動",
+    description:
+      "リセットボタンと同じです。OS を止めずに再起動するので、保存していないデータは失われます",
     whenOn: true,
     danger: true,
   },
   {
     value: 8,
     label: "強制電源オフ",
-    confirm:
-      "電源ボタンの長押しと同じです。OS を止めずに電源を切るので、保存していないデータは失われます。",
+    description:
+      "電源ボタンの長押しと同じです。OS を止めずに電源を切るので、保存していないデータは失われます",
     whenOn: true,
     danger: true,
   },
 ];
 
-/** 出す操作と、押せるかどうか。AMT がリクエストできる状態を挙げていればそれに従う */
-export function powerButtons(
-  info: PowerInfo | undefined,
-): { action: PowerAction; enabled: boolean }[] {
+/** いま使える操作。AMT がリクエストできる状態を挙げていればそれに従い、挙げていなければ今の電源の状態で決める */
+export function powerButtons(info: PowerInfo | undefined): PowerAction[] {
   const listed = info?.available ?? [];
-  return POWER_ACTIONS.filter(
-    (a) => !a.optional || listed.includes(a.value),
-  ).map((action) => ({
-    action,
-    enabled:
-      listed.length > 0
-        ? listed.includes(action.value)
+  return POWER_ACTIONS.filter((a) =>
+    listed.length > 0
+      ? listed.includes(a.value)
+      : a.optional
+        ? false
         : info?.state === undefined
           ? true
-          : action.whenOn
+          : a.whenOn
             ? isOn(info.state)
             : !isOn(info.state),
-  }));
+  );
 }
+
+/** 電源のボタンの 1 回目のあと、2 回目を待つ時間 */
+const ARM_MS = 3000;
 
 const $ = <T extends HTMLElement>(sel: string) =>
   document.querySelector(sel) as T;
@@ -116,8 +108,15 @@ export class AmtView {
   private readonly root = $<HTMLElement>("#amt");
   private readonly state = $<HTMLElement>("#amt-state");
   private readonly status = $<HTMLElement>("#amt-status");
-  private readonly powerMenu = $<HTMLDetailsElement>("#amt-power");
   private readonly actions = $<HTMLElement>("#amt-actions");
+  /** 1 回目を押して 2 回目を待っている電源の操作 */
+  private armed?: {
+    action: PowerAction;
+    timer: ReturnType<typeof setTimeout>;
+    message: string;
+    /** 1 回目の前の状態の文。待ちをやめたら戻す */
+    before: { text: string; kind?: "error" | "ok" };
+  };
   private readonly term = $<HTMLElement>("#sol");
   private readonly solButton = $<HTMLButtonElement>("#amt-sol");
   private readonly dashButton = $<HTMLButtonElement>("#amt-dash");
@@ -161,7 +160,6 @@ export class AmtView {
     this.showExpiry();
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
-    this.powerMenu.addEventListener("toggle", this.onMenu);
     this.iderFile.addEventListener("change", this.onFile);
     this.schedule(POLL_MS);
     let term: Xterm;
@@ -227,27 +225,16 @@ export class AmtView {
     const b = (e.target as HTMLElement).closest("button");
     if (!b) return;
     if (b.dataset.power) {
-      this.powerMenu.open = false;
-      void this.changePower(Number(b.dataset.power));
-    } else if (b.dataset.amt === "sol") void this.toggleSol();
+      this.pressPower(Number(b.dataset.power));
+      return;
+    }
+    // 別のボタンを押したら、電源の 2 回目の待ちは取り消す
+    this.disarm(true);
+    if (b.dataset.amt === "sol") void this.toggleSol();
     else if (b.dataset.amt === "close") this.close();
     else if (b === this.iderBoot) this.iderFile.click();
     else if (b === this.enableRedirectionButton) void this.enableRedirection();
     else if (b === this.iderStop) this.ider?.close();
-  };
-
-  /** 電源のメニューを開いたら状態を読み直す。外を押したら閉じる */
-  private onMenu = () => {
-    if (!this.powerMenu.open) {
-      removeEventListener("pointerdown", this.onOutside, true);
-      return;
-    }
-    addEventListener("pointerdown", this.onOutside, true);
-    void this.refresh();
-  };
-
-  private onOutside = (e: PointerEvent) => {
-    if (!this.powerMenu.contains(e.target as Node)) this.powerMenu.open = false;
   };
 
   private onFile = () => {
@@ -360,34 +347,89 @@ export class AmtView {
     const s = this.info?.state;
     this.state.textContent = powerStateName(s);
     this.state.dataset.on = String(isOn(s));
+    // 15 秒ごとに読み直すので、出す操作が変わったときだけ作り直す(押しかけのボタンと焦点を消さない)
+    const actions = powerButtons(this.info);
+    const shown = [...this.powerButtonElements()]
+      .map((b) => b.dataset.power)
+      .join();
+    if (shown === actions.map((a) => String(a.value)).join()) return;
+    if (this.armed && !actions.includes(this.armed.action)) this.disarm(true);
+    const focused = this.actions.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement).dataset.power
+      : undefined;
     this.actions.replaceChildren(
-      ...powerButtons(this.info).map(({ action, enabled }) => {
-        const li = document.createElement("li");
+      ...actions.map((action) => {
         const b = document.createElement("button");
         b.type = "button";
         b.dataset.power = String(action.value);
-        b.textContent = action.label;
-        // 戻せない操作の 1 回目は控えのボタンで、乗せたときだけ赤い字。確定は確認の窓で
+        b.title = action.description;
+        // 戻せない操作は控えのボタンで、乗せたときと 2 回目を待つ間は赤い字(塗らない)
         b.className = action.danger ? "secondary danger" : "secondary";
-        b.disabled = !enabled;
-        li.append(b);
-        return li;
+        this.paintPower(b, action);
+        return b;
       }),
+    );
+    if (focused !== undefined) {
+      const bs = [...this.powerButtonElements()];
+      (bs.find((b) => b.dataset.power === focused) ?? bs[0])?.focus();
+    }
+  }
+
+  private powerButtonElements(): NodeListOf<HTMLButtonElement> {
+    return this.actions.querySelectorAll<HTMLButtonElement>(
+      "button[data-power]",
     );
   }
 
-  private async changePower(value: number): Promise<void> {
+  /** ボタンの文。2 回目を待っている間は「もう一度押すと…」 */
+  private paintPower(b: HTMLButtonElement, action: PowerAction): void {
+    const armed = this.armed?.action === action;
+    b.textContent = armed ? `もう一度押すと${action.label}` : action.label;
+    b.toggleAttribute("data-armed", armed);
+  }
+
+  /** 電源のボタンは 2 回押しで確定する。1 回目で文を変え、ARM_MS 以内にもう一度押したら実行する */
+  private pressPower(value: number): void {
     const action = POWER_ACTIONS.find((a) => a.value === value);
     if (!action) return;
-    if (
-      !(await this.ask(
-        `${this.login.target}: ${action.label}`,
-        action.confirm,
-        action.label,
-        action.danger,
-      ))
-    )
+    if (this.armed?.action === action) {
+      this.disarm(false);
+      void this.changePower(action);
       return;
+    }
+    this.disarm(true);
+    const message = `もう一度押すと${action.label}します`;
+    const kind = this.status.dataset.kind;
+    this.armed = {
+      action,
+      message,
+      before: {
+        text: this.status.textContent ?? "",
+        kind: kind === "error" || kind === "ok" ? kind : undefined,
+      },
+      timer: setTimeout(() => this.disarm(true), ARM_MS),
+    };
+    for (const b of this.powerButtonElements())
+      if (b.dataset.power === String(value)) this.paintPower(b, action);
+    // #amt-status は aria-live なので、読み上げにも伝わる
+    this.note(message);
+  }
+
+  /** 2 回目の待ちをやめ、ボタンの文を戻す。clearNote なら待ちの知らせを前の文に戻す */
+  private disarm(clearNote: boolean): void {
+    const a = this.armed;
+    if (!a) return;
+    clearTimeout(a.timer);
+    this.armed = undefined;
+    for (const b of this.powerButtonElements())
+      if (b.dataset.power === String(a.action.value))
+        this.paintPower(b, a.action);
+    if (clearNote && this.status.textContent === a.message)
+      this.note(a.before.text, a.before.kind);
+  }
+
+  private async changePower(action: PowerAction): Promise<void> {
+    const value = action.value;
     this.note(`${action.label}…`);
     try {
       const rv = await this.wsman.changePower(value);
@@ -655,9 +697,8 @@ export class AmtView {
     this.iderStop.hidden = true;
     this.iderBoot.disabled = false;
     this.iderFile.removeEventListener("change", this.onFile);
-    this.powerMenu.open = false;
-    this.powerMenu.removeEventListener("toggle", this.onMenu);
-    removeEventListener("pointerdown", this.onOutside, true);
+    this.disarm(true);
+    this.actions.replaceChildren();
     this.enableRedirectionButton.hidden = true;
     this.sol?.close();
     this.sol = undefined;

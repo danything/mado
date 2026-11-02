@@ -57,24 +57,55 @@ const sign = (v) => {
   );
   // 触らなくてもバーは引っ込まない
   await page.waitForTimeout(6000);
-  if (!(await page.isVisible("#amt-bar[data-shown] #amt-power")))
+  if (!(await page.isVisible("#amt-bar[data-shown] #amt-actions button")))
     throw new Error("SOL のバーが引っ込んだ");
   await page.screenshot({ path: "/src/out/amt-sol.png" });
-  // 電源を切る(切れていれば入れる): メニューから選ぶと確かめる窓が出る。危ない操作では、やめるにフォーカスがある
+  // 電源の操作はいま使えるものだけバーに並ぶ。入っていれば電源オンは出ない
   const on = (await page.textContent("#amt-state")).includes("オン");
-  await page.click("#amt-power > summary");
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: "/src/out/amt-power-menu.png" });
-  await page.click(`#amt-actions button[data-power="${on ? 8 : 2}"]`);
-  await page.waitForSelector("#confirm[open]");
-  const focused = await page.evaluate(() =>
-    document.activeElement?.getAttribute("value"),
+  const shown = await page.$$eval("#amt-actions button", (bs) =>
+    bs.map((b) => b.textContent),
   );
-  console.log(`確かめる窓のフォーカス: ${focused}`);
-  // 窓が開き終わるのを待つ
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: "/src/out/amt-confirm.png" });
-  await page.click('#confirm button[value="ok"]');
+  console.log(`電源のボタン: ${shown.join(" / ")}`);
+  if (on === shown.includes("電源オン"))
+    throw new Error("電源の状態と出ているボタンが合わない");
+  const power = `#amt-actions button[data-power="${on ? 8 : 2}"]`;
+  const powerLabel = on ? "強制電源オフ" : "電源オン";
+  // 1 回目で文が変わり、3 秒押さなければ元に戻る
+  await page.click(power);
+  await page.waitForFunction(
+    (want) =>
+      document.querySelector("#amt-status")?.textContent ===
+      `もう一度押すと${want}します`,
+    powerLabel,
+  );
+  if ((await page.textContent(power)) !== `もう一度押すと${powerLabel}`)
+    throw new Error("1 回目でボタンの文が変わらない");
+  // 乗せていなくても、待っている間は赤い字(色の移り変わりを待つ)
+  await page.mouse.move(0, 400);
+  await page.waitForTimeout(300);
+  const color = await page.$eval(power, (b) => getComputedStyle(b).color);
+  console.log(`1 回目: ${await page.textContent(power)}(字の色 ${color})`);
+  await page.screenshot({ path: "/src/out/amt-power-armed.png" });
+  await page.waitForTimeout(3300);
+  if ((await page.textContent(power)) !== powerLabel)
+    throw new Error("3 秒たってもボタンの文が戻らない");
+  // 別のボタンを押すと待ちは取り消す(キーボードで 1 回目、SOL のボタンを押す)
+  await page.focus(power);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(`${power}[data-armed]`);
+  await page.click("#amt-sol");
+  if (await page.$(`${power}[data-armed]`))
+    throw new Error("別のボタンを押しても待ちが残る");
+  await page.waitForFunction(() =>
+    document.querySelector("#amt-sol")?.textContent?.includes("接続"),
+  );
+  // SOL を切ったなら、つなぎ直す
+  if ((await page.textContent("#amt-sol")).includes("SOL に接続"))
+    await page.click("#amt-sol");
+  // キーボードで 2 回押すと実行する
+  await page.focus(power);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
   await page.waitForFunction(
     () =>
       document
@@ -83,15 +114,26 @@ const sign = (v) => {
     null,
     { timeout: 10000 },
   );
-  // メニューを開くと状態を読み直す
-  await page.click("#amt-power > summary");
+  // 操作の 3 秒あとに読み直し、ボタンが入れ替わる
   await page.waitForFunction(
     (want) => document.querySelector("#amt-state")?.textContent?.includes(want),
     on ? "オフ" : "オン",
     { timeout: 10000 },
   );
-  await page.click("#amt-power > summary");
-  console.log(`操作のあとの電源: ${await page.textContent("#amt-state")}`);
+  await page.waitForFunction(
+    (wasOn) =>
+      [...document.querySelectorAll("#amt-actions button")].some(
+        (b) => b.textContent === "電源オン",
+      ) === wasOn,
+    on,
+  );
+  console.log(
+    `操作のあとの電源: ${await page.textContent("#amt-state")}・ボタン: ${(
+      await page.$$eval("#amt-actions button", (bs) =>
+        bs.map((b) => b.textContent),
+      )
+    ).join(" / ")}`,
+  );
   await page.screenshot({ path: "/src/out/amt-view.png" });
   // IDE-R: 「ISO から起動」で ISO を選ぶと、確認の窓のあと、受け付けたと出る
   const iso = Buffer.alloc(64 * 2048);
