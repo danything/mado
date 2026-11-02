@@ -130,6 +130,8 @@ export class AmtView {
   private poll?: ReturnType<typeof setTimeout>;
   private sol?: SolSession;
   private solConnecting = false;
+  /** UTF-8 の途中で止まったバイトを出すタイマー(connectSol) */
+  private solFlush?: ReturnType<typeof setTimeout>;
   private xterm?: Xterm;
   private resize?: ResizeObserver;
   private bar?: AutoHide;
@@ -153,7 +155,14 @@ export class AmtView {
     this.iderFile.addEventListener("change", this.onFile);
     this.bar = autoHide(this.barEl, "move");
     this.schedule(POLL_MS);
-    const term = await this.terminal();
+    let term: Xterm;
+    try {
+      term = await this.terminal();
+    } catch (e) {
+      // xterm.js を読めなければ、半端に開いたままにしない
+      this.close();
+      throw e;
+    }
     if (await this.checkRedirection()) void this.connectSol();
     else
       term.writeln(
@@ -469,12 +478,11 @@ export class AmtView {
       this.sol = sol;
       // BIOS の CP437 と Linux の UTF-8 の両方を読む(serial-text.ts)。UTF-8 の途中で止まったら少し待って出す
       const text = new SerialText();
-      let flush: ReturnType<typeof setTimeout> | undefined;
       sol.onData = (b) => {
-        clearTimeout(flush);
+        clearTimeout(this.solFlush);
         term.write(text.decode(b));
         if (text.waiting)
-          flush = setTimeout(() => term.write(text.flush()), 100);
+          this.solFlush = setTimeout(() => term.write(text.flush()), 100);
       };
       term.writeln(
         gray(
@@ -486,6 +494,7 @@ export class AmtView {
       void sol.done.then((reason) => {
         if (this.sol !== sol) return;
         this.sol = undefined;
+        clearTimeout(this.solFlush);
         this.solButton.textContent = "SOL に接続";
         this.xterm?.writeln(`\r\n${gray(`SOL が切断されました: ${reason}`)}`);
         this.bar?.reveal(NOTE_MS);
@@ -546,11 +555,13 @@ export class AmtView {
     this.enableRedirectionButton.hidden = true;
     this.sol?.close();
     this.sol = undefined;
+    clearTimeout(this.solFlush);
     this.resize?.disconnect();
     this.xterm?.dispose();
     this.xterm = undefined;
     this.term.replaceChildren();
-    this.solButton.textContent = "SOL を切断";
+    // つないだら「SOL を切断」にする(connectSol)
+    this.solButton.textContent = "SOL に接続";
     this.bar?.stop();
     this.note("");
     this.root.removeEventListener("click", this.onClick);
