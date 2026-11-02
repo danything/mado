@@ -516,6 +516,16 @@ export class AmtView {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(this.term);
+    // xterm.js がキー入力を受ける隠れた textarea を、ブラウザが「文章を書く欄」とみなして、Edge の「Ask Edge to help me write」や
+    // その目印(端末の左上の青い点)を出していた。SOL には要らないので、書く手伝い・スペルチェック・自動補完を切る
+    if (term.textarea) {
+      const ta = term.textarea;
+      ta.setAttribute("writingsuggestions", "false");
+      ta.setAttribute("spellcheck", "false");
+      ta.setAttribute("autocomplete", "off");
+      ta.setAttribute("autocorrect", "off");
+      ta.setAttribute("autocapitalize", "off");
+    }
     fit.fit();
     const enc = new TextEncoder();
     term.onData((s) => this.sol?.send(enc.encode(s)));
