@@ -34,10 +34,12 @@
           </div>
         </header>
         <form id="login">
-          <label id="target-field">
-            <select name="target" required></select>
-            <span>つなぐ先</span>
-          </label>
+          <!-- つなぐ先の一覧。RDP の PC と Intel AMT が並ぶ(app.ts が作る) -->
+          <fieldset
+            id="target-field"
+            role="radiogroup"
+            aria-label="つなぐ先"
+          ></fieldset>
           <label>
             <input
               name="username"
@@ -45,7 +47,7 @@
               placeholder=" "
               required
             />
-            <span>Windows のユーザー名</span>
+            <span id="username-label">Windows のユーザー名</span>
           </label>
           <label>
             <input
@@ -55,7 +57,7 @@
               placeholder=" "
               required
             />
-            <span>パスワード</span>
+            <span id="password-label">パスワード</span>
           </label>
           <button type="submit">つなぐ</button>
           <small id="status" role="status"></small>
@@ -120,6 +122,64 @@
             やめる
           </button>
           <button type="button" class="outline" value="trust"></button>
+        </footer>
+      </article>
+    </dialog>
+    <!-- Intel AMT の画面(amt/view.ts)。電源の状態と操作、SOL の端末 -->
+    <section id="amt" hidden>
+      <nav class="bar">
+        <ul>
+          <li><strong id="amt-name"></strong></li>
+          <li><span class="kind">AMT</span></li>
+        </ul>
+        <ul>
+          <li>
+            <button type="button" class="secondary outline" data-amt="refresh">
+              状態を読み直す
+            </button>
+          </li>
+          <li>
+            <button
+              type="button"
+              class="secondary outline"
+              id="amt-sol"
+              data-amt="sol"
+            >
+              SOL をつなぐ
+            </button>
+          </li>
+          <li>
+            <button type="button" class="contrast" data-amt="close">
+              閉じる
+            </button>
+          </li>
+        </ul>
+      </nav>
+      <article id="amt-power">
+        <p>
+          電源: <strong id="amt-state" data-on="false"></strong>
+          <small id="amt-status" role="status"></small>
+        </p>
+        <div id="amt-actions"></div>
+      </article>
+      <div id="sol" hidden></div>
+    </section>
+    <!-- AMT の電源の操作の前に出す(amt/view.ts の ask) -->
+    <dialog
+      id="confirm"
+      aria-labelledby="confirm-title"
+      aria-describedby="confirm-lead"
+    >
+      <article>
+        <header>
+          <h2 id="confirm-title"></h2>
+        </header>
+        <p id="confirm-lead"></p>
+        <footer>
+          <button type="button" class="secondary outline" value="cancel">
+            やめる
+          </button>
+          <button type="button" class="outline" value="ok"></button>
         </footer>
       </article>
     </dialog>

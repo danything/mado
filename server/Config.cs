@@ -2,8 +2,23 @@ using System.Text.Json;
 
 namespace Mado;
 
-/// <summary>つなぐ先の RDP。画面で名前を選ぶ</summary>
-internal sealed record Target(string Name, string Host, int Port);
+/// <summary>つなぐ先の種類。RDP の PC か、Intel AMT(電源と SOL)</summary>
+internal enum TargetKind { Rdp, Amt }
+
+/// <summary>
+/// つなぐ先。画面で名前を選ぶ。RDP は Port が RDP の port。
+/// AMT は Port が WS-Man(16992、TLS なら 16993)で、SOL などのリダイレクトは RedirectPort(16994、TLS なら 16995)。
+/// CertSha256 は AMT に TLS でつなぐとき、証明書(leaf の DER)の SHA-256 で確かめる指紋。無ければ確かめない
+/// </summary>
+internal sealed record Target(string Name, string Host, int Port, TargetKind Kind = TargetKind.Rdp, bool Tls = false, string? CertSha256 = null)
+{
+    public const int AmtHttp = 16992, AmtHttps = 16993, AmtRedirect = 16994, AmtRedirectTls = 16995;
+
+    public int RedirectPort => Tls ? AmtRedirectTls : AmtRedirect;
+
+    /// <summary>画面と API に出す種類の名前</summary>
+    public string Type => Kind == TargetKind.Amt ? "amt" : "rdp";
+}
 
 /// <summary>
 /// JSON の設定ファイル。`--config &lt;path&gt;` で場所を指定する。指定が無ければ %ProgramData%\mado\mado.json を読む。
@@ -117,12 +132,40 @@ internal sealed record Config(
             if (string.IsNullOrEmpty(t.Host)) throw new ConfigException($"{at}.host が要る");
             var name = t.Name ?? t.Host;
             if (name == "") throw new ConfigException($"{at}.name は空でない文字列");
-            var port = t.Port ?? 3389;
-            if (port is < 1 or > 65535) throw new ConfigException($"{at}.port は 1〜65535 の整数");
             if (!seen.Add(name)) throw new ConfigException($"{at}.name が重なっている ({name})");
-            return new Target(name, t.Host, port);
+            switch (t.Type ?? "rdp")
+            {
+                case "rdp":
+                    if (t.Tls is not null || t.CertSha256 is not null) throw new ConfigException($"{at}: tls と cert_sha256 は type が amt のときだけ");
+                    var port = t.Port ?? 3389;
+                    if (port is < 1 or > 65535) throw new ConfigException($"{at}.port は 1〜65535 の整数");
+                    return new Target(name, t.Host, port);
+                case "amt":
+                    // AMT の port は決まっている(WS-Man とリダイレクトの 2 つ)。tls で選ぶ
+                    if (t.Port is not null) throw new ConfigException($"{at}.port は書かない(AMT は tls で 16992 / 16993 を選ぶ)");
+                    var tls = t.Tls ?? false;
+                    var pin = t.CertSha256 is null ? null : NormalizeFingerprint(t.CertSha256)
+                        ?? throw new ConfigException($"{at}.cert_sha256 は SHA-256 の 16 進(64 文字。: や空白は無視する)");
+                    if (pin is not null && !tls) throw new ConfigException($"{at}.cert_sha256 は tls が true のときだけ");
+                    return new Target(name, t.Host, tls ? Target.AmtHttps : Target.AmtHttp, TargetKind.Amt, tls, pin);
+                default:
+                    throw new ConfigException($"{at}.type は rdp か amt");
+            }
         })];
     }
+
+    /// <summary>指紋を大文字の 16 進 64 文字にする。: や空白は無視する。形が違えば null</summary>
+    internal static string? NormalizeFingerprint(string s)
+    {
+        var hex = new string([.. s.Where(c => c is not (':' or ' ' or '-'))]).ToUpperInvariant();
+        return hex.Length == 64 && hex.All(Uri.IsHexDigit) ? hex : null;
+    }
+
+    /// <summary>名前で RDP のつなぐ先を探す。AMT の先や無い名前は null</summary>
+    public Target? Rdp(string? name) => Targets.FirstOrDefault(t => t.Name == name && t.Kind == TargetKind.Rdp);
+
+    /// <summary>名前で AMT のつなぐ先を探す。RDP の先や無い名前は null</summary>
+    public Target? Amt(string? name) => Targets.FirstOrDefault(t => t.Name == name && t.Kind == TargetKind.Amt);
 
     /// <summary>外から見た URL の起点。普段は https で、tls が off なら http とポート</summary>
     public string Origin => Tls == "off"
@@ -170,7 +213,17 @@ internal sealed record Config(
         public string? ClientSecretFile { get; set; }
         public string? RequiredRole { get; set; }
     }
-    internal sealed class RawTarget { public string? Name { get; set; } public string? Host { get; set; } public int? Port { get; set; } }
+    internal sealed class RawTarget
+    {
+        public string? Name { get; set; }
+        /// <summary>rdp(既定)か amt</summary>
+        public string? Type { get; set; }
+        public string? Host { get; set; }
+        public int? Port { get; set; }
+        /// <summary>AMT だけ。true で 16993 / 16995(TLS)</summary>
+        public bool? Tls { get; set; }
+        public string? CertSha256 { get; set; }
+    }
     internal sealed class RawStatus { public int? Port { get; set; } }
 }
 

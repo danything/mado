@@ -8,6 +8,8 @@
 //   https://<host>/api/token    ?target=<name>。つなぐ直前に取る使い捨ての中継のトークン
 //   wss://<host>/ws             RDCleanPath の中継。Relay.cs
 //   https://<host>/wt (UDP)     同じ中継を WebTransport(HTTP/3)で。WebTransportRelay.cs と Quic/
+//   https://<host>/api/amt/<name>/wsman  Intel AMT の WS-Man(電源)の中継。Amt.cs
+//   wss://<host>/ws/amt         Intel AMT のリダイレクト(SOL)の中継。Amt.cs
 //   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
 //   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態。POST /update で更新をすぐ確かめる
 
@@ -35,7 +37,7 @@ var logDir = Path.Combine(Path.GetDirectoryName(config.File)!, "logs");
 var log = new FileLog(Path.Combine(logDir, "mado.log"));
 var version = "v" + (typeof(Config).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
     .Split('+')[0] ?? "0.0.0");
-log.Write($"mado {version}: {config.File} を読んだ({config.Host}、つなぐ先 {string.Join(' ', config.Targets.Select(t => $"{t.Name}={t.Host}:{t.Port}"))})");
+log.Write($"mado {version}: {config.File} を読んだ({config.Host}、つなぐ先 {string.Join(' ', config.Targets.Select(t => $"{t.Name}={t.Type}:{t.Host}:{t.Port}"))})");
 
 var signer = Signer.Open(config.DataDir);
 var origin = config.Origin;
@@ -104,7 +106,10 @@ CookieOptions Cookie(int maxAge) => new()
 {
     HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax, Path = "/", MaxAge = TimeSpan.FromSeconds(maxAge),
 };
-Target? TargetOf(string? name) => config.Targets.FirstOrDefault(t => t.Name == name);
+// RDP の中継(/ws、/wt)は RDP の先だけ、AMT の中継は AMT の先だけにつなぐ
+Target? RdpOf(string? name) => config.Rdp(name);
+var wsman = new AmtWsman();
+app.Lifetime.ApplicationStopping.Register(wsman.Dispose);
 
 // 中継の使い捨てのトークン。使い回しを弾く
 var tokens = new RelayTokens(signer, RelayTokenSeconds);
@@ -115,7 +120,7 @@ if (config.WebTransportPort != 0)
 {
     // CONNECT でトークンを使う。Cookie が無いので sub は見ない(WebTransportRelay.cs)
     var handler = new WebTransportRelay(origin, token =>
-        tokens.Consume(token, null) is { } t && TargetOf(t.Target) is { } target ? (target, t.Name ?? t.Sub) : null,
+        tokens.Consume(token, null) is { } t && RdpOf(t.Target) is { } target ? (target, t.Name ?? t.Sub) : null,
         log.Write, CountSession, app.Lifetime.ApplicationStopping);
     wt = WebTransportServer.TryCreate(handler, listenIp, (ushort)config.WebTransportPort, log.Write);
     app.Lifetime.ApplicationStopping.Register(() => wt?.Dispose());
@@ -205,14 +210,15 @@ app.MapGet("/api/session", (HttpContext ctx) =>
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return NeedLogin();
     var ws = (origin.StartsWith("https") ? "wss" : "ws") + origin[(origin.IndexOf(':'))..] + "/ws";
-    return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(t => t.Name)], ws, wt is { IsListening: true } ? wtUrl : null), ApiJson.Default.SessionInfo);
+    return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(t => new TargetInfo(t.Name, t.Type))], ws, wt is { IsListening: true } ? wtUrl : null), ApiJson.Default.SessionInfo);
 });
 
 app.MapGet("/api/token", (HttpContext ctx) =>
 {
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return NeedLogin();
-    if (TargetOf(ctx.Request.Query["target"]) is not { } target) return Text(404, "そのつなぐ先は無い");
+    // RDP の先でも AMT の先でも出す。使う側(/ws、/wt、/ws/amt)が種類を確かめる
+    if (config.Targets.FirstOrDefault(t => t.Name == ctx.Request.Query["target"]) is not { } target) return Text(404, "そのつなぐ先は無い");
     var token = tokens.Issue(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name));
     return Results.Json(new TokenInfo(token), ApiJson.Default.TokenInfo);
 });
@@ -224,7 +230,58 @@ app.Map("/ws", async (HttpContext ctx) =>
     if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていない").ExecuteAsync(ctx); return; }
     if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で来て").ExecuteAsync(ctx); return; }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
-    await Relay.Serve("ws", user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? TargetOf(t.Target) : null,
+    await Relay.Serve("ws", user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? RdpOf(t.Target) : null,
+        log.Write, CountSession, ctx.RequestAborted);
+});
+
+// AMT の WS-Man。本文の SOAP と Digest の Authorization を、設定の AMT の /wsman にそのまま送る。
+// AMT の WWW-Authenticate は x-amt-authenticate に移して返す。WWW-Authenticate のまま 401 を返すと、ブラウザが自分のログインの窓を出すため
+app.MapPost("/api/amt/{name}/wsman", async (HttpContext ctx, string name) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store";
+    // Cookie で動く POST なので、別のサイトのページからは受けない
+    if (ctx.Request.Headers.Origin != origin) return Text(403, "origin が違う");
+    if (SessionOf(ctx) is not { } user) return NeedLogin();
+    if (config.Amt(name) is not { } target) return Text(404, "その AMT は無い");
+    if (ctx.Request.ContentLength > AmtWsman.MaxRequest) return Text(413, "本文が大きすぎる");
+    using var ms = new MemoryStream();
+    var buf = new byte[16 * 1024];
+    int n;
+    while ((n = await ctx.Request.Body.ReadAsync(buf, ctx.RequestAborted)) > 0)
+    {
+        if (ms.Length + n > AmtWsman.MaxRequest) return Text(413, "本文が大きすぎる");
+        ms.Write(buf, 0, n);
+    }
+    var body = ms.ToArray();
+    WsmanResponse r;
+    try
+    {
+        r = await wsman.Send(target, ctx.Request.Headers.Authorization, ctx.Request.ContentType, body, ctx.RequestAborted);
+    }
+    catch (Exception e) when (e is HttpRequestException or IOException or OperationCanceledException && !ctx.RequestAborted.IsCancellationRequested)
+    {
+        log.Write($"{user.Name}: amt wsman {target.Name} failed: {e.Message}");
+        return Text(502, $"AMT({target.Host}:{target.Port})につなげない: {(e is OperationCanceledException ? "時間切れ" : e.Message)}");
+    }
+    // 電源の操作は残す。Digest の 1 回目(401)は数えない
+    if (r.Status != 401 && Amt.PowerRequest(body) is { } state)
+        log.Write($"{user.Name}: amt power {target.Name} PowerState={state} → {r.Status}");
+    if (r.Authenticate is not null) ctx.Response.Headers["x-amt-authenticate"] = r.Authenticate;
+    ctx.Response.StatusCode = r.Status;
+    ctx.Response.ContentType = r.ContentType ?? "application/octet-stream";
+    ctx.Response.ContentLength = r.Body.Length;
+    await ctx.Response.Body.WriteAsync(r.Body, ctx.RequestAborted);
+    return Results.Empty;
+});
+
+// AMT のリダイレクト(SOL)。最初の行が /api/token のトークン
+app.Map(AmtRelay.Path, async (HttpContext ctx) =>
+{
+    if (ctx.Request.Headers.Origin != origin) { await Text(403, "origin が違う").ExecuteAsync(ctx); return; }
+    if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていない").ExecuteAsync(ctx); return; }
+    if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で来て").ExecuteAsync(ctx); return; }
+    using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+    await AmtRelay.Serve(user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? config.Amt(t.Target) : null,
         log.Write, CountSession, ctx.RequestAborted);
 });
 

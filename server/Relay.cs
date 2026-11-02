@@ -149,31 +149,38 @@ internal static class Relay
         await using (ssl)
         {
             if (!rest.IsEmpty) await ssl.WriteAsync(rest, ct);
-            using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var up = Pump(async () =>
-            {
-                while (true)
-                {
-                    var r = await client.ReceiveAsync(buf, stop.Token);
-                    if (r == 0) return;
-                    await ssl.WriteAsync(buf.AsMemory(0, r), stop.Token);
-                }
-            });
-            var down = Pump(async () =>
-            {
-                var b = new byte[64 * 1024];
-                while (true)
-                {
-                    var n = await ssl.ReadAsync(b, stop.Token);
-                    if (n == 0) return;
-                    await client.SendAsync(b.AsMemory(0, n), stop.Token);
-                }
-            });
-            await Task.WhenAny(up, down);
-            await stop.CancelAsync();
-            await Task.WhenAll(up, down);
+            await Splice(client, ssl, ct);
         }
         await client.CloseAsync("", CancellationToken.None);
+    }
+
+    /// <summary>ブラウザ側の口と相手の流れのあいだを、どちらかが閉じるまでそのまま流す。AMT のリダイレクト(AmtRelay)でも使う</summary>
+    internal static async Task Splice(IRelayChannel client, Stream remote, CancellationToken ct)
+    {
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var up = Pump(async () =>
+        {
+            var b = new byte[64 * 1024];
+            while (true)
+            {
+                var r = await client.ReceiveAsync(b, stop.Token);
+                if (r == 0) return;
+                await remote.WriteAsync(b.AsMemory(0, r), stop.Token);
+            }
+        });
+        var down = Pump(async () =>
+        {
+            var b = new byte[64 * 1024];
+            while (true)
+            {
+                var n = await remote.ReadAsync(b, stop.Token);
+                if (n == 0) return;
+                await client.SendAsync(b.AsMemory(0, n), stop.Token);
+            }
+        });
+        await Task.WhenAny(up, down);
+        await stop.CancelAsync();
+        await Task.WhenAll(up, down);
     }
 
     /// <summary>片方向の流し込み。相手が切れたら黙って終わる</summary>

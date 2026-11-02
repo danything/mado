@@ -1,6 +1,7 @@
 # mado
 
 OIDC でログインして、ブラウザから RDP するゲートウェイ。Windows のサービスとして動き、MSI で入れる。
+Intel AMT の機械も並べられ、電源の操作と SOL(シリアルの端末)が使える([docs/amt.md](docs/amt.md))。
 
 | つなぐ前                                                           | つないだ画面                                                       |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
@@ -23,18 +24,20 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 - WebTransport の CONNECT には Cookie が付かない。そのため /wt は Origin と、/api/token の出した使い捨てのトークン(60 秒、1 度だけ)で確かめる。トークンは CONNECT の URL(`/wt?token=`)に入るが、mado はパスをログに書かない。正しい CONNECT の来ない接続、要求を送らない口は 10 秒で閉じ、確かめる前の接続の数も絞る
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
+- AMT のパスワードも同じで、ブラウザが HTTP Digest の応答を計算する。mado は決まった AMT の WS-Man(`/wsman`)とリダイレクト(SOL)の port にだけ中継する。AMT の port は外に開けない([docs/amt.md](docs/amt.md#ネットワークとセキュリティ))
 - mado は RDP サーバーの証明書を検証しない(自己署名なので)。代わりにブラウザが、つなぐ先ごとに証明書の SHA-256 の指紋を覚えて比べる(trust on first use)。はじめての先では証明書を見せて信頼するかを聞き、前と違えば強く警告する。断ればユーザー名もパスワードも使わない。mado と RDP サーバーの間に割り込まれても、気づかずに認証を渡さないため。詳しくは [docs/rdp-client.md](docs/rdp-client.md#rdp-サーバーの証明書)
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
 
 ## 構成
 
-| ディレクトリ    | 内容                                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server/`       | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ |
-| `web/`          | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))。bun でビルドして exe に埋め込む                                                                                                                                                                                                              |
-| `tray/`         | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する                                                                                                                                                                                                                                                         |
-| `installer/`    | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限                                                                                                                                                                                                                                                      |
-| `tools/wt-e2e/` | WebTransport の試験。Linux のコンテナで mado と xrdp を動かし、headless の Chromium でつなぐ                                                                                                                                                                                                                                                                                            |
+| ディレクトリ     | 内容                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server/`        | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ |
+| `web/`           | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))、AMT は `web/amt/`(SOL の端末は xterm.js。[docs/amt.md](docs/amt.md))。bun でビルドして exe に埋め込む                                                                                                                                        |
+| `tray/`          | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する                                                                                                                                                                                                                                                         |
+| `installer/`     | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限                                                                                                                                                                                                                                                      |
+| `tools/wt-e2e/`  | WebTransport の試験。Linux のコンテナで mado と xrdp を動かし、headless の Chromium でつなぐ                                                                                                                                                                                                                                                                                            |
+| `tools/amt-e2e/` | AMT の試験。Linux のコンテナで mado と偽の AMT を動かし、電源と SOL を試す                                                                                                                                                                                                                                                                                                              |
 
 RDP サーバーとの TLS は `SslStream`(SChannel)なので、RDP の自己署名証明書でもつながる(証明書はブラウザが確かめる)。TLS はブラウザ側も RDP 側も 1.2 以上だけを使う(WebTransport の QUIC は 1.3)。
 
@@ -59,7 +62,8 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
   },
   "targets": [
     { "name": "この PC", "host": "127.0.0.1" },
-    { "name": "書斎の PC", "host": "10.0.0.20", "port": 3389 }
+    { "name": "書斎の PC", "host": "10.0.0.20", "port": 3389 },
+    { "name": "サーバー(AMT)", "type": "amt", "host": "10.0.0.30" }
   ]
 }
 ```
@@ -70,7 +74,7 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
 | `data_dir`     | 証明書、ACME のアカウント、セッションの鍵を置く場所。既定は設定ファイルと同じ場所の `data`                                                                                                                                            |
 | `acme.email`   | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う                                                                                                                                                                     |
 | `oidc`         | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない                                                                   |
-| `targets`      | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら選択欄は出ない。省略するとこのマシン(127.0.0.1:3389)                                                                                                                         |
+| `targets`      | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら一覧は出ない。省略するとこのマシン(127.0.0.1:3389)。`"type": "amt"` で Intel AMT の先(`tls`、`cert_sha256`。[docs/amt.md](docs/amt.md#設定))                                 |
 | `listen`       | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける)。MSI が開けるファイアウォールは TCP 80 / 443 と UDP 443 だけなので、port を変えたら自分で開ける                                                      |
 | `status.port`  | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、外向きの origin、起動した時刻、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う  |
 | `update`       | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }`                                                                                                                                                    |
@@ -129,4 +133,4 @@ exe(Native AOT)と MSI は Windows でしか作れないので、CI(`windows-lat
 
 ## ライセンス
 
-AGPL-3.0。Blades CSS は MIT。
+AGPL-3.0。Blades CSS と xterm.js は MIT。

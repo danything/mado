@@ -1,6 +1,8 @@
 // 画面。web/rdp の RDP クライアントで、mado の /ws(RDCleanPath)を通して PC につなぐ。
 // Windows のユーザー名とパスワードはブラウザの中の CredSSP で使う。mado のサーバーには届かない。
 
+import { AmtAuthError } from "./amt/client";
+import { AmtView } from "./amt/view";
 import {
   CERT_PINS,
   decide,
@@ -28,10 +30,13 @@ import {
   usernameFor,
 } from "./remember";
 
+/** つなぐ先。rdp は Windows の PC、amt は Intel AMT(電源と SOL) */
+type TargetInfo = { name: string; type: "rdp" | "amt" };
+
 type SessionInfo = {
   name: string;
   version: string;
-  targets: string[];
+  targets: TargetInfo[];
   ws: string;
   /** WebTransport の URL。サーバーが UDP で待っているときだけある */
   wt?: string;
@@ -63,23 +68,64 @@ async function getJson<T>(url: string): Promise<T> {
 const session = await getJson<SessionInfo>("/api/session");
 $<HTMLElement>("#who").textContent = `${session.name} でログイン中`;
 $<HTMLElement>("#version").textContent = `mado ${session.version}`;
-const select = field("target") as HTMLSelectElement;
-for (const name of session.targets) select.add(new Option(name, name));
+const KIND_NAMES = { rdp: "RDP", amt: "AMT" } as const;
+const targetList = $<HTMLElement>("#target-field");
+targetList.replaceChildren(
+  ...session.targets.map((t) => {
+    const label = document.createElement("label");
+    label.className = "target";
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "target";
+    radio.value = t.name;
+    const name = document.createElement("span");
+    name.textContent = t.name;
+    const kind = document.createElement("span");
+    kind.className = `kind ${t.type}`;
+    kind.textContent = KIND_NAMES[t.type] ?? t.type;
+    label.append(radio, name, kind);
+    return label;
+  }),
+);
 // つなぐ先が 1 つなら選ぶ欄は出さない
-$<HTMLElement>("#target-field").hidden = session.targets.length < 2;
+targetList.hidden = session.targets.length < 2;
+const targetRadios = () =>
+  [...targetList.querySelectorAll("input[name=target]")] as HTMLInputElement[];
+const selected = (): TargetInfo =>
+  session.targets.find(
+    (t) => t.name === targetRadios().find((r) => r.checked)?.value,
+  ) ?? (session.targets[0] as TargetInfo);
 let remembered: Remembered = { usernames: {} };
 try {
   remembered = parseRemembered(localStorage.getItem(REMEMBER));
 } catch {}
-if (remembered.target && session.targets.includes(remembered.target))
-  select.value = remembered.target;
-// つなぐ先を選び直したら、その先で前に使ったユーザー名にする
-const fillUsername = () => {
-  const u = usernameFor(remembered, select.value);
+{
+  const start =
+    session.targets.find((t) => t.name === remembered.target) ??
+    session.targets[0];
+  for (const r of targetRadios()) r.checked = r.value === start?.name;
+}
+// つなぐ先を選び直したら、欄の名前と、その先で前に使ったユーザー名にする。
+// AMT のユーザー名は Windows のものと別なので、使ったことのない AMT の先では admin にする
+const onTarget = () => {
+  const t = selected();
+  const amt = t.type === "amt";
+  $<HTMLElement>("#username-label").textContent = amt
+    ? "AMT のユーザー名"
+    : "Windows のユーザー名";
+  $<HTMLElement>("#password-label").textContent = amt
+    ? "AMT のパスワード"
+    : "パスワード";
+  (form.querySelector("button[type=submit]") as HTMLElement).textContent = amt
+    ? "開く"
+    : "つなぐ";
+  const u = amt
+    ? (remembered.usernames[t.name] ?? "admin")
+    : usernameFor(remembered, t.name);
   if (u !== undefined) field("username").value = u;
 };
-fillUsername();
-select.addEventListener("change", fillUsername);
+onTarget();
+targetList.addEventListener("change", onTarget);
 home.hidden = false;
 
 const display = new Display(screen);
@@ -129,12 +175,24 @@ const AUTO_SAMPLE_MS = 2000;
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  const target = selected();
   const login: Login = {
-    target: select.value,
+    target: target.name,
     username: field("username").value,
     password: field("password").value,
   };
-  remembered = remember(remembered, login.target, login.username);
+  // AMT のユーザー名は、RDP の先の既定(最後に使ったユーザー名)にはしない
+  remembered =
+    target.type === "amt"
+      ? {
+          ...remembered,
+          target: login.target,
+          usernames: {
+            ...remembered.usernames,
+            [login.target]: login.username,
+          },
+        }
+      : remember(remembered, login.target, login.username);
   try {
     localStorage.setItem(REMEMBER, JSON.stringify(remembered));
   } catch {}
@@ -142,6 +200,12 @@ form.addEventListener("submit", async (e) => {
   // つないでいる途中に Enter でもう一度送られても、二つ目はつながない
   if (submit.getAttribute("aria-busy") === "true") return;
   submit.setAttribute("aria-busy", "true");
+  if (target.type === "amt") {
+    await openAmt(login);
+    submit.removeAttribute("aria-busy");
+    field("password").value = "";
+    return;
+  }
   status.textContent = "つないでいます…";
   switches.length = 0;
   scaleSwitches.length = 0;
@@ -167,6 +231,33 @@ form.addEventListener("submit", async (e) => {
   home.hidden = false;
   field("password").value = "";
 });
+
+/** AMT の画面を開いて、閉じるまで待つ。最初に電源の状態を読んで、ユーザー名とパスワードを確かめる */
+async function openAmt(login: Login): Promise<void> {
+  status.textContent = "AMT につないでいます…";
+  const view = new AmtView(login, {
+    ws: session.ws,
+    newToken: async (target) =>
+      (
+        await getJson<{ token: string }>(
+          `/api/token?target=${encodeURIComponent(target)}`,
+        )
+      ).token,
+  });
+  try {
+    await view.open();
+  } catch (err) {
+    status.textContent =
+      err instanceof AmtAuthError
+        ? "AMT のユーザー名かパスワードが違う。AMT は続けて間違えるとしばらく締め出すので、確かめてから"
+        : `AMT につなげなかった: ${describe(err)}`;
+    return;
+  }
+  status.textContent = "";
+  home.hidden = true;
+  await view.wait();
+  home.hidden = false;
+}
 
 async function runSession(
   login: Login,
@@ -308,10 +399,12 @@ const certCancel = certDialog.querySelector(
 const certTrust = certDialog.querySelector(
   "button[value=trust]",
 ) as HTMLButtonElement;
-certDialog.addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest("button");
-  if (b) certDialog.close(b.value);
-});
+// 証明書の窓と、AMT の操作を確かめる窓。押したボタンの value で閉じる
+for (const d of [certDialog, $<HTMLDialogElement>("#confirm")])
+  d.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("button");
+    if (b) d.close(b.value);
+  });
 
 function loadPins() {
   try {
