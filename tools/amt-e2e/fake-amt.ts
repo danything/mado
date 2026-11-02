@@ -5,7 +5,7 @@
 import {
   BufferedTransport,
   FakeWsman,
-  serveRedirect,
+  serveAny,
 } from "../../web/amt/amt.fixture";
 
 const wsman = new FakeWsman();
@@ -44,7 +44,7 @@ Bun.listen<Data>({
         () => s.end(),
       );
       s.data = { io };
-      void serveRedirect(io, { banner: "Talos (fake AMT SOL)\r\n" }).then(
+      void serveAny(io, { banner: "Talos (fake AMT SOL)\r\n" }).then(
         (end) => console.log(`redirect: ${end}`),
         (e) => {
           console.log(`redirect error: ${e}`);

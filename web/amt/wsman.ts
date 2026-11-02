@@ -224,3 +224,189 @@ export function returnValueText(v: number | undefined): string {
       return `ReturnValue ${v}`;
   }
 }
+
+// ---- IDE-R から起動する(次の 1 回だけ) ----
+
+const AMT_SCHEMA = "http://intel.com/wbem/wscim/1/amt-schema/1/";
+export const BOOT = {
+  settingData: `${AMT_SCHEMA}AMT_BootSettingData`,
+  service: `${CIM}CIM_BootService`,
+  configSetting: `${CIM}CIM_BootConfigSetting`,
+};
+const TRANSFER = "http://schemas.xmlsoap.org/ws/2004/09/transfer/";
+const BOOT_CONFIG = "Intel(r) AMT: Boot Configuration 0";
+
+/** AMT_BootSettingData を読む */
+export const getBootSettings = (messageId?: string): string =>
+  envelope({
+    action: `${TRANSFER}Get`,
+    resourceUri: BOOT.settingData,
+    body: "",
+    messageId,
+  });
+
+/**
+ * Put で送り返さない欄。読み取り専用のものや、配列・入れ子のもの(MeshCentral と同じ)。
+ * AMT の版によって無いものもある
+ */
+const BOOT_READ_ONLY = new Set([
+  "BIOSLastStatus",
+  "OptionsCleared",
+  "UEFIHTTPSBootEnabled",
+  "UEFILocalPBABootEnabled",
+  "WinREBootEnabled",
+  "SecureBootControlEnabled",
+  "BootguardStatus",
+  "UefiBootParametersArray",
+  "UefiBootNumberOfParams",
+  "RPEEnabled",
+  "RSEPassword",
+]);
+
+/** Get の返事から AMT_BootSettingData の単純な欄(名前と値)を順に拾う */
+export function bootSettingFields(xml: string): [string, string][] {
+  return instanceFields(xml, "AMT_BootSettingData");
+}
+
+/** Get の返事から、そのクラスの単純な欄(名前と値)を順に拾う。入れ子の欄は拾わない */
+export function instanceFields(
+  xml: string,
+  className: string,
+): [string, string][] {
+  const m = new RegExp(
+    `<(?:[\\w.-]+:)?${className}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w.-]+:)?${className}>`,
+  ).exec(xml);
+  if (!m) throw new Error(`AMT の返事に ${className} がありません`);
+  return [
+    ...(m[1] as string).matchAll(
+      /<(?:[\w.-]+:)?(\w+)(?:\s[^>]*)?>([^<]*)<\/(?:[\w.-]+:)?\1>/g,
+    ),
+  ].map((f) => [f[1] as string, unescapeXml(f[2] as string)]);
+}
+/**
+ * 次の起動を IDE-R の CD-ROM からにする設定。読んだ値を元に UseIDER と IDERBootDevice(1 = CD)を変え、
+ * BIOS の画面も SOL に出す(UseSOL)
+ */
+export function putBootSettingsForIder(
+  getReply: string,
+  messageId?: string,
+): string {
+  const fields = new Map(
+    bootSettingFields(getReply).filter(([k]) => !BOOT_READ_ONLY.has(k)),
+  );
+  fields.set("UseIDER", "true");
+  fields.set("IDERBootDevice", "1");
+  fields.set("UseSOL", "true");
+  return envelope({
+    action: `${TRANSFER}Put`,
+    resourceUri: BOOT.settingData,
+    body:
+      `<r:AMT_BootSettingData xmlns:r="${BOOT.settingData}">` +
+      [...fields].map(([k, v]) => `<r:${k}>${escapeXml(v)}</r:${k}>`).join("") +
+      `</r:AMT_BootSettingData>`,
+    messageId,
+  });
+}
+
+/** 次の起動に AMT の起動設定を使う(Role 1 = IsNext) */
+export const setBootConfigRole = (messageId?: string): string =>
+  envelope({
+    action: `${BOOT.service}/SetBootConfigRole`,
+    resourceUri: BOOT.service,
+    selectors: {
+      CreationClassName: "CIM_BootService",
+      Name: "Intel(r) AMT Boot Service",
+      SystemCreationClassName: "CIM_ComputerSystem",
+      SystemName: "Intel(r) AMT",
+    },
+    body:
+      `<r:SetBootConfigRole_INPUT xmlns:r="${BOOT.service}">` +
+      `<r:BootConfigSetting>` +
+      `<Address xmlns="${NS.addressing}">${ANONYMOUS}</Address>` +
+      `<ReferenceParameters xmlns="${NS.addressing}">` +
+      `<ResourceURI xmlns="${NS.wsman}">${BOOT.configSetting}</ResourceURI>` +
+      `<SelectorSet xmlns="${NS.wsman}"><Selector Name="InstanceID">${BOOT_CONFIG}</Selector></SelectorSet>` +
+      `</ReferenceParameters>` +
+      `</r:BootConfigSetting>` +
+      `<r:Role>1</r:Role>` +
+      `</r:SetBootConfigRole_INPUT>`,
+    messageId,
+  });
+
+/** 起動の順を空にする(IDE-R は UseIDER で選ぶので、ほかの装置を指定しない) */
+export const clearBootOrder = (messageId?: string): string =>
+  envelope({
+    action: `${BOOT.configSetting}/ChangeBootOrder`,
+    resourceUri: BOOT.configSetting,
+    selectors: { InstanceID: BOOT_CONFIG },
+    body: `<r:ChangeBootOrder_INPUT xmlns:r="${BOOT.configSetting}"></r:ChangeBootOrder_INPUT>`,
+    messageId,
+  });
+
+// ---- リダイレクト(SOL・IDE-R)の受け口 ----
+
+export const REDIRECTION = `${AMT_SCHEMA}AMT_RedirectionService`;
+
+/** EnabledState: 32768 = どちらも無効、32769 = IDE-R だけ、32770 = SOL だけ、32771 = 両方有効 */
+export const REDIRECTION_BOTH = 32771;
+
+export const getRedirection = (messageId?: string): string =>
+  envelope({
+    action: `${TRANSFER}Get`,
+    resourceUri: REDIRECTION,
+    body: "",
+    messageId,
+  });
+
+export type RedirectionInfo = {
+  /** 16994 / 16995 で待ち受けているか(ListenerEnabled) */
+  listener: boolean;
+  sol: boolean;
+  ider: boolean;
+  state: number;
+};
+
+export function parseRedirection(xml: string): RedirectionInfo {
+  const f = new Map(instanceFields(xml, "AMT_RedirectionService"));
+  const state = Number(f.get("EnabledState"));
+  return {
+    listener: f.get("ListenerEnabled") === "true",
+    sol: state === 32770 || state === 32771,
+    ider: state === 32769 || state === 32771,
+    state,
+  };
+}
+
+/** SOL と IDE-R を有効にする(RequestStateChange)。MeshCommander と UI Toolkit と同じ */
+export const requestRedirectionState = (
+  state = REDIRECTION_BOTH,
+  messageId?: string,
+): string =>
+  envelope({
+    action: `${REDIRECTION}/RequestStateChange`,
+    resourceUri: REDIRECTION,
+    body: `<r:RequestStateChange_INPUT xmlns:r="${REDIRECTION}"><r:RequestedState>${Math.trunc(state)}</r:RequestedState></r:RequestStateChange_INPUT>`,
+    messageId,
+  });
+
+/** 受け口を開く(ListenerEnabled を true にして書き戻す)。AccessLog は読み取り専用の配列なので送らない(MeshCommander と同じ) */
+export function putRedirectionListener(
+  getReply: string,
+  messageId?: string,
+): string {
+  const fields = new Map(
+    instanceFields(getReply, "AMT_RedirectionService").filter(
+      ([k]) => k !== "AccessLog",
+    ),
+  );
+  fields.set("ListenerEnabled", "true");
+  return envelope({
+    action: `${TRANSFER}Put`,
+    resourceUri: REDIRECTION,
+    body:
+      `<r:AMT_RedirectionService xmlns:r="${REDIRECTION}">` +
+      [...fields].map(([k, v]) => `<r:${k}>${escapeXml(v)}</r:${k}>`).join("") +
+      `</r:AMT_RedirectionService>`,
+    messageId,
+  });
+}

@@ -4,14 +4,25 @@
 
 import { authorization, type Challenge, parseChallenge } from "./digest";
 import {
+  clearBootOrder,
   element,
   enumerate,
   fault,
+  getBootSettings,
+  getRedirection,
+  isOn,
   parsePower,
+  parseRedirection,
   type PowerInfo,
   pull,
+  putBootSettingsForIder,
+  putRedirectionListener,
+  REDIRECTION_BOTH,
+  type RedirectionInfo,
   requestPowerStateChange,
+  requestRedirectionState,
   RESOURCE,
+  setBootConfigRole,
 } from "./wsman";
 
 /** AMT がユーザー名かパスワードを受け付けなかった */
@@ -111,5 +122,67 @@ export class WsmanClient {
     const xml = await this.call(requestPowerStateChange(state));
     const v = element(xml, "ReturnValue");
     return v === undefined ? undefined : Number(v);
+  }
+
+  /**
+   * 次の起動を IDE-R の CD からにして、電源を入れる(入っていればリセットする)。
+   * 手順は MeshCentral と同じ: AMT_BootSettingData を読んで UseIDER を立てて書き戻す → SetBootConfigRole → 起動の順を空に → 電源。
+   * どれも AMT 9 にある操作。IDE-R のセッションは先に開いておく(view.ts)
+   */
+  async bootFromIder(): Promise<{ state: number; result?: number }> {
+    const settings = await this.call(getBootSettings());
+    await this.expectZero(
+      await this.call(putBootSettingsForIder(settings)),
+      "起動の設定(AMT_BootSettingData)",
+      false,
+    );
+    await this.expectZero(
+      await this.call(setBootConfigRole()),
+      "SetBootConfigRole",
+    );
+    await this.expectZero(await this.call(clearBootOrder()), "ChangeBootOrder");
+    const state = isOn((await this.power()).state) ? 10 : 2;
+    return { state, result: await this.changePower(state) };
+  }
+
+  /** ReturnValue が 0 でなければ例外。Put の返事は ReturnValue を持たないので、needValue が false なら無くてよい */
+  private async expectZero(
+    xml: string,
+    what: string,
+    needValue = true,
+  ): Promise<void> {
+    const v = element(xml, "ReturnValue");
+    if (v === undefined ? needValue : Number(v) !== 0)
+      throw new Error(
+        `AMT: ${what} に失敗しました(ReturnValue ${v ?? "なし"})`,
+      );
+  }
+
+  /** リダイレクト(SOL・IDE-R)の受け口と、SOL・IDE-R が有効か */
+  async redirection(): Promise<RedirectionInfo> {
+    return parseRedirection(await this.call(getRedirection()));
+  }
+
+  /**
+   * SOL と IDE-R を有効にし、受け口(16994 / 16995)を開く。
+   * EnabledState が両方有効(32771)でなければ RequestStateChange、ListenerEnabled が false なら読み直して Put
+   */
+  async enableRedirection(): Promise<RedirectionInfo> {
+    let info = await this.redirection();
+    if (info.state !== REDIRECTION_BOTH)
+      await this.expectZero(
+        await this.call(requestRedirectionState(REDIRECTION_BOTH)),
+        "SOL・IDE-R の有効化(RequestStateChange)",
+      );
+    if (!info.listener) {
+      const current = await this.call(getRedirection());
+      await this.call(putRedirectionListener(current));
+    }
+    info = await this.redirection();
+    if (!info.listener || !info.sol || !info.ider)
+      throw new Error(
+        "AMT が SOL・IDE-R を有効にしませんでした。MEBx で有効にしてください",
+      );
+    return info;
   }
 }
