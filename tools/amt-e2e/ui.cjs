@@ -223,6 +223,8 @@ const sign = (v) => {
   if (ta.left >= 0 || ta.writing !== "false")
     throw new Error(`隠れた入力欄: ${JSON.stringify(ta)}`);
   await page.screenshot({ path: "/src/out/talos.png" });
+  // 終わった直後(0.5 秒)の Enter は、端末で打っていた続きとみなして受けない
+  await page.waitForTimeout(600);
   await page.keyboard.press("Enter");
   for (let i = 0; i < 50 && talosSockets.length < 2; i++)
     await page.waitForTimeout(100);

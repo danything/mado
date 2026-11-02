@@ -36,6 +36,9 @@ const $ = <T extends HTMLElement>(sel: string) =>
   document.querySelector(sel) as T;
 
 /** talosctl が終わったあと、代替画面・色・カーソルを戻す(talosctl が書いた失敗の理由は消さない) */
+/** 終わった直後に「もう一度開く」を受けない時間 */
+const REOPEN_GUARD_MS = 500;
+
 const RESTORE = "\x1b[?1049l\x1b[0m\x1b[?25h";
 
 export class TalosView {
@@ -51,6 +54,8 @@ export class TalosView {
   private tty?: Tty;
   private dash?: DashboardSession;
   private connecting = false;
+  /** talosctl が終わった時刻。直後の Enter や Space(端末で打っていた続き)で開き直さない */
+  private endedAt = 0;
   private closed?: () => void;
 
   constructor(
@@ -112,8 +117,10 @@ export class TalosView {
     }
     // 別のボタンを押したら、電源の 2 回目の待ちは取り消す
     this.power?.disarm(true);
-    if (b.dataset.talos === "reopen") void this.connect();
-    else if (b.dataset.talos === "close") this.close();
+    if (b.dataset.talos === "reopen") {
+      if (performance.now() - this.endedAt >= REOPEN_GUARD_MS)
+        void this.connect();
+    } else if (b.dataset.talos === "close") this.close();
   };
 
   /** 2 回目で頼む。結果(受け付けた・失敗とその理由)をバーの状態の文に出す */
@@ -184,6 +191,7 @@ export class TalosView {
   /** 終わったら「もう一度開く」を出す。焦点を置くので、Enter でも開き直せる */
   private ended(): void {
     if (this.root.hidden) return;
+    this.endedAt = performance.now();
     this.reopenButton.hidden = false;
     this.reopenButton.focus();
   }
