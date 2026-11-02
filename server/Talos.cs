@@ -10,7 +10,7 @@ namespace Mado;
 
 /// <summary>
 /// Talos のダッシュボードの先の設定(mado.json の type が talos の先)。
-/// Talosconfig は DPAPI で保護した talosconfig の場所(os:reader の役割だけのもの)。Talosctl が無ければ PATH から探す
+/// Talosconfig は DPAPI で保護した talosconfig の場所(os:operator の役割のもの。設定は変えられない)。Talosctl が無ければ PATH から探す
 /// </summary>
 internal sealed partial record TalosOptions(string Talosconfig, string Node, IReadOnlyList<string> Endpoints, string? Talosctl = null)
 {
@@ -27,6 +27,14 @@ internal static class TalosCommand
     /// </summary>
     public static IReadOnlyList<string> Arguments(TalosOptions o, string configPath) =>
         ["--talosconfig", configPath, "--nodes", o.Node, "--endpoints", string.Join(',', o.Endpoints), "dashboard"];
+
+    /// <summary>
+    /// 電源の操作の引数。いつも `--talosconfig &lt;設定&gt; --nodes &lt;node&gt; --endpoints &lt;endpoints&gt; shutdown|reboot --wait=false` の形。
+    /// Talos がノードを止める準備(cordon・drain・サービスの停止)をしてから電源を切る・再起動する。--wait=false で、Talos が受け付けたら返る
+    /// </summary>
+    public static IReadOnlyList<string> PowerArguments(TalosOptions o, string configPath, TalosPower action) =>
+        ["--talosconfig", configPath, "--nodes", o.Node, "--endpoints", string.Join(',', o.Endpoints),
+            action == TalosPower.Shutdown ? "shutdown" : "reboot", "--wait=false"];
 
     /// <summary>
     /// CreateProcess に渡す 1 行。exe も引数も、CommandLineToArgvW が元の値に戻せるように囲む
@@ -371,7 +379,11 @@ internal sealed record TalosResize(
 /// <summary>本物の端末。talosctl を ConPTY で動かし、talosconfig は名前付きパイプで渡す</summary>
 internal static class TalosTerminal
 {
-    public static Task<ITerminal> Start(TalosOptions o, int cols, int rows, Action<string> log)
+    public static Task<ITerminal> Start(TalosOptions o, int cols, int rows, Action<string> log) =>
+        Task.FromResult<ITerminal>(Spawn(o, path => TalosCommand.Arguments(o, path), cols, rows, log));
+
+    /// <summary>talosctl を ConPTY で動かす。引数は args(talosconfig のパイプの名前から作る)だけ</summary>
+    internal static ConPty Spawn(TalosOptions o, Func<string, IReadOnlyList<string>> args, int cols, int rows, Action<string> log)
     {
         if (!OperatingSystem.IsWindows()) throw new TalosStartException("not supported", "ConPTY は Windows だけ");
         var exe = TalosCommand.FindTalosctl(o, Environment.GetEnvironmentVariable("PATH"), File.Exists)
@@ -386,9 +398,9 @@ internal static class TalosTerminal
         var pipe = ConfigPipe.Start(secret, log);
         try
         {
-            var pty = ConPty.Start(TalosCommand.CommandLine(exe, TalosCommand.Arguments(o, pipe.Path)), cols, rows, pipe);
+            var pty = ConPty.Start(TalosCommand.CommandLine(exe, args(pipe.Path)), cols, rows, pipe);
             pipe.Allow(pty.ProcessId);
-            return Task.FromResult<ITerminal>(pty);
+            return pty;
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or IOException)
         {
@@ -398,6 +410,77 @@ internal static class TalosTerminal
     }
 }
 
+/// <summary>Talos の電源の操作。ブラウザが選べるのはこの 2 つだけ</summary>
+internal enum TalosPower { Shutdown, Reboot }
+
+/// <summary>電源の操作の結果。Reason は失敗の短い英語(画面が日本語にする)、Detail は talosctl が最後に書いた行</summary>
+internal sealed record TalosPowerResult(
+    [property: System.Text.Json.Serialization.JsonPropertyName("ok")] bool Ok,
+    [property: System.Text.Json.Serialization.JsonPropertyName("reason")] string? Reason = null,
+    [property: System.Text.Json.Serialization.JsonPropertyName("detail")] string? Detail = null);
+
+/// <summary>電源の操作を動かす。試験では偽物を渡す</summary>
+internal delegate Task<TalosPowerResult> TalosPowerRunner(TalosOptions talos, TalosPower action, CancellationToken ct);
+
+/// <summary>
+/// `talosctl shutdown|reboot --wait=false` を動かして、終わるまで待つ。talosconfig はダッシュボードと同じく名前付きパイプで渡すので、
+/// talosctl は ConPTY(画面の見えない端末)で動かし、出力の最後の行を失敗の理由にする
+/// </summary>
+internal static partial class TalosPowerCommand
+{
+    /// <summary>talosctl が返るまで待つ時間。--wait=false なので、ふつうは数秒で返る</summary>
+    public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
+
+    public static async Task<TalosPowerResult> Run(TalosOptions o, TalosPower action, Action<string> log, CancellationToken ct)
+    {
+        ConPty pty;
+        try { pty = TalosTerminal.Spawn(o, path => TalosCommand.PowerArguments(o, path, action), 200, 25, log); }
+        catch (TalosStartException e)
+        {
+            log($"talos {Name(action)} failed: {e.Message}");
+            return new TalosPowerResult(false, e.Reason);
+        }
+        await using (pty)
+        {
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            wait.CancelAfter(Timeout);
+            var output = new MemoryStream();
+            var buf = new byte[4096];
+            try
+            {
+                int n;
+                while ((n = await pty.ReadAsync(buf, wait.Token)) > 0)
+                    if (output.Length < 64 * 1024) output.Write(buf, 0, n);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return new TalosPowerResult(false, "timeout");
+            }
+            var code = pty.ExitCode;
+            return code == 0
+                ? new TalosPowerResult(true)
+                : new TalosPowerResult(false, code is { } c ? $"exited {c}" : "closed", LastLine(output.ToArray()));
+        }
+    }
+
+    public static string Name(TalosPower action) => action == TalosPower.Shutdown ? "shutdown" : "reboot";
+
+    /// <summary>端末の出力から、制御の列を除いた最後の空でない行(長ければ切る)。無ければ null</summary>
+    internal static string? LastLine(ReadOnlySpan<byte> output)
+    {
+        // ConPTY は行を改行でなく、カーソルの位置の指定(CSI … H)で並べることがあるので、それは改行とみなす
+        var text = AnsiRe().Replace(Encoding.UTF8.GetString(output), m => m.Value[^1] is 'H' or 'f' && m.Value[1] == '[' ? "\n" : "");
+        var line = text.Split('\n').Select(l => ControlRe().Replace(l, "").Trim()).LastOrDefault(l => l.Length > 0);
+        return line is null ? null : line.Length > 300 ? line[..300] : line;
+    }
+
+    // CSI(ESC [ … 終わりの字)、OSC(ESC ] … BEL か ESC \)、文字集合の選択など
+    [GeneratedRegex(@"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78]")]
+    private static partial Regex AnsiRe();
+
+    [GeneratedRegex(@"[\x00-\x08\x0b-\x1f\x7f]")]
+    private static partial Regex ControlRe();
+}
 internal sealed partial record TalosOptions
 {
     [GeneratedRegex(@"^(?:[A-Za-z0-9][A-Za-z0-9.\-]*|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)$")]

@@ -69,6 +69,59 @@ export function explainDashboardError(reason: string): string {
   }
 }
 
+/** Talos の電源の操作(POST /api/talos/<名前>/<key>)。mado は talosctl shutdown / reboot --wait=false を動かす */
+export type TalosPowerAction = {
+  key: "shutdown" | "reboot";
+  label: string;
+  description: string;
+};
+
+export const TALOS_POWER: TalosPowerAction[] = [
+  {
+    key: "shutdown",
+    label: "シャットダウン",
+    description: "Talos が止める準備をしてから電源を切ります",
+  },
+  {
+    key: "reboot",
+    label: "再起動",
+    description: "Talos が止める準備をしてから再起動します",
+  },
+];
+
+/** /api/talos/<名前>/<操作> の返事。reason は失敗の短い英語、detail は talosctl が最後に書いた行 */
+export type TalosPowerResult = {
+  ok: boolean;
+  reason?: string;
+  detail?: string;
+};
+
+/** 電源の操作の結果を、バーに出す文にする */
+export function explainPowerResult(
+  action: TalosPowerAction,
+  r: TalosPowerResult,
+): { text: string; kind: "ok" | "error" } {
+  if (r.ok)
+    return {
+      text: `${action.label}を受け付けました。Talos が止める準備をしています`,
+      kind: "ok",
+    };
+  const detail = r.detail ?? "";
+  let why: string;
+  if (/PermissionDenied|not authorized/i.test(detail))
+    why =
+      "鍵に権限がありません(os:operator が要ります)。gitops の mado/setup.ps1 を流し直してください";
+  else if (r.reason === "busy")
+    why = "ほかの電源の操作が動いています。終わってから押してください";
+  else if (r.reason === "timeout") why = "talosctl が 60 秒たっても返りません";
+  else if (r.reason === "not supported")
+    why = "この mado は Windows で動いていないため、talosctl を動かせません";
+  else if (r.reason && /^exited -?\d+$/.test(r.reason))
+    why = detail || `talosctl が終了しました(${r.reason})`;
+  else why = explainDashboardError(r.reason ?? "");
+  return { text: `${action.label}できませんでした: ${why}`, kind: "error" };
+}
+
 /** WebSocket のうち使うところ。試験では偽物を渡す */
 export type DashSocket = {
   binaryType: BinaryType;

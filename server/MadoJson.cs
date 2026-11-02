@@ -26,6 +26,7 @@ internal sealed partial class MadoJson : JsonSerializerContext;
 [JsonSerializable(typeof(RelayToken))]
 [JsonSerializable(typeof(TalosHello))]
 [JsonSerializable(typeof(TalosResize))]
+[JsonSerializable(typeof(TalosPowerResult))]
 [JsonSerializable(typeof(OidcDiscovery))]
 [JsonSerializable(typeof(OidcToken))]
 [JsonSerializable(typeof(Jwks))]

@@ -1,12 +1,17 @@
 // Talos のダッシュボードの画面。つなぐ先の一覧で talos の先を選んで「開く」と、画面いっぱいの端末(SOL と同じ見た目)に
-// talosctl dashboard を出す。上の常に出ているバーに名前・種類・期限の知らせ・「閉じる」。
+// talosctl dashboard を出す。上の常に出ているバーに名前・種類・期限の知らせ・電源の操作(2 回押しで確定)・「閉じる」。
 // AMT と違ってこの画面で入れるものは無い(talosctl の鍵は mado の PC にあり、mado.json で決まる)。
 
 import { gray, openTerminal, type Tty } from "../term";
+import { TwoPress } from "../two-press";
 import {
   DashboardSession,
   expiryNote,
   explainDashboardError,
+  explainPowerResult,
+  TALOS_POWER,
+  type TalosPowerAction,
+  type TalosPowerResult,
 } from "./dashboard";
 
 export type TalosTarget = {
@@ -20,6 +25,11 @@ export type TalosDeps = {
   newToken: (target: string) => Promise<string>;
   /** /ws の URL。ダッシュボードはその隣の /ws/talos */
   ws: string;
+  /** 電源の操作を頼む(POST /api/talos/<名前>/<操作>) */
+  power: (
+    target: string,
+    action: TalosPowerAction["key"],
+  ) => Promise<TalosPowerResult>;
 };
 
 const $ = <T extends HTMLElement>(sel: string) =>
@@ -33,6 +43,11 @@ export class TalosView {
   private readonly status = $<HTMLElement>("#talos-status");
   private readonly reopenButton = $<HTMLButtonElement>("#talos-reopen");
   private readonly termEl = $<HTMLElement>("#talos-term");
+  private readonly actions = $<HTMLElement>("#talos-actions");
+  /** 電源のボタン。open で作る */
+  private power?: TwoPress<TalosPowerAction>;
+  /** 電源の操作を頼んでいる間。その間は電源のボタンを受けない */
+  private powerBusy = false;
   private tty?: Tty;
   private dash?: DashboardSession;
   private connecting = false;
@@ -48,6 +63,18 @@ export class TalosView {
     $<HTMLElement>("#talos-name").textContent = this.target.name;
     this.showExpiry();
     this.reopenButton.hidden = true;
+    const power = new TwoPress<TalosPowerAction>(
+      this.actions,
+      this.status,
+      (text, kind) => this.note(text, kind),
+      (a) => a.key,
+      (a) => void this.changePower(a),
+    );
+    this.power = power;
+    // 止める準備はするが、ノードは止まる(戻せない)ので、乗せたときと 2 回目を待つ間は赤い字
+    this.actions.replaceChildren(
+      ...TALOS_POWER.map((a) => power.button(a, a.description, true)),
+    );
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
     try {
@@ -77,9 +104,35 @@ export class TalosView {
 
   private onClick = (e: Event) => {
     const b = (e.target as HTMLElement).closest("button");
-    if (b?.dataset.talos === "reopen") void this.connect();
-    else if (b?.dataset.talos === "close") this.close();
+    if (!b) return;
+    if (b.dataset.power) {
+      const action = TALOS_POWER.find((a) => a.key === b.dataset.power);
+      if (action && !this.powerBusy) this.power?.press(action);
+      return;
+    }
+    // 別のボタンを押したら、電源の 2 回目の待ちは取り消す
+    this.power?.disarm(true);
+    if (b.dataset.talos === "reopen") void this.connect();
+    else if (b.dataset.talos === "close") this.close();
   };
+
+  /** 2 回目で頼む。結果(受け付けた・失敗とその理由)をバーの状態の文に出す */
+  private async changePower(action: TalosPowerAction): Promise<void> {
+    this.powerBusy = true;
+    this.note(`${action.label}…`);
+    try {
+      const r = await this.deps.power(this.target.name, action.key);
+      const { text, kind } = explainPowerResult(action, r);
+      this.note(text, kind);
+    } catch (e) {
+      this.note(
+        `${action.label}できませんでした: ${e instanceof Error ? e.message : String(e)}`,
+        "error",
+      );
+    } finally {
+      this.powerBusy = false;
+    }
+  }
 
   /** /ws/talos につなぐ。mado が talosctl を動かす */
   private async connect(): Promise<void> {
@@ -149,6 +202,9 @@ export class TalosView {
   }
 
   close(): void {
+    this.power?.dispose();
+    this.power = undefined;
+    this.actions.replaceChildren();
     const dash = this.dash;
     this.dash = undefined;
     dash?.close();

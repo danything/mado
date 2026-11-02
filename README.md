@@ -26,7 +26,7 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
 - AMT のパスワードも同じで、ブラウザが HTTP Digest の応答を計算する。mado は決まった AMT の WS-Man(`/wsman`)とリダイレクト(SOL)の port にだけ中継する。AMT の port は外に開けない([docs/amt.md](docs/amt.md#ネットワークとセキュリティ))
-- Talos のダッシュボードは、mado が `talosctl dashboard` を ConPTY で動かして中継する。コマンドは mado.json で決まり、ブラウザは選べない。talosconfig は `os:reader` だけのものを DPAPI で保護して置き、名前付きパイプで talosctl に渡す(ディスクに平文を書かない。[docs/talos.md](docs/talos.md#鍵の扱い))
+- Talos のダッシュボードは、mado が `talosctl dashboard` を ConPTY で動かして中継する。コマンドは mado.json で決まり、ブラウザは選べない。バーの「シャットダウン」「再起動」は `talosctl shutdown` / `reboot` を決まった引数で動かす(2 回押しで確定)。talosconfig は `os:operator`(設定は変えられない)のものを DPAPI で保護して置き、名前付きパイプで talosctl に渡す(ディスクに平文を書かない。[docs/talos.md](docs/talos.md#鍵の扱い))
 - mado は RDP サーバーの証明書を検証しない(自己署名なので)。代わりにブラウザが、つなぐ先ごとに証明書の SHA-256 の指紋を覚えて比べる(trust on first use)。はじめての先では証明書を見せて信頼するかを聞き、前と違えば強く警告する。断ればユーザー名もパスワードも使わない。mado と RDP サーバーの間に割り込まれても、気づかずに認証を渡さないため。詳しくは [docs/rdp-client.md](docs/rdp-client.md#rdp-サーバーの証明書)
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
 

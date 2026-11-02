@@ -229,6 +229,56 @@ const sign = (v) => {
   if (talosSockets.length !== 2)
     throw new Error("「もう一度開く」で /ws/talos につなぎ直さない");
   await page.waitForSelector("#talos-reopen:not([hidden])");
+
+  // 電源の操作: バーにシャットダウンと再起動。AMT と同じ 2 回押しで確定する
+  const talosPower = await page.$$eval("#talos-actions button", (bs) =>
+    bs.map((b) => `${b.textContent}(${b.title})`),
+  );
+  console.log(`Talos の電源のボタン: ${talosPower.join(" / ")}`);
+  if (talosPower.length !== 2)
+    throw new Error("Talos の電源のボタンが 2 つでない");
+  const powerPosts = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().includes("/api/talos/"))
+      powerPosts.push(new URL(r.url()).pathname);
+  });
+  const rebootButton = '#talos-actions button[data-power="reboot"]';
+  await page.click(rebootButton);
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#talos-status")?.textContent ===
+      "もう一度押すと再起動します",
+  );
+  if ((await page.textContent(rebootButton)) !== "もう一度押すと再起動")
+    throw new Error("Talos: 1 回目でボタンの文が変わらない");
+  await page.mouse.move(0, 400);
+  await page.waitForTimeout(300);
+  console.log(
+    `Talos の 1 回目: 字の色 ${await page.$eval(rebootButton, (b) => getComputedStyle(b).color)}`,
+  );
+  await page.screenshot({ path: "/src/out/talos-power-armed.png" });
+  // 3 秒たつと戻る(ダブルクリックとキーの押しっぱなしは AMT と同じ部品で、上の AMT の試験で見る)
+  await page.waitForTimeout(3300);
+  if (powerPosts.length) throw new Error("Talos: 1 回目で頼んだ");
+  if ((await page.textContent(rebootButton)) !== "再起動")
+    throw new Error("Talos: 3 秒たってもボタンの文が戻らない");
+  // キーボードで 2 回押すと頼む。Linux の mado は talosctl を動かせないので、失敗の理由がバーに出る
+  await page.focus(rebootButton);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(500);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("#talos-status")
+        ?.textContent?.startsWith("再起動できませんでした"),
+    null,
+    { timeout: 10000 },
+  );
+  if (powerPosts.join() !== "/api/talos/z440-talos/reboot")
+    throw new Error(`Talos: 頼んだもの ${powerPosts.join()}`);
+  console.log(`Talos の電源: ${await page.textContent("#talos-status")}`);
+  await page.screenshot({ path: "/src/out/talos-power.png" });
   await page.click('#talos button[data-talos="close"]');
   await page.waitForSelector("#home:not([hidden])");
   if (!(await page.isHidden("#talos")))

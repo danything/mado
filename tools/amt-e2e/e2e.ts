@@ -221,4 +221,40 @@ async function dash(target: string): Promise<string> {
   );
 }
 
+// 9. Talos の電源の操作: Origin・ログイン・先の種類・操作の名前を確かめる。Linux の mado は talosctl を動かせず「not supported」
+{
+  const power = (name: string, action: string, h: Record<string, string>) =>
+    fetch(`${ORIGIN}/api/talos/${encodeURIComponent(name)}/${action}`, {
+      method: "POST",
+      headers: h,
+    });
+  check(
+    (
+      await power("z440-talos", "reboot", {
+        cookie,
+        origin: "https://evil.example",
+      })
+    ).status === 403,
+    "Talos の電源: Origin が違えば 403",
+  );
+  check(
+    (await power("z440-talos", "reboot", { origin: ORIGIN })).status === 401,
+    "Talos の電源: ログインなしは 401",
+  );
+  check(
+    (await power("z440-amt", "reboot", headers)).status === 404,
+    "Talos の電源: AMT の先には動かさない (404)",
+  );
+  check(
+    (await power("z440-talos", "upgrade", headers)).status === 404,
+    "Talos の電源: 決まった操作のほかは 404",
+  );
+  const r = await power("z440-talos", "shutdown", headers);
+  const body = (await r.json()) as { ok: boolean; reason?: string };
+  check(
+    r.status === 200 && !body.ok && body.reason === "not supported",
+    `Talos の電源: talos の先なら talosctl を動かしにいく (${r.status} ${JSON.stringify(body)})`,
+  );
+}
+
 console.log(process.exitCode ? "e2e: 失敗あり" : "e2e: すべて通った");

@@ -6,7 +6,7 @@ mado が mado の PC の上で talosctl を擬似端末(Windows の ConPTY)で�
 鍵(talosconfig)は mado の PC に置くので、AMT と違って画面で入れるものは無い。
 
 ```
-ブラウザ ──wss /ws/talos(画面とキー入力)──> mado ──ConPTY──> talosctl.exe dashboard ──Talos API(50000、os:reader)──> ノード
+ブラウザ ──wss /ws/talos(画面とキー入力)──> mado ──ConPTY──> talosctl.exe dashboard ──Talos API(50000、os:operator)──> ノード
                                               └─名前付きパイプ(talosconfig)─┘
 ```
 
@@ -30,7 +30,7 @@ mado が mado の PC の上で talosctl を擬似端末(Windows の ConPTY)で�
 | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `name`        | 一覧に出す名前。要る                                                                                                       |
 | `type`        | `"talos"`                                                                                                                  |
-| `talosconfig` | DPAPI で保護した talosconfig(下の「鍵の扱い」)。相対なら mado.json の場所から。役割は `os:reader` だけにする               |
+| `talosconfig` | DPAPI で保護した talosconfig(下の「鍵の扱い」)。相対なら mado.json の場所から。役割は `os:operator` にする                 |
 | `node`        | ダッシュボードで見るノード(`--nodes`)。アドレスかホスト名                                                                  |
 | `endpoints`   | Talos API の入口(`--endpoints`)。既定は `[node]`                                                                           |
 | `talosctl`    | `talosctl.exe` の場所。相対なら mado.json の場所から。書かなければサービスの `PATH` から探す。無ければ開くときに失敗を返す |
@@ -47,11 +47,14 @@ v0.13 までの mado は `"type": "talos"` を知らず、起動のときに止�
 ## 使い方
 
 1. 一覧で種類が「Talos・ダッシュボード」の先を選ぶ。ユーザー名とパスワードの欄は消え、ボタンが「開く」になる
-2. 「開く」を押すと、すぐ画面いっぱいの端末に `talosctl dashboard` が出る。上の常に出ているバーに名前・種類・期限の知らせ・「閉じる」
+2. 「開く」を押すと、すぐ画面いっぱいの端末に `talosctl dashboard` が出る。上の常に出ているバーに名前・種類・期限の知らせ・「シャットダウン」「再起動」・「閉じる」
    - 端末の大きさは窓に合わせ、変えると talosctl にも伝える(ConPTY の大きさを変える)
    - キーはそのまま talosctl に届く。F1〜F4 で画面を切り替え、`q` か Ctrl+C で終わる
 3. talosctl が終わると、端末に終わった理由(「ダッシュボードを終了しました」、失敗なら終了コードと次にすること)が出て、バーに「もう一度開く」が出る(焦点を置くので Enter でも開き直せる)。「閉じる」で一覧に戻る
-4. talosconfig の証明書の期限が 14 日を切ると、バーに「Talos の証明書はあと N 日で切れます」と出る(切れたら「期限が切れています」)
+4. 「シャットダウン」「再起動」は Talos に止める準備(cordon・drain・サービスの停止)をさせてから電源を切る・再起動する(`talosctl shutdown` / `reboot`)。AMT の強制電源オフ・強制再起動と違い、ノードの中を壊さない
+   - AMT の電源のボタンと同じく 2 回押しで確定する。1 回目で文が「もう一度押すと再起動」に変わり(赤い字)、3 秒以内にもう一度押すと頼む。押さなければ戻る。ダブルクリック(0.4 秒以内)とキーの押しっぱなしは 2 回目とみなさない(`web/two-press.ts`。AMT と共通)
+   - 結果はバーの状態の文に出る(「再起動を受け付けました」、失敗なら talosctl が最後に書いた行。鍵に権限が無ければ setup.ps1 を流し直すよう出す)。止まり始めるとダッシュボードは届かなくなる
+5. talosconfig の証明書の期限が 14 日を切ると、バーに「Talos の証明書はあと N 日で切れます」と出る(切れたら「期限が切れています」)
 
 ## しくみ
 
@@ -63,14 +66,22 @@ v0.13 までの mado は `"type": "talos"` を知らず、起動のときに止�
 - 擬似端末は ConPTY(`CreatePseudoConsole`)を P/Invoke(`LibraryImport`。Native AOT で動く)で直接呼ぶ(`server/ConPty.cs`)。
   talosctl は「閉じたら中を全部止める」ジョブに入れてから動かすので、mado が落ちても talosctl は残らない
 - 同時に動かすのは 4 つまで。開いている間は接続として数え、その間は自動更新しない
+- 電源の操作は `POST /api/talos/<名前>/shutdown` と `/reboot`。WS-Man の中継と同じく、Origin(別のサイトのページからの POST を受けない)とログイン(Cookie)を確かめ、talos の先だけを受ける。操作の名前はこの 2 つのほかは 404。
+  動かすコマンドはいつも `talosctl --talosconfig <パイプ> --nodes <node> --endpoints <endpoints> shutdown|reboot --wait=false`(`TalosCommand.PowerArguments`)で、ブラウザは引数を足せない。
+  `--wait=false` なので、Talos が受け付けたら返る(止まり終わるのは待たない)。talosconfig はダッシュボードと同じく名前付きパイプで渡すので、talosctl は見えない ConPTY で動かし、終了コードが 0 でなければ出力の最後の行を理由として返す。
+  同時には 1 つだけ(ほかが動いていれば 409)、60 秒で返らなければ失敗にする。誰がどの先に頼んだかと結果を mado.log に残す
 - 開け閉めと終了コードは mado.log に残す。talosconfig の中身と証明書は、画面にもログにも出さない
 
 ## 鍵の扱い
 
-### 役割は os:reader だけ
+### 役割は os:operator
 
-ダッシュボードに要るのは読むことだけなので、talosconfig は Talos の `os:reader` の役割で作る(`talosctl config new --roles os:reader --crt-ttl 2160h`、90 日)。
-mado の PC が乗っ取られても、ノードの設定は変えられない(`os:reader` はログ・状態・設定の秘密でない部分を読める)。
+talosconfig は Talos の `os:operator` の役割で作る(`talosctl config new --roles os:operator --crt-ttl 2160h`、90 日)。
+ダッシュボードに要るのは読むこと(`os:reader`)だけだが、バーの「シャットダウン」「再起動」には `os:operator` が要る。
+
+- `os:operator` で足されるのは、Talos の文書(RBAC)の言うところで、ノードの再起動・シャットダウン、etcd のバックアップと警報の扱いなど。ノードの設定(machine config)の書き換え、リセット、アップグレードは `os:admin` が要り、mado の PC が乗っ取られてもできない
+- mado の PC からは、AMT で既に強制電源オフ・強制再起動ができる(OS を止めずに切るので、etcd やディスクを壊すおそれがある)。Talos の安全なシャットダウン・再起動を足すと、止めるときにそちらを選べる。乗っ取られたときにできること(ノードを止める)は AMT と変わらないので、`os:operator` に上げても危うさはほとんど増えず、普段の操作は安全側になる
+- v0.13 までは `os:reader` だった。その鍵のままでもダッシュボードは使えるが、電源の操作は Talos に断られる(PermissionDenied。画面は setup.ps1 を流し直すよう出す)
 
 ### DPAPI(LocalMachine)で保護して置く
 
@@ -103,15 +114,15 @@ talosctl(Go)はふつうのファイルと同じように開いて読む(talosct
 pwsh -File mado/setup.ps1
 ```
 
-setup.ps1 が管理者の talosconfig(SOPS の Talos の CA からその場で作る)で `os:reader` の talosconfig を作り直し、DPAPI で保護して置き直す。mado の再起動は要らない(開くたびにファイルを読む)。
-古い証明書は期限まで有効のまま(Talos のクライアント証明書は取り消せない)。漏れたときは Talos の CA ごと作り直すことになるので、`os:reader` に絞り、期限を短くしている。
+setup.ps1 が管理者の talosconfig(SOPS の Talos の CA からその場で作る)で `os:operator` の talosconfig を作り直し、DPAPI で保護して置き直す。mado の再起動は要らない(開くたびにファイルを読む)。
+古い証明書は期限まで有効のまま(Talos のクライアント証明書は取り消せない)。漏れたときは Talos の CA ごと作り直すことになるので、`os:operator`(設定を変えられない)に絞り、期限を短くしている。
 
 ## 試験
 
-- `dotnet run --project tests/Mado.Tests.csproj`(`tests/TalosTests.cs`): 設定の読み込みと間違い、コマンドが固定の形であること、引数の囲み方、talosctl の探し方、証明書の期限(使う context の crt)、同時の数の上限、
+- `dotnet run --project tests/Mado.Tests.csproj`(`tests/TalosTests.cs`): 設定の読み込みと間違い、コマンド(ダッシュボードと電源の操作)が固定の形であること、電源の操作の失敗の理由(端末の出力の最後の行)、引数の囲み方、talosctl の探し方、証明書の期限(使う context の crt)、同時の数の上限、
   `/ws/talos` の中継(偽の端末で、トークンと先の種類、入力と大きさの変更、終わり方)。Windows では DPAPI、ConPTY(`cmd.exe` の出力と終了コード)、名前付きパイプ(ほかのプロセスには渡さず、動かしたプロセスには渡す)も
-- `bun test web/talos`(`web/talos/dashboard.test.ts`): 最初のメッセージと大きさの変更、閉じた理由の文、期限の知らせ
-- `tools/amt-e2e/`([amt.md](amt.md#試験)): Linux のコンテナの mado に talos の先を並べ、`e2e.ts` は `/ws/talos` が talos の先のトークンだけを受けること、`ui.cjs` は headless の Chromium で一覧から talos の先を選び(欄が隠れ、ボタンが「開く」)、押すと `/ws/talos` につなぎ、閉じた理由と「もう一度開く」が出て、開き直せることを確かめる。
+- `bun test web/talos`(`web/talos/dashboard.test.ts`): 最初のメッセージと大きさの変更、閉じた理由の文、期限の知らせ、電源の操作の結果の文
+- `tools/amt-e2e/`([amt.md](amt.md#試験)): Linux のコンテナの mado に talos の先を並べ、`e2e.ts` は `/ws/talos` が talos の先のトークンだけを受けること、`ui.cjs` は headless の Chromium で一覧から talos の先を選び(欄が隠れ、ボタンが「開く」)、押すと `/ws/talos` につなぎ、閉じた理由と「もう一度開く」が出て、開き直せることを確かめる。電源の操作は、`e2e.ts` が API の確かめ(Origin・ログイン・先の種類・操作の名前)を、`ui.cjs` がバーの 2 回押し(1 回目で文が変わり赤い字、3 秒で戻る、キーボードで 2 回押すと `POST /api/talos/<名前>/reboot` を 1 度だけ送り、結果がバーに出る)を見る。
   Linux には ConPTY が無いので、mado は talosctl を動かすところで「not supported」で閉じる
 - 本物の `talosctl dashboard`(Windows 版 v1.15.0-alpha.2)を ConPTY と名前付きパイプで動かし、画面が描かれること、大きさの変更、`q` で終了コード 0 になることを手元で確かめた(ノードにはつながない設定で)。
-  v0.14 では Windows の mado に talos の先を書き、`/api/token` と `/ws/talos` をブラウザの代わりに話して、ダッシュボードの画面(ノードに届かない知らせつき)が流れてくることと、`q` で `exited 0` で閉じることを確かめた
+  v0.14 では Windows の mado に talos の先を書き、`/api/token` と `/ws/talos` をブラウザの代わりに話して、ダッシュボードの画面(ノードに届かない知らせつき)が流れてくることと、`q` で `exited 0` で閉じることを確かめた。電源の操作も `POST /api/talos/<名前>/reboot` で本物の talosctl が `--wait=false` を受け、届かないノードの理由(最後の行)が返ることを確かめた

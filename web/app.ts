@@ -275,10 +275,31 @@ const newToken = async (target: string) =>
 
 /** Talos のダッシュボードを開いて、閉じるまで待つ。入れるものは無いので、押したらすぐ開く */
 async function openTalos(target: TargetInfo): Promise<void> {
-  const view = new TalosView(target, { ws: session.ws, newToken });
+  const view = new TalosView(target, {
+    ws: session.ws,
+    newToken,
+    power: async (name, action) => {
+      const res = await fetch(
+        `/api/talos/${encodeURIComponent(name)}/${action}`,
+        { method: "POST", cache: "no-store" },
+      );
+      if (res.status === 401) {
+        location.href = `/login?to=${encodeURIComponent(location.pathname)}`;
+        throw new Error("ログインし直してください");
+      }
+      // 409(ほかの操作が動いている)も同じ形で返る
+      if (!res.ok && res.status !== 409)
+        throw new Error(`${await res.text()} (${res.status})`);
+      return res.json();
+    },
+  });
+  // 押したらすぐ画面を入れ替える(端末の読み込みを待つ間も一覧を残さない)
+  setNote(status, "");
+  home.hidden = true;
   try {
     await view.open();
   } catch (err) {
+    home.hidden = false;
     setNote(
       status,
       `ダッシュボードを開けませんでした: ${describe(err)}`,
@@ -286,8 +307,6 @@ async function openTalos(target: TargetInfo): Promise<void> {
     );
     return;
   }
-  setNote(status, "");
-  home.hidden = true;
   await view.wait();
   home.hidden = false;
 }

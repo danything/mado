@@ -11,6 +11,7 @@
 //   https://<host>/api/amt/<name>/wsman  Intel AMT の WS-Man(電源)の中継。Amt.cs
 //   wss://<host>/ws/amt         Intel AMT のリダイレクト(SOL)の中継。Amt.cs
 //   wss://<host>/ws/talos       Talos のダッシュボード(talosctl dashboard を ConPTY で動かす)。Talos.cs と ConPty.cs
+//   https://<host>/api/talos/<name>/shutdown|reboot  Talos の電源の操作(talosctl shutdown / reboot --wait=false)
 //   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
 //   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態。POST /update で更新をすぐ確かめる
 
@@ -314,6 +315,34 @@ app.Map(TalosRelay.Path, async (HttpContext ctx) =>
     await TalosRelay.Serve(user.Name, ws, auth => tokens.Consume(auth, user.Sub) is { } t ? config.Talos(t.Target) : null,
         startTalos,
         log.Write, CountSession, ctx.RequestAborted);
+});
+
+// Talos の電源の操作(talosctl shutdown / reboot --wait=false)。WS-Man と同じく Origin とログインを確かめ、talos の先だけ。
+// ブラウザが選べるのは先の名前と操作の 2 つだけで、コマンドは TalosCommand.PowerArguments で決まる。誰が頼んだかを残す
+var talosPowerGate = new SemaphoreSlim(1, 1);
+TalosPowerRunner runTalosPower = (talos, action, ct) => TalosPowerCommand.Run(talos, action, log.Write, ct);
+app.MapPost("/api/talos/{name}/{action}", async (HttpContext ctx, string name, string action) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store";
+    if (ctx.Request.Headers.Origin != origin) return Text(403, "origin が違います");
+    if (SessionOf(ctx) is not { } user) return NeedLogin();
+    if (config.Talos(name) is not { Talos: { } talos } target) return Text(404, "その Talos の先はありません");
+    TalosPower? power = action switch { "shutdown" => TalosPower.Shutdown, "reboot" => TalosPower.Reboot, _ => null };
+    if (power is not { } p) return Text(404, "その操作はありません");
+    // 同時には 1 つだけ(押し間違いで続けて動かさない)
+    if (!await talosPowerGate.WaitAsync(0)) return Results.Json(new TalosPowerResult(false, "busy"), ApiJson.Default.TalosPowerResult, statusCode: 409);
+    try
+    {
+        log.Write($"{user.Name}: talos {action} {target.Name} (node {talos.Node}) を頼んだ");
+        // ブラウザが閉じても、頼んだ操作は最後まで動かす(talosctl は --wait=false ですぐ返る)
+        var r = await runTalosPower(talos, p, app.Lifetime.ApplicationStopping);
+        log.Write($"{user.Name}: talos {action} {target.Name} → {(r.Ok ? "受け付けた" : $"{r.Reason}{(r.Detail is null ? "" : $": {r.Detail}")}")}");
+        return Results.Json(r, ApiJson.Default.TalosPowerResult);
+    }
+    finally
+    {
+        talosPowerGate.Release();
+    }
 });
 
 app.MapGet("/{**path}", async (HttpContext ctx) =>

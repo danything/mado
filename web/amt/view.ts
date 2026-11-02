@@ -4,6 +4,7 @@
 
 import { WsStream } from "../rdp/stream";
 import { gray, openTerminal, type Tty, type Xterm } from "../term";
+import { TwoPress } from "../two-press";
 import { LoginRequired, WsmanClient } from "./client";
 import { IderSession } from "./ider";
 import { SolSession } from "./redirect";
@@ -84,11 +85,6 @@ export function powerButtons(info: PowerInfo | undefined): PowerAction[] {
   );
 }
 
-/** 電源のボタンの 1 回目のあと、2 回目を待つ時間 */
-const ARM_MS = 3000;
-/** 1 回目からこれより早い 2 回目は受けない(ダブルクリック) */
-const MIN_SECOND_MS = 400;
-
 const $ = <T extends HTMLElement>(sel: string) =>
   document.querySelector(sel) as T;
 
@@ -100,16 +96,8 @@ export class AmtView {
   private readonly state = $<HTMLElement>("#amt-state");
   private readonly status = $<HTMLElement>("#amt-status");
   private readonly actions = $<HTMLElement>("#amt-actions");
-  /** 1 回目を押して 2 回目を待っている電源の操作 */
-  private armed?: {
-    action: PowerAction;
-    timer: ReturnType<typeof setTimeout>;
-    message: string;
-    /** 1 回目を押した時刻。ダブルクリックを 2 回押しとみなさない */
-    at: number;
-    /** 1 回目の前の状態の文。待ちをやめたら戻す */
-    before: { text: string; kind?: "error" | "ok" };
-  };
+  /** 電源のボタン。2 回押しで確定する(two-press.ts)。open で作る */
+  private power?: TwoPress<PowerAction>;
   /** 電源の操作を AMT に頼んでいる間。その間は電源のボタンを受けない */
   private powerBusy = false;
   private readonly term = $<HTMLElement>("#sol");
@@ -143,10 +131,16 @@ export class AmtView {
   async open(): Promise<void> {
     this.info = await this.wsman.power();
     $<HTMLElement>("#amt-name").textContent = this.login.target;
+    this.power = new TwoPress(
+      this.actions,
+      this.status,
+      (text, kind) => this.note(text, kind),
+      (a) => String(a.value),
+      (a) => void this.changePower(a),
+    );
     this.renderPower();
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
-    this.actions.addEventListener("keydown", this.onPowerKey);
     this.iderFile.addEventListener("change", this.onFile);
     this.schedule(POLL_MS);
     let term: Xterm;
@@ -216,7 +210,7 @@ export class AmtView {
       return;
     }
     // 別のボタンを押したら、電源の 2 回目の待ちは取り消す
-    this.disarm(true);
+    this.power?.disarm(true);
     if (b.dataset.amt === "sol") void this.toggleSol();
     else if (b.dataset.amt === "close") this.close();
     else if (b === this.iderBoot) this.iderFile.click();
@@ -334,94 +328,32 @@ export class AmtView {
     const s = this.info?.state;
     this.state.textContent = powerStateName(s);
     this.state.dataset.on = String(isOn(s));
+    const power = this.power;
+    if (!power) return;
     // 15 秒ごとに読み直すので、出す操作が変わったときだけ作り直す(押しかけのボタンと焦点を消さない)
     const actions = powerButtons(this.info);
-    const shown = [...this.powerButtonElements()]
-      .map((b) => b.dataset.power)
-      .join();
+    const shown = [...power.buttons()].map((b) => b.dataset.power).join();
     if (shown === actions.map((a) => String(a.value)).join()) return;
-    if (this.armed && !actions.includes(this.armed.action)) this.disarm(true);
+    if (power.pending && !actions.includes(power.pending)) power.disarm(true);
     const focused = this.actions.contains(document.activeElement)
       ? (document.activeElement as HTMLElement).dataset.power
       : undefined;
+    // 戻せない操作は控えのボタンで、乗せたときと 2 回目を待つ間は赤い字(塗らない)
     this.actions.replaceChildren(
-      ...actions.map((action) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.dataset.power = String(action.value);
-        b.title = action.description;
-        // 戻せない操作は控えのボタンで、乗せたときと 2 回目を待つ間は赤い字(塗らない)
-        b.className = action.danger ? "secondary danger" : "secondary";
-        this.paintPower(b, action);
-        return b;
-      }),
+      ...actions.map((a) => power.button(a, a.description, a.danger)),
     );
     if (focused !== undefined) {
-      const bs = [...this.powerButtonElements()];
+      const bs = [...power.buttons()];
       (bs.find((b) => b.dataset.power === focused) ?? bs[0])?.focus();
     }
   }
 
-  private powerButtonElements(): NodeListOf<HTMLButtonElement> {
-    return this.actions.querySelectorAll<HTMLButtonElement>(
-      "button[data-power]",
-    );
-  }
-
-  /** ボタンの文。2 回目を待っている間は「もう一度押すと…」 */
-  private paintPower(b: HTMLButtonElement, action: PowerAction): void {
-    const armed = this.armed?.action === action;
-    b.textContent = armed ? `もう一度押すと${action.label}` : action.label;
-    b.toggleAttribute("data-armed", armed);
-  }
-
-  /** 電源のボタンは 2 回押しで確定する。1 回目で文を変え、ARM_MS 以内にもう一度押したら実行する */
+  /** 電源のボタンは 2 回押しで確定する(two-press.ts)。AMT に頼んでいる間は受けない */
   private pressPower(value: number): void {
     const action = POWER_ACTIONS.find((a) => a.value === value);
     if (!action || this.powerBusy) return;
-    if (this.armed?.action === action) {
-      // 素早いダブルクリックは 1 回目だけとみなす
-      if (performance.now() - this.armed.at < MIN_SECOND_MS) return;
-      this.disarm(false);
-      void this.changePower(action);
-      return;
-    }
-    this.disarm(true);
-    const message = `もう一度押すと${action.label}します`;
-    const kind = this.status.dataset.kind;
-    this.armed = {
-      action,
-      message,
-      at: performance.now(),
-      before: {
-        text: this.status.textContent ?? "",
-        kind: kind === "error" || kind === "ok" ? kind : undefined,
-      },
-      timer: setTimeout(() => this.disarm(true), ARM_MS),
-    };
-    for (const b of this.powerButtonElements())
-      if (b.dataset.power === String(value)) this.paintPower(b, action);
-    // #amt-status は aria-live なので、読み上げにも伝わる
-    this.note(message);
+    this.power?.press(action);
   }
-
-  /** 2 回目の待ちをやめ、ボタンの文を戻す。clearNote なら待ちの知らせを前の文に戻す */
-  private disarm(clearNote: boolean): void {
-    const a = this.armed;
-    if (!a) return;
-    clearTimeout(a.timer);
-    this.armed = undefined;
-    for (const b of this.powerButtonElements())
-      if (b.dataset.power === String(a.action.value))
-        this.paintPower(b, a.action);
-    if (clearNote && this.status.textContent === a.message)
-      this.note(a.before.text, a.before.kind);
-  }
-
-  /** Enter の押しっぱなしは keydown ごとに click になるので、繰り返しは捨てる(2 回押しをすり抜けさせない) */
-  private onPowerKey = (e: KeyboardEvent) => {
-    if (e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault();
-  };
 
   private async changePower(action: PowerAction): Promise<void> {
     const value = action.value;
@@ -577,7 +509,8 @@ export class AmtView {
     this.iderStop.hidden = true;
     this.iderBoot.disabled = false;
     this.iderFile.removeEventListener("change", this.onFile);
-    this.disarm(true);
+    this.power?.dispose();
+    this.power = undefined;
     this.actions.replaceChildren();
     this.enableRedirectionButton.hidden = true;
     this.sol?.close();
@@ -589,7 +522,6 @@ export class AmtView {
     this.solButton.textContent = "SOL に接続";
     this.note("");
     this.root.removeEventListener("click", this.onClick);
-    this.actions.removeEventListener("keydown", this.onPowerKey);
     this.root.hidden = true;
     this.closed?.();
   }

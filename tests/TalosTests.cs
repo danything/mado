@@ -128,6 +128,25 @@ public class TalosTests
     }
 
     [Test]
+    public async Task 電源の操作のコマンドも決まった形()
+    {
+        var o = new TalosOptions(@"C:\ProgramData\mado\talosconfig.dpapi", "10.10.0.4", ["10.10.0.4", "10.0.0.2"]);
+        await Assert.That(TalosCommand.PowerArguments(o, @"\\.\pipe\p", TalosPower.Shutdown)).IsEquivalentTo(
+            ["--talosconfig", @"\\.\pipe\p", "--nodes", "10.10.0.4", "--endpoints", "10.10.0.4,10.0.0.2", "shutdown", "--wait=false"]);
+        await Assert.That(TalosCommand.PowerArguments(o, @"\\.\pipe\p", TalosPower.Reboot)).IsEquivalentTo(
+            ["--talosconfig", @"\\.\pipe\p", "--nodes", "10.10.0.4", "--endpoints", "10.10.0.4,10.0.0.2", "reboot", "--wait=false"]);
+    }
+
+    [Test]
+    public async Task 電源の操作の失敗は端末の出力の最後の行を理由にする()
+    {
+        var output = "\x1b[?25l\x1b[2J\x1b[1;1Herror executing reboot: 1 error occurred:\x1b[2;1H\t* 10.10.0.4: rpc error: code = PermissionDenied desc = not authorized\x1b[K\r\n\x1b]0;talosctl\x07\r\n"u8;
+        await Assert.That(TalosPowerCommand.LastLine(output.ToArray())).IsEqualTo("* 10.10.0.4: rpc error: code = PermissionDenied desc = not authorized");
+        await Assert.That(TalosPowerCommand.LastLine("\x1b[2J\r\n"u8.ToArray())).IsNull();
+        await Assert.That(TalosPowerCommand.LastLine(Encoding.UTF8.GetBytes(new string('x', 500)))!.Length).IsEqualTo(300);
+    }
+
+    [Test]
     public async Task talosctl_は設定の場所か_PATH_から探す()
     {
         var name = OperatingSystem.IsWindows() ? "talosctl.exe" : "talosctl";

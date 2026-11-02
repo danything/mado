@@ -771,7 +771,8 @@ dialog[open] > article {
   font-size: 0.8125rem;
 }
 /* 電源の操作は、いま使えるものだけをバーにそのまま並べる */
-#amt-actions {
+#amt-actions,
+#talos-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.125rem;

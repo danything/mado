@@ -6,8 +6,11 @@ import {
   EXPIRY_WARN_DAYS,
   expiryNote,
   explainDashboardError,
+  explainPowerResult,
   helloMessage,
   resizeMessage,
+  TALOS_POWER,
+  type TalosPowerAction,
 } from "./dashboard";
 
 /** 偽の WebSocket。送ったものを sent に溜め、fire で出来事を起こす */
@@ -113,6 +116,43 @@ describe("Talos のダッシュボード", () => {
     expect(explainDashboardError("token rejected")).toContain("mado.json");
     expect(explainDashboardError("")).toBe("ダッシュボードを終了しました");
     expect(explainDashboardError("something else")).toBe("something else");
+  });
+
+  test("電源の操作の結果を文にする", () => {
+    const [shutdown, reboot] = TALOS_POWER as [
+      TalosPowerAction,
+      TalosPowerAction,
+    ];
+    expect(shutdown.key).toBe("shutdown");
+    expect(reboot.description).toBe("Talos が止める準備をしてから再起動します");
+    expect(explainPowerResult(reboot, { ok: true })).toEqual({
+      text: "再起動を受け付けました。Talos が止める準備をしています",
+      kind: "ok",
+    });
+    expect(
+      explainPowerResult(shutdown, {
+        ok: false,
+        reason: "exited 1",
+        detail: "rpc error: code = PermissionDenied desc = not authorized",
+      }).text,
+    ).toContain("os:operator");
+    expect(
+      explainPowerResult(reboot, {
+        ok: false,
+        reason: "exited 1",
+        detail: "connection refused",
+      }),
+    ).toEqual({
+      text: "再起動できませんでした: connection refused",
+      kind: "error",
+    });
+    expect(
+      explainPowerResult(reboot, { ok: false, reason: "talosctl not found" })
+        .text,
+    ).toContain("talosctl.exe が見つかりません");
+    expect(
+      explainPowerResult(reboot, { ok: false, reason: "busy" }).text,
+    ).toContain("ほかの電源の操作");
   });
 
   test("期限が近いか切れていれば知らせる", () => {
