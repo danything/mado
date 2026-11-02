@@ -80,7 +80,8 @@ talosconfig は Talos の `os:operator` の役割で作る(`talosctl config new 
 ダッシュボードに要るのは読むこと(`os:reader`)だけだが、バーの「シャットダウン」「再起動」には `os:operator` が要る。
 
 - `os:operator` で足されるのは、Talos の文書(RBAC)の言うところで、ノードの再起動・シャットダウン、etcd のバックアップと警報の扱いなど。ノードの設定(machine config)の書き換え、リセット、アップグレードは `os:admin` が要り、mado の PC が乗っ取られてもできない
-- mado の PC からは、AMT で既に強制電源オフ・強制再起動ができる(OS を止めずに切るので、etcd やディスクを壊すおそれがある)。Talos の安全なシャットダウン・再起動を足すと、止めるときにそちらを選べる。乗っ取られたときにできること(ノードを止める)は AMT と変わらないので、`os:operator` に上げても危うさはほとんど増えず、普段の操作は安全側になる
+- **etcd のスナップショットも取れる**。Kubernetes の Secret は Talos の secretbox で暗号化して etcd に入っていて、その鍵はマシンの設定の秘密の部分(`os:operator` では読めない)にあるので、スナップショットからそのままは読めない。ただし ConfigMap などほかのリソースは平文で読める。鍵が漏れたときの影響は `os:reader` より大きい
+- それでも `os:operator` にするのは、mado の PC からは AMT で既に強制電源オフ・強制再起動ができ(OS を止めずに切るので、etcd やディスクを壊すおそれがある)、Talos に止める準備をさせてから止める道を足すほうが、普段の操作が安全側になるから。鍵は SYSTEM と Administrators だけが読める場所に DPAPI で置き、90 日で切れる。決めたことは gitops の `docs/decisions.md`
 - v0.13 までは `os:reader` だった。その鍵のままでもダッシュボードは使えるが、電源の操作は Talos に断られる(PermissionDenied。画面は setup.ps1 を流し直すよう出す)
 
 ### DPAPI(LocalMachine)で保護して置く
@@ -115,7 +116,7 @@ pwsh -File mado/setup.ps1
 ```
 
 setup.ps1 が管理者の talosconfig(SOPS の Talos の CA からその場で作る)で `os:operator` の talosconfig を作り直し、DPAPI で保護して置き直す。mado の再起動は要らない(開くたびにファイルを読む)。
-古い証明書は期限まで有効のまま(Talos のクライアント証明書は取り消せない)。漏れたときは Talos の CA ごと作り直すことになるので、`os:operator`(設定を変えられない)に絞り、期限を短くしている。
+古い証明書は期限まで有効のまま(Talos のクライアント証明書は取り消せない)。漏れたときは Talos の CA ごと作り直すことになるので、`os:operator`(設定は変えられない)にとどめ、期限を短くしている。
 
 ## 試験
 
