@@ -39,6 +39,9 @@ var version = "v" + (typeof(Config).Assembly.GetCustomAttribute<AssemblyInformat
     .Split('+')[0] ?? "0.0.0");
 log.Write($"mado {version}: {config.File} を読んだ({config.Host}、つなぐ先 {string.Join(' ', config.Targets.Select(t => $"{t.Name}={t.Type}:{t.Host}:{t.Port}"))})");
 
+foreach (var t in config.Targets.Where(t => t is { Kind: TargetKind.Amt, Tls: true, CertSha256: null }))
+    log.Write($"注意: {t.Name} は tls だが cert_sha256 が無いので、AMT の証明書を確かめない(docs/amt.md)");
+
 var signer = Signer.Open(config.DataDir);
 var origin = config.Origin;
 var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
@@ -258,7 +261,8 @@ app.MapPost("/api/amt/{name}/wsman", async (HttpContext ctx, string name) =>
     {
         r = await wsman.Send(target, ctx.Request.Headers.Authorization, ctx.Request.ContentType, body, ctx.RequestAborted);
     }
-    catch (Exception e) when (e is HttpRequestException or IOException or OperationCanceledException && !ctx.RequestAborted.IsCancellationRequested)
+    // ブラウザが切れて取り消されたときだけは上に投げる(返す相手がいない)
+    catch (Exception e) when (e is HttpRequestException or IOException || (e is OperationCanceledException && !ctx.RequestAborted.IsCancellationRequested))
     {
         log.Write($"{user.Name}: amt wsman {target.Name} failed: {e.Message}");
         return Text(502, $"AMT({target.Host}:{target.Port})につなげない: {(e is OperationCanceledException ? "時間切れ" : e.Message)}");

@@ -131,6 +131,8 @@ internal static class AmtRelay
 {
     public const string Path = "/ws/amt";
     const int MaxToken = 4096;
+    /// <summary>AMT に TCP でつなぐまで(と TLS を張るまで)の時間</summary>
+    public static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
 
     public static async Task Serve(string user, IRelayChannel client, Func<string?, Target?> authorize,
         Action<string> log, Action<int> sessions, CancellationToken ct)
@@ -196,16 +198,28 @@ internal static class AmtRelay
         Stream remote;
         try
         {
-            await tcp.ConnectAsync(target.Host, port, ct);
+            // 黙って落とされる先で、OS の再送が終わるまで待たない
+            using (var connect = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                connect.CancelAfter(ConnectTimeout);
+                try { await tcp.ConnectAsync(target.Host, port, connect.Token); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new IOException("connect timeout"); }
+            }
             remote = tcp.GetStream();
             if (target.Tls)
             {
                 var ssl = new SslStream(remote, leaveInnerStreamOpen: false);
-                await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                using var handshake = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                handshake.CancelAfter(ConnectTimeout);
+                try
                 {
-                    TargetHost = target.Host,
-                    RemoteCertificateValidationCallback = (_, cert, _, _) => Amt.CheckCert(target, cert),
-                }, ct);
+                    await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                    {
+                        TargetHost = target.Host,
+                        RemoteCertificateValidationCallback = (_, cert, _, _) => Amt.CheckCert(target, cert),
+                    }, handshake.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new IOException("TLS handshake timeout"); }
                 remote = ssl;
             }
         }
