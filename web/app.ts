@@ -13,7 +13,6 @@ import {
   serializePins,
   type Verdict,
 } from "./certpin";
-import { AutoScale } from "./rdp/autoscale";
 import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
@@ -188,12 +187,6 @@ type SessionEnd = { message: string; fallback?: Mode; error?: boolean };
 
 /** 方式を切り替えた記録(診断用) */
 const switches: string[] = [];
-/** 画素数を自動で変えた記録。診断に新しいものから 5 つ出す */
-const scaleSwitches: string[] = [];
-/** いまの画素数の割合(診断用) */
-let currentScale: () => number = () => 1;
-/** 混み具合を見る間隔 */
-const AUTO_SAMPLE_MS = 2000;
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -241,7 +234,6 @@ form.addEventListener("submit", async (e) => {
   }
   setNote(status, "接続しています…");
   switches.length = 0;
-  scaleSwitches.length = 0;
   // H.264 は、ブラウザが復号できるときだけ頼む
   const avc = await avcSupport();
   let mode: Mode = avc ? "avc" : "gfx";
@@ -416,38 +408,14 @@ async function runSession(
     );
     stops.push(bindInput(display.canvas, client, display));
     stops.push(watchClipboard(display.canvas, channels));
-    // 窓の大きさが変わったら RDP の解像度も変える。GFX のときは、混んでいれば解像度を下げる
-    const auto = new AutoScale(1);
+    // 窓の大きさが変わったら RDP の解像度も変える。混んでいても解像度は下げない(rdp/latency.ts)
     const resize = (w: number, h: number) => {
-      const width = even(Math.round(w * auto.scale));
-      const height = Math.round(h * auto.scale);
+      const width = even(w);
       // いまと同じ大きさなら送らない。Windows は同じ大きさでも画面を作り直し、GPU があると数十秒絵が来なくなる
-      if (width === display.width && height === display.height) return;
-      channels.displayControl.resize(width, height);
+      if (width === display.width && h === display.height) return;
+      channels.displayControl.resize(width, h);
     };
     stops.push(watchSize(screen, resize));
-    let started = false;
-    const sampler = setInterval(() => {
-      if (!gfxClient?.active || gfxClient.stats.frames === 0) return;
-      const now = performance.now();
-      // 最初の絵が来てしばらくは、全面の送り直しで混んで見えるので待つ
-      if (!started) {
-        started = true;
-        auto.pause(now + 10_000);
-      }
-      const l = gfxClient.latency;
-      // 最近のフレームが無いのは画面が静かなときなので、混んでいないとみなす
-      const queued = now - l.at < AUTO_SAMPLE_MS * 1.5 ? l.queued : undefined;
-      const next = auto.sample({ queued, backlog: gfxClient.backlog }, now);
-      if (next === undefined) return;
-      scaleSwitches.push(
-        `${new Date().toLocaleTimeString()} 解像度 ${Math.round(next * 100)}% 遅延+${Math.round(queued ?? 0)}ms 未描画 ${gfxClient.backlog}`,
-      );
-      scaleSwitches.splice(0, scaleSwitches.length - 5);
-      resize(screen.clientWidth, screen.clientHeight);
-    }, AUTO_SAMPLE_MS);
-    stops.push(() => clearInterval(sampler));
-    currentScale = () => auto.scale;
     display.canvas.focus();
     setNote(status, "");
     const reason = await client.run();
@@ -592,8 +560,7 @@ function diagText(
   if (switches.length) lines.push("切り替え:", ...switches);
   if (gfx?.active)
     lines.push(
-      `負荷: 遅延+${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}  解像度 ${Math.round(currentScale() * 100)}%`,
-      ...scaleSwitches,
+      `負荷: 遅延+${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}`,
       `GFX: バージョン=${gfx.confirmedVersion ?? "-"} ${Object.entries(
         gfx.stats,
       )
