@@ -1,5 +1,5 @@
 // Talos のダッシュボード(talosctl dashboard)。mado が talosctl を擬似端末(ConPTY)で動かし、その入出力を /ws/talos で中継する。
-// 画面は SOL と同じ端末(xterm.js)に出す。最初のテキストのメッセージで使い捨てのトークンと端末の大きさを送り、
+// 画面は SOL と同じ見た目の端末(xterm.js。talos/view.ts)に出す。最初のテキストのメッセージで使い捨てのトークンと端末の大きさを送り、
 // あとはバイナリがキー入力と画面、テキストの {"cols","rows"} が大きさの変更。動かすコマンドは mado.json だけで決まる。
 
 /** 最初のメッセージ */
@@ -50,9 +50,9 @@ export function explainDashboardError(reason: string): string {
       : `talosctl が終了しました(終了コード ${exited[1]})。証明書の期限が切れていないか、ノードに届くかを確かめてください`;
   switch (reason) {
     case "token rejected":
-      return "この先ではダッシュボードを使えません。mado.json の talos を確かめてください";
+      return "この先ではダッシュボードを使えません。mado.json の先の type が talos か確かめてください";
     case "talosctl not found":
-      return "talosctl.exe が見つかりません。mado.json の talos.talosctl に場所を書くか、PATH に置いてください";
+      return "talosctl.exe が見つかりません。mado.json の talos の先の talosctl に場所を書くか、PATH に置いてください";
     case "talosconfig unreadable":
       return "talosconfig を開けません。gitops の mado/setup.ps1 を流し直してください";
     case "busy":

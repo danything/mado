@@ -1,8 +1,9 @@
 # Talos のダッシュボード
 
-AMT の先で Talos が動いているなら、AMT の画面のバーから `talosctl dashboard` を開ける。
+Talos のノードを、つなぐ先の一覧に `"type": "talos"` の先として並べ、`talosctl dashboard` を開ける。
 mado が mado の PC の上で talosctl を擬似端末(Windows の ConPTY)で動かし、その画面とキー入力を WebSocket で中継する。
-画面は SOL と同じ端末(xterm.js)に出す。SOL ではカーネルの文字しか見えないが、ダッシュボードなら CPU・メモリ・サービス・ログが見られる。
+画面は AMT の SOL と同じ見た目の端末(xterm.js)。SOL ではカーネルの文字しか見えないが、ダッシュボードなら CPU・メモリ・サービス・ログが見られる。
+鍵(talosconfig)は mado の PC に置くので、AMT と違って画面で入れるものは無い。
 
 ```
 ブラウザ ──wss /ws/talos(画面とキー入力)──> mado ──ConPTY──> talosctl.exe dashboard ──Talos API(50000、os:reader)──> ノード
@@ -11,45 +12,51 @@ mado が mado の PC の上で talosctl を擬似端末(Windows の ConPTY)で�
 
 ## 設定
 
-AMT の先に `talos` を足す。無い先ではボタンを出さない。
-
 ```json
-{
-  "name": "Z440(AMT)",
-  "type": "amt",
-  "host": "10.10.0.3",
-  "talos": {
+"targets": [
+  { "name": "Z440(AMT)", "type": "amt", "host": "10.10.0.3" },
+  {
+    "name": "Z440(Talos)",
+    "type": "talos",
     "talosconfig": "talosconfig.dpapi",
     "node": "10.10.0.4",
     "endpoints": ["10.10.0.4"],
     "talosctl": "bin/talosctl.exe"
   }
-}
+]
 ```
 
 | 項目          | 内容                                                                                                                       |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | 一覧に出す名前。要る                                                                                                       |
+| `type`        | `"talos"`                                                                                                                  |
 | `talosconfig` | DPAPI で保護した talosconfig(下の「鍵の扱い」)。相対なら mado.json の場所から。役割は `os:reader` だけにする               |
 | `node`        | ダッシュボードで見るノード(`--nodes`)。アドレスかホスト名                                                                  |
 | `endpoints`   | Talos API の入口(`--endpoints`)。既定は `[node]`                                                                           |
 | `talosctl`    | `talosctl.exe` の場所。相対なら mado.json の場所から。書かなければサービスの `PATH` から探す。無ければ開くときに失敗を返す |
 
-`talos` は `type` が `amt` の先にだけ書ける。値の形が違えば起動のときに止まる(`-` で始まる値は talosctl のフラグと読まれるので受け付けない)。
-古い mado(v0.12 まで)は知らない項目を読み飛ばすので、mado.json を先に置いても落ちない。
+`host`・`port`・`tls`・`cert_sha256` は書かない(行き先は `node` と `endpoints`)。値の形が違えば起動のときに止まる(`-` で始まる値は talosctl のフラグと読まれるので受け付けない)。
+
+### v0.13 の形から移す
+
+v0.13 では AMT の先の中に `"talos": { … }` を書いていた。今の mado もこの形を読み、AMT の先とは別に「`<AMT の先の名前>` のダッシュボード」という talos の先を一覧に足す(起動のときに mado.log に「古い形」と書く)。
+上の形に書き直すと、その名前は好きに付けられる。
+
+v0.13 までの mado は `"type": "talos"` を知らず、起動のときに止まる。mado.json を書き直すのは、mado を v0.14 以降に上げてからにする。
 
 ## 使い方
 
-1. AMT の先を開く(AMT のユーザー名とパスワードが要るのは今までどおり)
-2. バーの「ダッシュボード」を押す。SOL をつないでいれば切り、同じ端末に `talosctl dashboard` が出る
+1. 一覧で種類が「Talos・ダッシュボード」の先を選ぶ。ユーザー名とパスワードの欄は消え、ボタンが「開く」になる
+2. 「開く」を押すと、すぐ画面いっぱいの端末に `talosctl dashboard` が出る。上の常に出ているバーに名前・種類・期限の知らせ・「閉じる」
    - 端末の大きさは窓に合わせ、変えると talosctl にも伝える(ConPTY の大きさを変える)
    - キーはそのまま talosctl に届く。F1〜F4 で画面を切り替え、`q` か Ctrl+C で終わる
-3. 「ダッシュボードを閉じる」か `q` で終わる。SOL をつないでいたなら、つなぎ直す
-4. talosconfig の証明書の期限が 14 日を切ると、AMT の画面を開いたときにバーに「Talos の証明書はあと N 日で切れます」と出る(切れたら「期限が切れています」)
+3. talosctl が終わると、端末に終わった理由(「ダッシュボードを終了しました」、失敗なら終了コードと次にすること)が出て、バーに「もう一度開く」が出る(焦点を置くので Enter でも開き直せる)。「閉じる」で一覧に戻る
+4. talosconfig の証明書の期限が 14 日を切ると、バーに「Talos の証明書はあと N 日で切れます」と出る(切れたら「期限が切れています」)
 
 ## しくみ
 
 - `/ws/talos` の WebSocket。`/ws/amt` と同じく、Origin とログイン(Cookie)を確かめ、最初のテキストのメッセージ `{"token": "…", "cols": 120, "rows": 40}` の `token` が `/api/token` の使い捨てのトークン(60 秒、1 度だけ、同じログインのもの)のときだけ続ける。
-  トークンの中の先が AMT で、`talos` の設定があるときだけ動かす(RDP の先や `talos` の無い AMT の先のトークンでは動かさない)
+  トークンの中の先が talos の先のときだけ動かす(RDP や AMT の先のトークンでは動かさない)
 - 動かすコマンドはいつも `talosctl --talosconfig <パイプ> --nodes <node> --endpoints <endpoints> dashboard` で、値は全部 mado.json から来る(`server/Talos.cs` の `TalosCommand`)。
   ブラウザが送れるのは端末の大きさとキー入力だけで、コマンドや引数は選べない
 - あとはバイナリのメッセージが端末の入出力、テキストの `{"cols": …, "rows": …}` が大きさの変更。talosctl が終わると mado は `exited <終了コード>` の理由で閉じる。ブラウザが閉じれば talosctl を止める
@@ -103,5 +110,8 @@ setup.ps1 が管理者の talosconfig(SOPS の Talos の CA からその場で�
 
 - `dotnet run --project tests/Mado.Tests.csproj`(`tests/TalosTests.cs`): 設定の読み込みと間違い、コマンドが固定の形であること、引数の囲み方、talosctl の探し方、証明書の期限(使う context の crt)、同時の数の上限、
   `/ws/talos` の中継(偽の端末で、トークンと先の種類、入力と大きさの変更、終わり方)。Windows では DPAPI、ConPTY(`cmd.exe` の出力と終了コード)、名前付きパイプ(ほかのプロセスには渡さず、動かしたプロセスには渡す)も
-- `bun test web/amt`(`web/amt/dashboard.test.ts`): 最初のメッセージと大きさの変更、閉じた理由の文、期限の知らせ
-- 本物の `talosctl dashboard`(Windows 版 v1.15.0-alpha.2)を ConPTY と名前付きパイプで動かし、画面が描かれること、大きさの変更、`q` で終了コード 0 になることを手元で確かめた(ノードにはつながない設定で)
+- `bun test web/talos`(`web/talos/dashboard.test.ts`): 最初のメッセージと大きさの変更、閉じた理由の文、期限の知らせ
+- `tools/amt-e2e/`([amt.md](amt.md#試験)): Linux のコンテナの mado に talos の先を並べ、`e2e.ts` は `/ws/talos` が talos の先のトークンだけを受けること、`ui.cjs` は headless の Chromium で一覧から talos の先を選び(欄が隠れ、ボタンが「開く」)、押すと `/ws/talos` につなぎ、閉じた理由と「もう一度開く」が出て、開き直せることを確かめる。
+  Linux には ConPTY が無いので、mado は talosctl を動かすところで「not supported」で閉じる
+- 本物の `talosctl dashboard`(Windows 版 v1.15.0-alpha.2)を ConPTY と名前付きパイプで動かし、画面が描かれること、大きさの変更、`q` で終了コード 0 になることを手元で確かめた(ノードにはつながない設定で)。
+  v0.14 では Windows の mado に talos の先を書き、`/api/token` と `/ws/talos` をブラウザの代わりに話して、ダッシュボードの画面(ノードに届かない知らせつき)が流れてくることと、`q` で `exited 0` で閉じることを確かめた

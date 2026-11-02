@@ -141,7 +141,7 @@ public class ConfigTests
     }
 
     [Test]
-    [Arguments("{ \"host\": \"x\", \"type\": \"vnc\" }", "rdp か amt")]
+    [Arguments("{ \"host\": \"x\", \"type\": \"vnc\" }", "rdp・amt・talos")]
     [Arguments("{ \"host\": \"x\", \"type\": \"amt\", \"port\": 16992 }", "port は書かない")]
     [Arguments("{ \"host\": \"x\", \"type\": \"amt\", \"cert_sha256\": \"zz\" }", "64 文字")]
     [Arguments("{ \"host\": \"x\", \"type\": \"amt\", \"cert_sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\" }", "tls が true のときだけ")]

@@ -105,7 +105,7 @@ describe("Talos のダッシュボード", () => {
     );
     expect(explainDashboardError("exited 1")).toContain("終了コード 1");
     expect(explainDashboardError("talosctl not found")).toContain(
-      "talos.talosctl",
+      "talos の先の talosctl",
     );
     expect(explainDashboardError("talosconfig unreadable")).toContain(
       "setup.ps1",

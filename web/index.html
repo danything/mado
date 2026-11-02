@@ -34,13 +34,13 @@
           </div>
         </header>
         <form id="login">
-          <!-- つなぐ先の一覧。RDP の PC と Intel AMT が並ぶ(app.ts が作る) -->
+          <!-- つなぐ先の一覧。RDP の PC・Intel AMT・Talos のダッシュボードが並ぶ(app.ts が作る) -->
           <fieldset
             id="target-field"
             role="radiogroup"
             aria-label="つなぐ先"
           ></fieldset>
-          <label>
+          <label id="username-field">
             <input
               name="username"
               autocomplete="username"
@@ -49,7 +49,7 @@
             />
             <span id="username-label">Windows のユーザー名</span>
           </label>
-          <label>
+          <label id="password-field">
             <input
               name="password"
               type="password"
@@ -149,18 +149,6 @@
               SOL・IDE-R を有効にする
             </button>
           </li>
-          <!-- Talos のダッシュボード(talosctl dashboard)。mado.json の talos がある先だけ。SOL と同じ端末に出す -->
-          <li>
-            <button
-              type="button"
-              class="secondary"
-              id="amt-dash"
-              data-amt="dash"
-              hidden
-            >
-              ダッシュボード
-            </button>
-          </li>
           <li>
             <button type="button" class="secondary" id="amt-sol" data-amt="sol">
               SOL に接続
@@ -173,7 +161,38 @@
           </li>
         </ul>
       </nav>
-      <div id="sol"></div>
+      <div id="sol" class="tty"></div>
+    </section>
+    <!-- Talos のダッシュボード(talos/view.ts)。talosctl dashboard の端末が主で、上の常に出ているバーは SOL と同じ形 -->
+    <section id="talos" hidden>
+      <nav class="bar overlay pinned" id="talos-bar" data-shown>
+        <ul>
+          <li>
+            <strong id="talos-name"></strong><span class="kind">Talos</span>
+          </li>
+          <li><span id="talos-status" class="note" role="status"></span></li>
+        </ul>
+        <ul>
+          <!-- talosctl が終わったら出す -->
+          <li>
+            <button
+              type="button"
+              class="secondary"
+              id="talos-reopen"
+              data-talos="reopen"
+              hidden
+            >
+              もう一度開く
+            </button>
+          </li>
+          <li>
+            <button type="button" class="secondary" data-talos="close">
+              閉じる
+            </button>
+          </li>
+        </ul>
+      </nav>
+      <div id="talos-term" class="tty"></div>
     </section>
     <!-- AMT の「ISO から起動」と「SOL・IDE-R を有効にする」の前に出す(amt/view.ts の ask) -->
     <dialog

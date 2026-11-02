@@ -8,6 +8,7 @@ import { BufferedTransport, FAKE, fakeIso } from "../../web/amt/amt.fixture";
 import { AmtAuthError, WsmanClient } from "../../web/amt/client";
 import { IderSession } from "../../web/amt/ider";
 import { SolSession } from "../../web/amt/redirect";
+import { DashboardSession, type DashSocket } from "../../web/talos/dashboard";
 
 const ORIGIN = process.env.ORIGIN ?? "http://mado.test:8080";
 const KEY = Buffer.alloc(32, 1);
@@ -35,13 +36,14 @@ function check(ok: boolean, what: string): void {
   if (!ok) process.exitCode = 1;
 }
 
-// 1. 一覧に AMT の先が種類つきで出る
+// 1. 一覧に AMT の先と Talos の先が種類つきで出る
 const session = (await (
   await fetch(`${ORIGIN}/api/session`, { headers })
 ).json()) as { targets: { name: string; type: string }[]; ws: string };
 check(
   session.targets.some((t) => t.name === "z440-amt" && t.type === "amt") &&
-    session.targets.some((t) => t.name === "pc" && t.type === "rdp"),
+    session.targets.some((t) => t.name === "pc" && t.type === "rdp") &&
+    session.targets.some((t) => t.name === "z440-talos" && t.type === "talos"),
   `/api/session の targets: ${JSON.stringify(session.targets)}`,
 );
 
@@ -191,6 +193,31 @@ async function openWs(): Promise<{
   check(
     boot.result === 0,
     `IDE-R から起動の設定と電源の操作 (${JSON.stringify(boot)})`,
+  );
+}
+
+// 8. Talos のダッシュボード: /ws/talos は talos の先のトークンだけを受ける。
+// Linux の mado は ConPTY が無いので、talosctl を動かすところで「not supported」で閉じる(そこまで通れば中継の入口は通った)
+async function dash(target: string): Promise<string> {
+  const d = await DashboardSession.open(
+    `${session.ws}/talos`,
+    await token(target),
+    80,
+    24,
+    (u) => new WebSocket(u, { headers } as unknown as string[]) as DashSocket,
+  );
+  return Promise.race([d.done, Bun.sleep(5000).then(() => "timeout")]);
+}
+{
+  const reason = await dash("z440-talos");
+  check(
+    reason === "not supported",
+    `Talos の先のトークンで talosctl を動かしにいく (${reason})`,
+  );
+  const amtReason = await dash("z440-amt");
+  check(
+    amtReason === "token rejected",
+    `AMT の先のトークンではダッシュボードを動かさない (${amtReason})`,
   );
 }
 

@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 namespace Mado;
 
 /// <summary>
-/// AMT の先の Talos のダッシュボードの設定(mado.json の targets[].talos)。
+/// Talos のダッシュボードの先の設定(mado.json の type が talos の先)。
 /// Talosconfig は DPAPI で保護した talosconfig の場所(os:reader の役割だけのもの)。Talosctl が無ければ PATH から探す
 /// </summary>
 internal sealed partial record TalosOptions(string Talosconfig, string Node, IReadOnlyList<string> Endpoints, string? Talosctl = null)
@@ -169,7 +169,7 @@ internal delegate Task<ITerminal> TerminalStarter(TalosOptions talos, int cols, 
 /// Talos のダッシュボード(`talosctl dashboard`)の中継。ブラウザは WebSocket(/ws/talos)で来る。
 ///
 /// 1. 最初にテキストで {"token": "...", "cols": 120, "rows": 40} を送る。token は /api/token の使い捨てのもの。
-///    トークンの中の先が AMT で、talos の設定があるときだけ続ける
+///    トークンの中の先が Talos の先(mado.json の type が talos)のときだけ続ける
 /// 2. mado が talosctl を擬似端末(ConPTY)で動かす。引数は mado.json の値だけで決まる(TalosCommand)
 /// 3. あとはバイナリが端末の入出力。テキストの {"cols": .., "rows": ..} は大きさを変える
 ///
@@ -235,7 +235,7 @@ internal static class TalosRelay
             await Fail(ws, "bad hello", log);
             return;
         }
-        if (authorize(hello.Token) is not { Kind: TargetKind.Amt, Talos: { } talos } target)
+        if (authorize(hello.Token) is not { Kind: TargetKind.Talos, Talos: { } talos } target)
         {
             await Fail(ws, "token rejected", log);
             return;

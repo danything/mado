@@ -3,28 +3,20 @@
 // AMT のユーザー名とパスワードはこの画面を閉じるまでメモリに置くだけで、保存も mado への送信もしない。
 
 import { WsStream } from "../rdp/stream";
+import { gray, openTerminal, type Tty, type Xterm } from "../term";
 import { LoginRequired, WsmanClient } from "./client";
-import {
-  DashboardSession,
-  expiryNote,
-  explainDashboardError,
-} from "./dashboard";
 import { IderSession } from "./ider";
 import { SolSession } from "./redirect";
 import { SerialText } from "./serial-text";
 import { isOn, type PowerInfo, powerStateName, returnValueText } from "./wsman";
-
-type Xterm = import("@xterm/xterm").Terminal;
 
 export type AmtLogin = { target: string; username: string; password: string };
 
 export type AmtDeps = {
   /** /api/token を取る(使い捨ての中継のトークン) */
   newToken: (target: string) => Promise<string>;
-  /** /ws の URL。SOL はその隣の /ws/amt、Talos のダッシュボードは /ws/talos */
+  /** /ws の URL。SOL と IDE-R はその隣の /ws/amt */
   ws: string;
-  /** この先で Talos のダッシュボードが使えるとき。notAfter は talosconfig の証明書の期限 */
-  talos?: { notAfter?: string };
 };
 
 /** 電源の操作。value は CIM の PowerState */
@@ -103,9 +95,6 @@ const $ = <T extends HTMLElement>(sel: string) =>
 /** 状態を読み直す間隔。操作の後は早めに読む */
 const POLL_MS = 15_000;
 
-/** 端末に書く、mado からの控えた知らせ(灰色) */
-const gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
-
 export class AmtView {
   private readonly root = $<HTMLElement>("#amt");
   private readonly state = $<HTMLElement>("#amt-state");
@@ -125,7 +114,6 @@ export class AmtView {
   private powerBusy = false;
   private readonly term = $<HTMLElement>("#sol");
   private readonly solButton = $<HTMLButtonElement>("#amt-sol");
-  private readonly dashButton = $<HTMLButtonElement>("#amt-dash");
   private readonly confirmDialog = $<HTMLDialogElement>("#confirm");
   private readonly iderFile = $<HTMLInputElement>("#ider-file");
   private readonly iderBoot = $<HTMLButtonElement>("#ider-boot");
@@ -141,13 +129,7 @@ export class AmtView {
   private solConnecting = false;
   /** UTF-8 の途中で止まったバイトを出すタイマー(connectSol) */
   private solFlush?: ReturnType<typeof setTimeout>;
-  /** Talos のダッシュボード。SOL と同じ端末を使うので、どちらか片方だけをつなぐ */
-  private dash?: DashboardSession;
-  private dashConnecting = false;
-  /** ダッシュボードを開く前に SOL をつないでいたか。閉じたらつなぎ直す */
-  private solBeforeDash = false;
-  private xterm?: Xterm;
-  private resize?: ResizeObserver;
+  private tty?: Tty;
   private closed?: () => void;
 
   constructor(
@@ -162,8 +144,6 @@ export class AmtView {
     this.info = await this.wsman.power();
     $<HTMLElement>("#amt-name").textContent = this.login.target;
     this.renderPower();
-    this.dashButton.hidden = !this.deps.talos;
-    this.showExpiry();
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
     this.actions.addEventListener("keydown", this.onPowerKey);
@@ -485,7 +465,7 @@ export class AmtView {
         () => {
           resolve(d.returnValue === "ok");
           // 窓を閉じたら、キー入力を端末に戻す
-          this.xterm?.focus();
+          this.tty?.term.focus();
         },
         { once: true },
       );
@@ -512,12 +492,6 @@ export class AmtView {
   // ---- SOL ----
 
   private toggleSol(): Promise<void> {
-    // ダッシュボードを開いているときは、閉じてから SOL につなぐ(閉じたときの処理がつなぐ)
-    if (this.dash) {
-      this.solBeforeDash = true;
-      this.dash.close();
-      return Promise.resolve();
-    }
     if (this.sol) {
       this.sol.close();
       return Promise.resolve();
@@ -526,9 +500,7 @@ export class AmtView {
   }
 
   private async connectSol(): Promise<void> {
-    // ダッシュボードを開いている間は SOL につながない(同じ端末を使う)
-    if (this.sol || this.solConnecting || this.dash || this.dashConnecting)
-      return;
+    if (this.sol || this.solConnecting) return;
     this.solConnecting = true;
     this.solButton.setAttribute("aria-busy", "true");
     try {
@@ -546,11 +518,6 @@ export class AmtView {
       } catch (e) {
         io.close();
         throw e;
-      }
-      // つないでいる間にダッシュボードが開いたら、SOL は使わない
-      if (this.dash || this.dashConnecting) {
-        sol.close();
-        return;
       }
       this.sol = sol;
       // BIOS の CP437 と Linux の UTF-8 の両方を読む(serial-text.ts)。UTF-8 の途中で止まったら少し待って出す
@@ -573,11 +540,13 @@ export class AmtView {
         this.sol = undefined;
         clearTimeout(this.solFlush);
         this.solButton.textContent = "SOL に接続";
-        this.xterm?.writeln(`\r\n${gray(`SOL が切断されました: ${reason}`)}`);
+        this.tty?.term.writeln(
+          `\r\n${gray(`SOL が切断されました: ${reason}`)}`,
+        );
       });
     } catch (e) {
       this.solButton.textContent = "SOL に接続";
-      this.xterm?.writeln(
+      this.tty?.term.writeln(
         `\x1b[31m✕\x1b[0m SOL に接続できませんでした: ${explainRedirectError(e)}`,
       );
     } finally {
@@ -586,125 +555,18 @@ export class AmtView {
     }
   }
 
-  // ---- Talos のダッシュボード ----
-
-  private toggleDash(): Promise<void> {
-    if (this.dash) {
-      this.dash.close();
-      return Promise.resolve();
-    }
-    return this.openDash();
-  }
-
-  /**
-   * talosctl dashboard を開く。端末は SOL と同じなので、SOL はいったん切り、ダッシュボードを閉じたらつなぎ直す。
-   * キー入力はそのまま talosctl に届く(F2 などで画面を切り替える。q か Ctrl+C で終わる)
-   */
-  private async openDash(): Promise<void> {
-    if (this.dash || this.dashConnecting) return;
-    this.dashConnecting = true;
-    this.dashButton.setAttribute("aria-busy", "true");
-    try {
-      const term = await this.terminal();
-      this.solBeforeDash = !!this.sol || this.solConnecting;
-      if (this.sol) {
-        const sol = this.sol;
-        // 先に外す(SOL の切断の知らせを出さない)
-        this.sol = undefined;
-        sol.close();
-        clearTimeout(this.solFlush);
-        this.solButton.textContent = "SOL に接続";
-      }
-      term.reset();
-      term.writeln(gray("ダッシュボードを開いています…"));
-      const token = await this.deps.newToken(this.login.target);
-      const dash = await DashboardSession.open(
-        this.deps.ws.replace(/\/ws$/, "/ws/talos"),
-        token,
-        term.cols,
-        term.rows,
-      );
-      this.dash = dash;
-      dash.onData = (b) => term.write(b);
-      this.dashButton.textContent = "ダッシュボードを閉じる";
-      term.focus();
-      void dash.done.then((reason) => {
-        if (this.dash !== dash) return;
-        this.dash = undefined;
-        this.dashButton.textContent = "ダッシュボード";
-        const text = explainDashboardError(reason);
-        // talosctl が別の画面(代替画面)のまま止められても戻す。talosctl が書いた失敗の理由は消さない
-        term.write("\x1b[?1049l\x1b[0m\x1b[?25h");
-        term.writeln(`\r\n${gray(text)}`);
-        const normal = /^exited 0$|^closed$|^$/.test(reason);
-        if (normal) this.showExpiry();
-        else this.note(text, "error");
-        if (this.solBeforeDash) void this.connectSol();
-      });
-    } catch (e) {
-      this.dashButton.textContent = "ダッシュボード";
-      if (e instanceof LoginRequired) this.handle(e);
-      else
-        this.xterm?.writeln(
-          `\x1b[31m✕\x1b[0m ダッシュボードを開けませんでした: ${e instanceof Error ? e.message : String(e)}`,
-        );
-    } finally {
-      this.dashConnecting = false;
-      this.dashButton.removeAttribute("aria-busy");
-    }
-    // 開けなかったら SOL に戻す(開けたときは、閉じたときに戻す)
-    if (!this.dash && this.solBeforeDash) void this.connectSol();
-  }
-
-  /** talosconfig の期限が近ければバーに出す */
-  private showExpiry(): void {
-    const expiry = expiryNote(this.deps.talos?.notAfter, new Date());
-    this.note(expiry?.text ?? "", expiry?.kind);
-  }
-
   /** 端末は AMT の画面を開くときに読み込む(RDP だけ使うときは xterm.js を読まない) */
   private async terminal(): Promise<Xterm> {
-    if (this.xterm) return this.xterm;
-    const [{ Terminal }, { FitAddon }] = await Promise.all([
-      import("@xterm/xterm"),
-      import("@xterm/addon-fit"),
-    ]);
-    const term = new Terminal({
-      convertEol: false,
-      cursorBlink: true,
-      scrollback: 5000,
-      fontFamily: 'ui-monospace, "Cascadia Mono", Consolas, monospace',
-      fontSize: 14,
-      theme: { background: "#000000" },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(this.term);
-    // xterm.js がキー入力を受ける隠れた textarea を、ブラウザが「文章を書く欄」とみなして、Edge の「Ask Edge to help me write」や
-    // その目印(端末の左上の青い点)を出していた。SOL には要らないので、書く手伝い・スペルチェック・自動補完を切る
-    if (term.textarea) {
-      const ta = term.textarea;
-      ta.setAttribute("writingsuggestions", "false");
-      ta.setAttribute("spellcheck", "false");
-      ta.setAttribute("autocomplete", "off");
-      ta.setAttribute("autocorrect", "off");
-      ta.setAttribute("autocapitalize", "off");
-    }
-    fit.fit();
+    if (this.tty) return this.tty.term;
+    const tty = await openTerminal(this.term);
     const enc = new TextEncoder();
-    // キー入力は、開いているほう(ダッシュボードか SOL)に送る
-    term.onData((s) => (this.dash ?? this.sol)?.send(enc.encode(s)));
-    term.onBinary((s) =>
-      (this.dash ?? this.sol)?.send(
-        Uint8Array.from(s, (c) => c.charCodeAt(0) & 0xff),
-      ),
+    // キー入力は SOL に送る
+    tty.term.onData((s) => this.sol?.send(enc.encode(s)));
+    tty.term.onBinary((s) =>
+      this.sol?.send(Uint8Array.from(s, (c) => c.charCodeAt(0) & 0xff)),
     );
-    // ダッシュボードは端末の大きさで描くので、変わったら talosctl に伝える(ConPTY の大きさを変える)
-    term.onResize(({ cols, rows }) => this.dash?.resize(cols, rows));
-    this.resize = new ResizeObserver(() => fit.fit());
-    this.resize.observe(this.term);
-    this.xterm = term;
-    return term;
+    this.tty = tty;
+    return tty.term;
   }
 
   close(): void {
@@ -720,16 +582,9 @@ export class AmtView {
     this.enableRedirectionButton.hidden = true;
     this.sol?.close();
     this.sol = undefined;
-    const dash = this.dash;
-    this.dash = undefined;
-    dash?.close();
-    this.dashButton.hidden = true;
-    this.dashButton.textContent = "ダッシュボード";
     clearTimeout(this.solFlush);
-    this.resize?.disconnect();
-    this.xterm?.dispose();
-    this.xterm = undefined;
-    this.term.replaceChildren();
+    this.tty?.dispose();
+    this.tty = undefined;
     // つないだら「SOL を切断」にする(connectSol)
     this.solButton.textContent = "SOL に接続";
     this.note("");

@@ -30,14 +30,15 @@ import {
   type Remembered,
   usernameFor,
 } from "./remember";
+import { TalosView } from "./talos/view";
 
 /**
- * つなぐ先。rdp は Windows の PC、amt は Intel AMT(電源と SOL)。
- * talos は AMT の先で Talos のダッシュボードが使えるときだけある(notAfter は talosconfig の証明書の期限)
+ * つなぐ先。rdp は Windows の PC、amt は Intel AMT(電源と SOL)、talos は Talos のダッシュボード(talosctl dashboard)。
+ * talos は talos の先だけにある(notAfter は talosconfig の証明書の期限)
  */
 type TargetInfo = {
   name: string;
-  type: "rdp" | "amt";
+  type: "rdp" | "amt" | "talos";
   talos?: { notAfter?: string };
 };
 
@@ -77,7 +78,11 @@ const session = await getJson<SessionInfo>("/api/session");
 $<HTMLElement>("#who").textContent = `${session.name} でログイン中`;
 $<HTMLElement>("#version").textContent = `mado ${session.version}`;
 /** 種類は事実なので、札にせず控えた字で添える */
-const KIND_NAMES = { rdp: "RDP", amt: "AMT・電源と SOL" } as const;
+const KIND_NAMES = {
+  rdp: "RDP",
+  amt: "AMT・電源と SOL",
+  talos: "Talos・ダッシュボード",
+} as const;
 const targetList = $<HTMLElement>("#target-field");
 targetList.replaceChildren(
   ...session.targets.map((t) => {
@@ -116,19 +121,26 @@ try {
   for (const r of targetRadios()) r.checked = r.value === start?.name;
 }
 // つなぐ先を選び直したら、欄の名前と、その先で前に使ったユーザー名にする。
-// AMT のユーザー名は Windows のものと別なので、使ったことのない AMT の先では admin にする
+// AMT のユーザー名は Windows のものと別なので、使ったことのない AMT の先では admin にする。
+// Talos のダッシュボードは入れるものが無い(鍵は mado の PC にある)ので、欄を隠す
 const onTarget = () => {
   const t = selected();
   const amt = t.type === "amt";
+  const talos = t.type === "talos";
+  for (const name of ["username", "password"]) {
+    $<HTMLElement>(`#${name}-field`).hidden = talos;
+    // 隠した欄は required でも送れるように、使わないことにする
+    field(name).disabled = talos;
+  }
   $<HTMLElement>("#username-label").textContent = amt
     ? "AMT のユーザー名"
     : "Windows のユーザー名";
   $<HTMLElement>("#password-label").textContent = amt
     ? "AMT のパスワード"
     : "パスワード";
-  (form.querySelector("button[type=submit]") as HTMLElement).textContent = amt
-    ? "開く"
-    : "接続";
+  (form.querySelector("button[type=submit]") as HTMLElement).textContent =
+    amt || talos ? "開く" : "接続";
+  if (talos) return;
   const u = amt
     ? (remembered.usernames[t.name] ?? "admin")
     : usernameFor(remembered, t.name);
@@ -186,6 +198,18 @@ const AUTO_SAMPLE_MS = 2000;
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const target = selected();
+  const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
+  if (target.type === "talos") {
+    if (submit.getAttribute("aria-busy") === "true") return;
+    remembered = { ...remembered, target: target.name };
+    try {
+      localStorage.setItem(REMEMBER, JSON.stringify(remembered));
+    } catch {}
+    submit.setAttribute("aria-busy", "true");
+    await openTalos(target);
+    submit.removeAttribute("aria-busy");
+    return;
+  }
   const login: Login = {
     target: target.name,
     username: field("username").value,
@@ -206,7 +230,6 @@ form.addEventListener("submit", async (e) => {
   try {
     localStorage.setItem(REMEMBER, JSON.stringify(remembered));
   } catch {}
-  const submit = form.querySelector("button[type=submit]") as HTMLButtonElement;
   // つないでいる途中に Enter でもう一度送られても、二つ目はつながない
   if (submit.getAttribute("aria-busy") === "true") return;
   submit.setAttribute("aria-busy", "true");
@@ -242,19 +265,37 @@ form.addEventListener("submit", async (e) => {
   field("password").value = "";
 });
 
+/** 中継の使い捨てのトークン。つなぐ直前に取る */
+const newToken = async (target: string) =>
+  (
+    await getJson<{ token: string }>(
+      `/api/token?target=${encodeURIComponent(target)}`,
+    )
+  ).token;
+
+/** Talos のダッシュボードを開いて、閉じるまで待つ。入れるものは無いので、押したらすぐ開く */
+async function openTalos(target: TargetInfo): Promise<void> {
+  const view = new TalosView(target, { ws: session.ws, newToken });
+  try {
+    await view.open();
+  } catch (err) {
+    setNote(
+      status,
+      `ダッシュボードを開けませんでした: ${describe(err)}`,
+      "error",
+    );
+    return;
+  }
+  setNote(status, "");
+  home.hidden = true;
+  await view.wait();
+  home.hidden = false;
+}
+
 /** AMT の画面を開いて、閉じるまで待つ。最初に電源の状態を読んで、ユーザー名とパスワードを確かめる */
 async function openAmt(login: Login): Promise<void> {
   setNote(status, "AMT に接続しています…");
-  const view = new AmtView(login, {
-    ws: session.ws,
-    newToken: async (target) =>
-      (
-        await getJson<{ token: string }>(
-          `/api/token?target=${encodeURIComponent(target)}`,
-        )
-      ).token,
-    talos: session.targets.find((t) => t.name === login.target)?.talos,
-  });
+  const view = new AmtView(login, { ws: session.ws, newToken });
   try {
     await view.open();
   } catch (err) {
@@ -281,13 +322,7 @@ async function runSession(
   const stops: (() => void)[] = [];
   try {
     // トークンは使い捨てで寿命が短いので、つなぐ直前に取る。つなぐ先はトークンに入っていて、サーバーが決める
-    const newToken = async () =>
-      (
-        await getJson<{ token: string }>(
-          `/api/token?target=${encodeURIComponent(login.target)}`,
-        )
-      ).token;
-    const token = await newToken();
+    const token = await newToken(login.target);
     // 画面の場所を表示してから大きさを測る。clientHeight を読んだ時点でレイアウトが決まる。
     // RDP の解像度は窓の大きさそのまま。混んでいたら、つないだあとで下げる
     home.hidden = true;
@@ -310,7 +345,7 @@ async function runSession(
       url: session.ws,
       wt: session.wt,
       token,
-      newToken,
+      newToken: () => newToken(login.target),
       destination: login.target,
       username: login.username,
       password: login.password,
