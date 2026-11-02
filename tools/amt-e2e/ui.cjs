@@ -209,7 +209,11 @@ const sign = (v) => {
   if (talosSockets.length !== 1)
     throw new Error(`/ws/talos につないだ数が ${talosSockets.length}`);
   await page.waitForSelector("#talos-reopen:not([hidden])");
-  // 終わったら「もう一度開く」に焦点を置く(Enter で開き直せる)
+  // 終わった直後(0.5 秒)は押せず、そのあと「もう一度開く」に焦点を置く(Enter で開き直せる)
+  if (!(await page.isDisabled("#talos-reopen")))
+    throw new Error("終わった直後から「もう一度開く」を押せる");
+  await page.waitForSelector("#talos-reopen:not([disabled])");
+  await page.waitForTimeout(50);
   if (!(await page.$eval("#talos-reopen", (b) => b === document.activeElement)))
     throw new Error("「もう一度開く」に焦点が無い");
   console.log(
@@ -223,8 +227,6 @@ const sign = (v) => {
   if (ta.left >= 0 || ta.writing !== "false")
     throw new Error(`隠れた入力欄: ${JSON.stringify(ta)}`);
   await page.screenshot({ path: "/src/out/talos.png" });
-  // 終わった直後(0.5 秒)の Enter は、端末で打っていた続きとみなして受けない
-  await page.waitForTimeout(600);
   await page.keyboard.press("Enter");
   for (let i = 0; i < 50 && talosSockets.length < 2; i++)
     await page.waitForTimeout(100);

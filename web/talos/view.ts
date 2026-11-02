@@ -35,10 +35,10 @@ export type TalosDeps = {
 const $ = <T extends HTMLElement>(sel: string) =>
   document.querySelector(sel) as T;
 
-/** talosctl が終わったあと、代替画面・色・カーソルを戻す(talosctl が書いた失敗の理由は消さない) */
 /** 終わった直後に「もう一度開く」を受けない時間 */
 const REOPEN_GUARD_MS = 500;
 
+/** talosctl が終わったあと、代替画面・色・カーソルを戻す(talosctl が書いた失敗の理由は消さない) */
 const RESTORE = "\x1b[?1049l\x1b[0m\x1b[?25h";
 
 export class TalosView {
@@ -54,8 +54,9 @@ export class TalosView {
   private tty?: Tty;
   private dash?: DashboardSession;
   private connecting = false;
-  /** talosctl が終わった時刻。直後の Enter や Space(端末で打っていた続き)で開き直さない */
-  private endedAt = 0;
+  /** 電源の操作を受け付けたあと。ノードが止まってダッシュボードが落ちても、バーの「受け付けました」を消さない */
+  private powerAccepted = false;
+  private reopenTimer?: ReturnType<typeof setTimeout>;
   private closed?: () => void;
 
   constructor(
@@ -117,10 +118,8 @@ export class TalosView {
     }
     // 別のボタンを押したら、電源の 2 回目の待ちは取り消す
     this.power?.disarm(true);
-    if (b.dataset.talos === "reopen") {
-      if (performance.now() - this.endedAt >= REOPEN_GUARD_MS)
-        void this.connect();
-    } else if (b.dataset.talos === "close") this.close();
+    if (b.dataset.talos === "reopen") void this.connect();
+    else if (b.dataset.talos === "close") this.close();
   };
 
   /** 2 回目で頼む。結果(受け付けた・失敗とその理由)をバーの状態の文に出す */
@@ -130,6 +129,7 @@ export class TalosView {
     try {
       const r = await this.deps.power(this.target.name, action.key);
       const { text, kind } = explainPowerResult(action, r);
+      this.powerAccepted = r.ok;
       this.note(text, kind);
     } catch (e) {
       this.note(
@@ -147,7 +147,9 @@ export class TalosView {
     if (!tty || this.dash || this.connecting) return;
     const term = tty.term;
     this.connecting = true;
+    clearTimeout(this.reopenTimer);
     this.reopenButton.hidden = true;
+    this.reopenButton.disabled = false;
     this.showExpiry();
     term.reset();
     term.writeln(gray("ダッシュボードを開いています…"));
@@ -173,8 +175,11 @@ export class TalosView {
         const text = explainDashboardError(reason);
         term.write(RESTORE);
         term.writeln(`\r\n${gray(text)}`);
-        if (/^exited 0$|^closed$|^$/.test(reason)) this.showExpiry();
-        else this.note(text, "error");
+        // 電源の操作を受け付けたあとは、ノードが止まって落ちるのが当たり前なので、バーの文はそのまま(理由は端末に出ている)
+        if (!this.powerAccepted) {
+          if (/^exited 0$|^closed$|^$/.test(reason)) this.showExpiry();
+          else this.note(text, "error");
+        }
         this.ended();
       });
     } catch (e) {
@@ -188,12 +193,20 @@ export class TalosView {
     }
   }
 
-  /** 終わったら「もう一度開く」を出す。焦点を置くので、Enter でも開き直せる */
+  /**
+   * 終わったら「もう一度開く」を出す。焦点を置くので、Enter でも開き直せる。
+   * 終わった直後は押せなくしておき、焦点も REOPEN_GUARD_MS あとに移す(q のあとに打った Enter や Space で開き直さない)
+   */
   private ended(): void {
     if (this.root.hidden) return;
-    this.endedAt = performance.now();
-    this.reopenButton.hidden = false;
-    this.reopenButton.focus();
+    const b = this.reopenButton;
+    b.hidden = false;
+    b.disabled = true;
+    clearTimeout(this.reopenTimer);
+    this.reopenTimer = setTimeout(() => {
+      b.disabled = false;
+      if (!b.hidden) b.focus();
+    }, REOPEN_GUARD_MS);
   }
 
   /** talosconfig の期限が近ければバーに出す */
@@ -210,6 +223,8 @@ export class TalosView {
   }
 
   close(): void {
+    clearTimeout(this.reopenTimer);
+    this.reopenButton.disabled = false;
     this.power?.dispose();
     this.power = undefined;
     this.actions.replaceChildren();
