@@ -102,9 +102,22 @@ const sign = (v) => {
   // SOL を切ったなら、つなぎ直す
   if ((await page.textContent("#amt-sol")).includes("SOL に接続"))
     await page.click("#amt-sol");
+  // つなぎ終わると焦点が端末へ移るので、それを待ってからボタンに戻す
+  await page.waitForFunction(
+    () => document.querySelector("#amt-sol")?.textContent?.includes("切断"),
+    null,
+    { timeout: 10000 },
+  );
+  await page.waitForTimeout(300);
   // キーボードで 2 回押すと実行する
   await page.focus(power);
   await page.keyboard.press("Enter");
+  // すぐの 2 回目(ダブルクリック)は受けない
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(300);
+  if (!(await page.$(`${power}[data-armed]`)))
+    throw new Error("すぐの 2 回目で実行された");
+  await page.waitForTimeout(300);
   await page.keyboard.press("Space");
   await page.waitForFunction(
     () =>

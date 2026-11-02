@@ -94,6 +94,8 @@ export function powerButtons(info: PowerInfo | undefined): PowerAction[] {
 
 /** 電源のボタンの 1 回目のあと、2 回目を待つ時間 */
 const ARM_MS = 3000;
+/** 1 回目からこれより早い 2 回目は受けない(ダブルクリック) */
+const MIN_SECOND_MS = 400;
 
 const $ = <T extends HTMLElement>(sel: string) =>
   document.querySelector(sel) as T;
@@ -114,9 +116,13 @@ export class AmtView {
     action: PowerAction;
     timer: ReturnType<typeof setTimeout>;
     message: string;
+    /** 1 回目を押した時刻。ダブルクリックを 2 回押しとみなさない */
+    at: number;
     /** 1 回目の前の状態の文。待ちをやめたら戻す */
     before: { text: string; kind?: "error" | "ok" };
   };
+  /** 電源の操作を AMT に頼んでいる間。その間は電源のボタンを受けない */
+  private powerBusy = false;
   private readonly term = $<HTMLElement>("#sol");
   private readonly solButton = $<HTMLButtonElement>("#amt-sol");
   private readonly dashButton = $<HTMLButtonElement>("#amt-dash");
@@ -160,6 +166,7 @@ export class AmtView {
     this.showExpiry();
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
+    this.actions.addEventListener("keydown", this.onPowerKey);
     this.iderFile.addEventListener("change", this.onFile);
     this.schedule(POLL_MS);
     let term: Xterm;
@@ -391,8 +398,10 @@ export class AmtView {
   /** 電源のボタンは 2 回押しで確定する。1 回目で文を変え、ARM_MS 以内にもう一度押したら実行する */
   private pressPower(value: number): void {
     const action = POWER_ACTIONS.find((a) => a.value === value);
-    if (!action) return;
+    if (!action || this.powerBusy) return;
     if (this.armed?.action === action) {
+      // 素早いダブルクリックは 1 回目だけとみなす
+      if (performance.now() - this.armed.at < MIN_SECOND_MS) return;
       this.disarm(false);
       void this.changePower(action);
       return;
@@ -403,6 +412,7 @@ export class AmtView {
     this.armed = {
       action,
       message,
+      at: performance.now(),
       before: {
         text: this.status.textContent ?? "",
         kind: kind === "error" || kind === "ok" ? kind : undefined,
@@ -428,9 +438,15 @@ export class AmtView {
       this.note(a.before.text, a.before.kind);
   }
 
+  /** Enter の押しっぱなしは keydown ごとに click になるので、繰り返しは捨てる(2 回押しをすり抜けさせない) */
+  private onPowerKey = (e: KeyboardEvent) => {
+    if (e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault();
+  };
+
   private async changePower(action: PowerAction): Promise<void> {
     const value = action.value;
     this.note(`${action.label}…`);
+    this.powerBusy = true;
     try {
       const rv = await this.wsman.changePower(value);
       this.note(
@@ -439,6 +455,8 @@ export class AmtView {
       );
     } catch (e) {
       this.handle(e);
+    } finally {
+      this.powerBusy = false;
     }
     // 状態が変わるまで少しかかる
     this.schedule(3000);
@@ -716,6 +734,7 @@ export class AmtView {
     this.solButton.textContent = "SOL に接続";
     this.note("");
     this.root.removeEventListener("click", this.onClick);
+    this.actions.removeEventListener("keydown", this.onPowerKey);
     this.root.hidden = true;
     this.closed?.();
   }
