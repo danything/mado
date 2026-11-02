@@ -29,11 +29,15 @@ internal sealed partial class ConPty : ITerminal
     readonly Task _reader;
     readonly Task _exited;
     byte[]? _rest;
-    int _closed;
+    // ClosePty と Resize を並べない(閉じた ConPTY のハンドルで大きさを変えない)
+    readonly Lock _gate = new();
+    bool _closed;
+    // 終了コード。WaitExit(スレッドプール)が書き、中継が読む。int.MinValue はまだ
+    int _exitCode = int.MinValue;
     int _disposed;
 
     public int ProcessId { get; }
-    public int? ExitCode { get; private set; }
+    public int? ExitCode => Volatile.Read(ref _exitCode) is var c && c != int.MinValue ? c : null;
 
     ConPty(nint hpc, SafeFileHandle process, SafeFileHandle job, int pid, SafeFileHandle input, SafeFileHandle output, IDisposable? attached)
     {
@@ -159,15 +163,19 @@ internal sealed partial class ConPty : ITerminal
         var reg = ThreadPool.RegisterWaitForSingleObject(wait, (_, _) => done.TrySetResult(), null, Timeout.Infinite, executeOnlyOnce: true);
         try { await done.Task; }
         finally { reg.Unregister(null); }
-        if (GetExitCodeProcess(_process, out var code)) ExitCode = (int)code;
+        Volatile.Write(ref _exitCode, GetExitCodeProcess(_process, out var code) ? (int)code : -1);
         ClosePty();
     }
 
     void ClosePty()
     {
-        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
         // 出力は ReadLoop が読み続けているので、ここで止まり続けることはない
-        ClosePseudoConsole(_hpc);
+        lock (_gate)
+        {
+            if (_closed) return;
+            _closed = true;
+            ClosePseudoConsole(_hpc);
+        }
     }
 
     public async ValueTask<int> ReadAsync(Memory<byte> buf, CancellationToken ct)
@@ -193,7 +201,8 @@ internal sealed partial class ConPty : ITerminal
 
     public void Resize(int cols, int rows)
     {
-        if (Volatile.Read(ref _closed) == 0) ResizePseudoConsole(_hpc, new Coord((short)cols, (short)rows));
+        lock (_gate)
+            if (!_closed) ResizePseudoConsole(_hpc, new Coord((short)cols, (short)rows));
     }
 
     public async ValueTask DisposeAsync()
@@ -399,12 +408,14 @@ internal sealed partial class ConfigPipe : IDisposable
     {
         try
         {
-            await s.WaitForConnectionAsync(_stop.Token);
-            var pid = await _pid.Task.WaitAsync(_stop.Token);
-            if (!GetNamedPipeClientProcessId(s.SafePipeHandle, out var client) || client != pid)
+            while (true)
             {
+                await s.WaitForConnectionAsync(_stop.Token);
+                var pid = await _pid.Task.WaitAsync(_stop.Token);
+                if (GetNamedPipeClientProcessId(s.SafePipeHandle, out var client) && client == pid) break;
+                // 知らない相手には渡さず、切って同じ口で待ち直す(口を潰されて talosctl が開けなくならないように)
                 _log($"talosconfig pipe: 知らないプロセス ({client}) が開いたので渡さない");
-                return;
+                s.Disconnect();
             }
             await s.WriteAsync(_content, _stop.Token);
             await s.FlushAsync(_stop.Token);

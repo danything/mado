@@ -81,7 +81,7 @@ talosctl は talosconfig を **ファイルの場所でしか受け取らない*
 talosctl(Go)はふつうのファイルと同じように開いて読む(talosctl v1.15 で確かめた)。
 
 - パイプの ACL は mado のアカウント(サービスなら SYSTEM)だけ(`PipeOptions.CurrentUserOnly`)
-- つないできた相手のプロセス ID(`GetNamedPipeClientProcessId`)が、mado が動かした talosctl でなければ渡さない
+- つないできた相手のプロセス ID(`GetNamedPipeClientProcessId`)が、mado が動かした talosctl でなければ渡さない(切って同じ口で待ち直す)
 - Go は読む前に `os.Stat` でもパイプを 1 度開く。口が 1 つだと 2 度目に「All pipe instances are busy」で落ちるので、口を 4 つ同時に開けておく
 - 30 秒たつか口を使い切ったら閉じ、メモリの中身を 0 で消す。ディスクには一度も書かない
 
@@ -101,7 +101,7 @@ setup.ps1 が管理者の talosconfig(SOPS の Talos の CA からその場で�
 
 ## 試験
 
-- `dotnet run --project tests/Mado.Tests.csproj`(`tests/TalosTests.cs`): 設定の読み込みと間違い、コマンドが固定の形であること、引数の囲み方、talosctl の探し方、証明書の期限、
+- `dotnet run --project tests/Mado.Tests.csproj`(`tests/TalosTests.cs`): 設定の読み込みと間違い、コマンドが固定の形であること、引数の囲み方、talosctl の探し方、証明書の期限(使う context の crt)、同時の数の上限、
   `/ws/talos` の中継(偽の端末で、トークンと先の種類、入力と大きさの変更、終わり方)。Windows では DPAPI、ConPTY(`cmd.exe` の出力と終了コード)、名前付きパイプ(ほかのプロセスには渡さず、動かしたプロセスには渡す)も
 - `bun test web/amt`(`web/amt/dashboard.test.ts`): 最初のメッセージと大きさの変更、閉じた理由の文、期限の知らせ
 - 本物の `talosctl dashboard`(Windows 版 v1.15.0-alpha.2)を ConPTY と名前付きパイプで動かし、画面が描かれること、大きさの変更、`q` で終了コード 0 になることを手元で確かめた(ノードにはつながない設定で)

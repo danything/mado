@@ -83,10 +83,18 @@ internal static partial class TalosSecret
         finally { CryptographicOperations.ZeroMemory(blob); }
     }
 
-    /// <summary>talosconfig のクライアント証明書(最初の context の crt)の期限。読めなければ null</summary>
+    /// <summary>
+    /// talosconfig のクライアント証明書の期限。使う context(先頭の `context:`)の crt を読み、その名前の段が見つからなければ最初の crt。
+    /// talosctl config new が書くのは context が 1 つの形。読めなければ null
+    /// </summary>
     public static DateTimeOffset? NotAfter(ReadOnlySpan<byte> talosconfig)
     {
-        var m = CrtRe().Match(Encoding.UTF8.GetString(talosconfig));
+        var text = Encoding.UTF8.GetString(talosconfig);
+        var start = 0;
+        if (CurrentRe().Match(text) is { Success: true } cur
+            && Regex.Match(text, $@"(?m)^\s+{Regex.Escape(cur.Groups[1].Value)}:\s*$") is { Success: true } section)
+            start = section.Index + section.Length;
+        var m = CrtRe().Match(text, start);
         if (!m.Success) return null;
         try
         {
@@ -126,6 +134,9 @@ internal static partial class TalosSecret
 
     [GeneratedRegex(@"(?m)^\s*crt:\s*[""']?([A-Za-z0-9+/=]+)[""']?\s*$")]
     private static partial Regex CrtRe();
+
+    [GeneratedRegex(@"(?m)^context:\s*[""']?([^\s""']+)[""']?\s*$")]
+    private static partial Regex CurrentRe();
 }
 
 /// <summary>talosctl を動かせなかった。Reason は WebSocket を閉じる理由(短い英語。画面が日本語にする)</summary>

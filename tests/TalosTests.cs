@@ -13,6 +13,7 @@ namespace Mado.Tests;
 /// Talos のダッシュボード。設定の読み込み、talosctl に渡すコマンドが固定であること、/ws/talos の中継(偽の端末)、
 /// talosconfig の期限。ConPTY・DPAPI・名前付きパイプは Windows でだけ試す
 /// </summary>
+[NotInParallel("talos-relay")] // 中継の同時の数(TalosRelay の静的な数)を数える試験があるため
 public class TalosTests
 {
     const string Base = """
@@ -145,6 +146,20 @@ public class TalosTests
         await Assert.That(TalosSecret.NotAfter(Talosconfig(until))).IsEqualTo(until);
         await Assert.That(TalosSecret.NotAfter("context: x\n"u8)).IsNull();
         await Assert.That(TalosSecret.NotAfter("crt: bm90IGEgY2VydA==\n"u8)).IsNull();
+    }
+
+    [Test]
+    public async Task 期限は使う_context_の_crt()
+    {
+        var first = Encoding.UTF8.GetString(Talosconfig(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero)));
+        var second = Encoding.UTF8.GetString(Talosconfig(new DateTimeOffset(2027, 6, 1, 0, 0, 0, TimeSpan.Zero)));
+        string Section(string yaml, string name) =>
+            yaml[(yaml.IndexOf("    doany:\n", StringComparison.Ordinal) + "    doany:\n".Length)..].Insert(0, $"    {name}:\n");
+        var both = $"context: other\ncontexts:\n{Section(first, "doany")}{Section(second, "other")}";
+        await Assert.That(TalosSecret.NotAfter(Encoding.UTF8.GetBytes(both))).IsEqualTo(new DateTimeOffset(2027, 6, 1, 0, 0, 0, TimeSpan.Zero));
+        // 名前の段が無ければ最初の crt
+        await Assert.That(TalosSecret.NotAfter(Encoding.UTF8.GetBytes(both.Replace("context: other", "context: none"))))
+            .IsEqualTo(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero));
     }
 
     // ---- 中継 ----
@@ -314,6 +329,37 @@ public class TalosTests
     }
 
     [Test]
+    public async Task 同時に動かすのは上限まで()
+    {
+        var open = new List<(WebSocket Client, FakeTerminal Term, Task Run)>();
+        for (var i = 0; i < TalosRelay.MaxSessions; i++)
+        {
+            var (server, client) = await WebSocketPair();
+            var term = new FakeTerminal();
+            var started = new TaskCompletionSource();
+            var run = TalosRelay.Run(server, _ => WithTalos, (_, _, _, _) =>
+            {
+                started.SetResult();
+                return Task.FromResult<ITerminal>(term);
+            }, _ => { }, CancellationToken.None);
+            await SendText(client, """{"token":"tok","cols":80,"rows":24}""");
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            open.Add((client, term, run));
+        }
+        var (s5, c5) = await WebSocketPair();
+        var run5 = TalosRelay.Run(s5, _ => WithTalos, (_, _, _, _) => Task.FromResult<ITerminal>(new FakeTerminal()), _ => { }, CancellationToken.None);
+        await SendText(c5, """{"token":"tok","cols":80,"rows":24}""");
+        await Assert.That((await ReadAll(c5)).Reason).IsEqualTo("busy");
+        await run5.WaitAsync(TimeSpan.FromSeconds(10));
+        foreach (var (client, term, run) in open)
+        {
+            term.Output.Writer.TryComplete();
+            await ReadAll(client);
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Test]
     public async Task 動かせなければ理由を返す()
     {
         var (server, client) = await WebSocketPair();
@@ -358,19 +404,22 @@ public class TalosTests
         if (!OperatingSystem.IsWindows()) return;
         var secret = "context: mado-pipe-test\n"u8.ToArray();
         var pipe = ConfigPipe.Start([.. secret], _ => { });
-        // ほかのプロセス(ここでは試験自身)が開いても渡さない
-        using (var other = new System.IO.Pipes.NamedPipeClientStream(".", pipe.Path[@"\\.\pipe\".Length..], System.IO.Pipes.PipeDirection.In))
+        // ほかのプロセス(ここでは試験自身)が先に開いても渡さず、切って同じ口で待ち直す(1 つは動かすプロセスに残す)
+        var others = new List<System.IO.Pipes.NamedPipeClientStream>();
+        for (var i = 0; i < 3; i++)
         {
-            await other.ConnectAsync(5000);
-            var b = new byte[64];
-            pipe.Allow(-1);
-            await Assert.That(await other.ReadAsync(b).AsTask().WaitAsync(TimeSpan.FromSeconds(5))).IsEqualTo(0);
+            var o = new System.IO.Pipes.NamedPipeClientStream(".", pipe.Path[@"\.\pipe\".Length..], System.IO.Pipes.PipeDirection.In);
+            await o.ConnectAsync(5000);
+            others.Add(o);
         }
-        pipe.Dispose();
-        // 2 つめのパイプ: 動かしたプロセス(cmd の type)は読める
-        var pipe2 = ConfigPipe.Start([.. secret], _ => { });
-        await using var pty = ConPty.Start($"cmd.exe /d /c type {pipe2.Path}", 200, 24, pipe2);
-        pipe2.Allow(pty.ProcessId);
+        // 動かしたプロセス(cmd の type)は読める
+        await using var pty = ConPty.Start($"cmd.exe /d /c type {pipe.Path}", 200, 24, pipe);
+        pipe.Allow(pty.ProcessId);
+        foreach (var o in others)
+        {
+            await Assert.That(await o.ReadAsync(new byte[64]).AsTask().WaitAsync(TimeSpan.FromSeconds(5))).IsEqualTo(0);
+            o.Dispose();
+        }
         await Assert.That(await ReadToEnd(pty)).Contains("mado-pipe-test");
     }
 
