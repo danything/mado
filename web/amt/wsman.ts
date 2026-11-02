@@ -268,7 +268,7 @@ export function bootSettingFields(xml: string): [string, string][] {
   return instanceFields(xml, "AMT_BootSettingData");
 }
 
-/** Get の返事から、そのクラスの単純な欄(名前と値)を順に拾う。入れ子の欄は拾わない */
+/** Get の返事から、そのクラスのすぐ下の単純な欄(名前と値)を順に拾う。入れ子の欄(中に要素を持つもの)は拾わない */
 export function instanceFields(
   xml: string,
   className: string,
@@ -277,13 +277,31 @@ export function instanceFields(
     `<(?:[\\w.-]+:)?${className}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w.-]+:)?${className}>`,
   ).exec(xml);
   if (!m) throw new Error(`AMT の返事に ${className} がありません`);
-  return [
-    ...(m[1] as string).matchAll(
-      /<(?:[\w.-]+:)?(\w+)(?:\s[^>]*)?>([^<]*)<\/(?:[\w.-]+:)?\1>/g,
-    ),
-  ].map((f) => [f[1] as string, unescapeXml(f[2] as string)]);
-}
-/**
+  const out: [string, string][] = [];
+  let depth = 0;
+  let open: { name: string; text: string; nested: boolean } | undefined;
+  for (const t of (m[1] as string).matchAll(
+    /<(\/?)(?:[\w.-]+:)?(\w+)(?:\s[^>]*?)?(\/?)>|([^<]+)/g,
+  )) {
+    const [, close, name, self, text] = t;
+    if (text !== undefined) {
+      if (depth === 1 && open) open.text += text;
+    } else if (close) {
+      depth--;
+      if (depth === 0 && open && open.name === name && !open.nested)
+        out.push([open.name, unescapeXml(open.text.trim())]);
+      if (depth === 0) open = undefined;
+    } else if (self) {
+      if (depth === 0) out.push([name as string, ""]);
+      else if (open) open.nested = true;
+    } else {
+      if (depth === 0) open = { name: name as string, text: "", nested: false };
+      else if (open) open.nested = true;
+      depth++;
+    }
+  }
+  return out;
+} /**
  * 次の起動を IDE-R の CD-ROM からにする設定。読んだ値を元に UseIDER と IDERBootDevice(1 = CD)を変え、
  * BIOS の画面も SOL に出す(UseSOL)
  */

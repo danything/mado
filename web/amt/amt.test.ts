@@ -33,6 +33,7 @@ import {
   enumerate,
   fault,
   getBootSettings,
+  instanceFields,
   parsePower,
   powerStateName,
   pull,
@@ -348,6 +349,15 @@ describe("IDE-R", () => {
     expect(await amt).toBe("auth-failed");
   });
 
+  test("欄はすぐ下の単純なものだけを拾い、入れ子は拾わない", () => {
+    const xml =
+      "<b:Body><g:AMT_X><g:A>1</g:A><g:Arr><g:In>x</g:In></g:Arr><g:B>&amp;2</g:B><g:Empty/></g:AMT_X></b:Body>";
+    expect(instanceFields(xml, "AMT_X")).toEqual([
+      ["A", "1"],
+      ["B", "&2"],
+      ["Empty", ""],
+    ]);
+  });
   test("1 セクタに満たない ISO は始める前に断る", async () => {
     const [client] = pipe();
     await expect(
