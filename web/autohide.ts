@@ -1,23 +1,24 @@
-// 画面(RDP の canvas・SOL の端末)の上に重ねる操作の 1 行を、使っていないときは隠す。
+// RDP の画面(canvas)の上に重ねる操作の 1 行を、使っていないときは隠す(画面を広く使うため)。
 // 決め方は denpa のプレーヤーの操作列(src/lib/components/player/controls.svelte.ts)に揃える:
 // 触らなくなって 2.5 秒で引っ込め、キーボードで触っている間とメニューを開いている間は残す。マウスが窓の外へ出たらすぐ引っ込める。
-// 違うのは呼び出し方だけ。SOL はマウスが本当に動いたら出す(denpa と同じ)。RDP はマウスをリモートの操作に使うので、
-// 動かすたびに出るとリモートの窓のタイトルバーが押せない。画面の上の端に寄せたときだけ出す(RDP のクライアントと同じ)。
+// 違うのは呼び出し方だけ。マウスはリモートの操作に使うので、動かすたびに出るとリモートの窓のタイトルバーが押せない。
+// 画面の上の端に寄せたときだけ出す(RDP のクライアントと同じ)。
+// AMT の SOL は画面を広く使う必要が薄いので、バーを引っ込めない(style.css の .pinned)。
 // 動きは CSS(style.css の .overlay)で、ここは data-shown を付け外しするだけ
 
 /** 触らなくなってから消えるまで(denpa の LINGER と同じ) */
 export const LINGER_MS = 2500;
-/** 上の端から何 px までを、バーを呼び出す場所にするか(edge のとき。指は太いので広め) */
+/** 上の端から何 px までを、バーを呼び出す場所にするか(指は太いので広め) */
 const EDGE_PX = 8;
 const EDGE_TOUCH_PX = 32;
 
 export type AutoHide = {
-  /** しばらく出す(知らせを書いたときなど) */
+  /** しばらく出す */
   reveal(ms?: number): void;
   stop(): void;
 };
 
-export function autoHide(bar: HTMLElement, wake: "move" | "edge"): AutoHide {
+export function autoHide(bar: HTMLElement): AutoHide {
   let timer: ReturnType<typeof setTimeout> | undefined;
   // 止まったカーソルの下で中身が動いただけでも pointermove が来るので、本当に動いたときだけ数える
   let lastX = Number.NaN;
@@ -51,10 +52,6 @@ export function autoHide(bar: HTMLElement, wake: "move" | "edge"): AutoHide {
       lastX = e.clientX;
       lastY = e.clientY;
     } else if (e.type !== "pointerdown") return; // 指は押したときだけ(滑らせただけでは出さない)
-    if (wake === "move") {
-      reveal();
-      return;
-    }
     const edge = e.pointerType === "mouse" ? EDGE_PX : EDGE_TOUCH_PX;
     if (e.clientY <= edge || bar.contains(e.target as Node)) reveal();
   };

@@ -43,31 +43,23 @@ const sign = (v) => {
       throw e;
     });
   console.log(`電源: ${await page.textContent("#amt-state")}`);
-  // 開くとすぐ SOL につなぐ。開いた直後はバーが出ている
+  // 開くとすぐ SOL につなぐ。バーは常に出ている
   await page.waitForFunction(
     () => document.querySelector("#sol")?.textContent?.includes("Talos"),
     null,
     { timeout: 10000 },
   );
-  await page.screenshot({ path: "/src/out/amt-sol-bar.png" });
   await page.keyboard.type("hello");
   await page.waitForFunction(
     () => document.querySelector("#sol")?.textContent?.includes("HELLO"),
     null,
     { timeout: 10000 },
   );
-  // 触らなければバーは引っ込む(2.5 秒の 2 倍のあと)
-  await page.waitForFunction(
-    () => !document.querySelector("#amt-bar")?.hasAttribute("data-shown"),
-    null,
-    { timeout: 10000 },
-  );
-  await page.waitForTimeout(400);
+  // 触らなくてもバーは引っ込まない
+  await page.waitForTimeout(6000);
+  if (!(await page.isVisible("#amt-bar[data-shown] #amt-power")))
+    throw new Error("SOL のバーが引っ込んだ");
   await page.screenshot({ path: "/src/out/amt-sol.png" });
-  // マウスを動かすと出る
-  await page.mouse.move(500, 400);
-  await page.mouse.move(520, 410);
-  await page.waitForSelector("#amt-bar[data-shown]");
   // 電源を切る(切れていれば入れる): メニューから選ぶと確かめる窓が出る。危ない操作では、やめるにフォーカスがある
   const on = (await page.textContent("#amt-state")).includes("オン");
   await page.click("#amt-power > summary");
