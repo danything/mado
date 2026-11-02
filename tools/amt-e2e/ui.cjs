@@ -26,7 +26,8 @@ const sign = (v) => {
   page.on("console", (m) => console.log(`console: ${m.text()}`));
   await page.goto(ORIGIN);
   await page.waitForSelector("#home:not([hidden])");
-  await page.check('input[name=target][value="z440-amt"]');
+  // 丸いラジオは隠してあるので、行を押す
+  await page.click('label.target:has(input[value="z440-amt"])');
   const label = await page.textContent("#username-label");
   const username = await page.inputValue("input[name=username]");
   console.log(`欄: ${label} / ${username}`);
@@ -62,13 +63,15 @@ const sign = (v) => {
     document.activeElement?.getAttribute("value"),
   );
   console.log(`確かめる窓のフォーカス: ${focused}`);
+  // 窓が開き終わるのを待つ
+  await page.waitForTimeout(400);
   await page.screenshot({ path: "/src/out/amt-confirm.png" });
   await page.click('#confirm button[value="ok"]');
   await page.waitForFunction(
     () =>
       document
         .querySelector("#amt-status")
-        ?.textContent?.includes("受け付けた"),
+        ?.textContent?.includes("受け付けました"),
     null,
     { timeout: 10000 },
   );
@@ -82,6 +85,9 @@ const sign = (v) => {
   await page.screenshot({ path: "/src/out/amt-view.png" });
   await page.click('#amt button[data-amt="close"]');
   await page.waitForSelector("#home:not([hidden])");
+  // 暗いテーマのつなぐ前の画面
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.screenshot({ path: "/src/out/amt-home-dark.png" });
   console.log("ui: すべて通った");
   await browser.close();
 })().catch((e) => {

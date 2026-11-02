@@ -138,7 +138,7 @@ app.Use(async (ctx, next) =>
     {
         // Host を確かめる。DNS リバインディングで、よその名前のまま 127.0.0.1 に来るのを弾く
         var host = ctx.Request.Host.Value;
-        if (host != $"127.0.0.1:{port}" && host != $"localhost:{port}") { await Text(403, "host が違う").ExecuteAsync(ctx); return; }
+        if (host != $"127.0.0.1:{port}" && host != $"localhost:{port}") { await Text(403, "host が違います").ExecuteAsync(ctx); return; }
         if (ctx.Request.Path == "/status" && HttpMethods.IsGet(ctx.Request.Method))
         {
             await Results.Json(new Status(version, origin, startedAt, sessions, certDaysLeft, updater.State), ApiJson.Default.Status).ExecuteAsync(ctx);
@@ -148,7 +148,7 @@ app.Use(async (ctx, next) =>
         // `x-mado: 1` のヘッダーを求める。このヘッダーを付けると CORS の事前確認が要り、それには答えないので、ほかのサイトのページからは呼べない
         if (ctx.Request.Path == "/update" && HttpMethods.IsPost(ctx.Request.Method))
         {
-            if (ctx.Request.Headers["x-mado"] != "1") { await Text(403, "x-mado: 1 が要る").ExecuteAsync(ctx); return; }
+            if (ctx.Request.Headers["x-mado"] != "1") { await Text(403, "x-mado: 1 が必要です").ExecuteAsync(ctx); return; }
             var started = canUpdate && (await updater.Check()).Available && await updater.Apply(() => sessions == 0);
             await Results.Json(new UpdateResult(started, updater.State), ApiJson.Default.UpdateResult).ExecuteAsync(ctx);
             return;
@@ -183,10 +183,10 @@ app.MapGet("/callback", async (HttpContext ctx) =>
     var q = ctx.Request.Query;
     var pending = signer.Verify(ctx.Request.Cookies[PendingCookie], ApiJson.Default.Pending);
     ctx.Response.Cookies.Delete(PendingCookie, new CookieOptions { Path = "/" });
-    if (!string.IsNullOrEmpty(q["error"])) return Text(403, $"ログインできなかった: {(string.IsNullOrEmpty(q["error_description"]) ? q["error"] : q["error_description"])}");
+    if (!string.IsNullOrEmpty(q["error"])) return Text(403, $"ログインできませんでした: {(string.IsNullOrEmpty(q["error_description"]) ? q["error"] : q["error_description"])}");
     string? code = q["code"];
     if (pending is null || string.IsNullOrEmpty(code) || q["state"] != pending.State)
-        return Text(400, "ログインの途中の情報が合わない。最初からやり直して(/login)");
+        return Text(400, "ログインの途中の情報が合いません。最初からやり直してください(/login)");
     try
     {
         var user = await oidc.Finish(code, pending);
@@ -198,14 +198,14 @@ app.MapGet("/callback", async (HttpContext ctx) =>
     catch (Exception e)
     {
         log.Write($"login failed: {e.Message}");
-        return Text(e is Forbidden ? 403 : 502, $"ログインできなかった: {e.Message}");
+        return Text(e is Forbidden ? 403 : 502, $"ログインできませんでした: {e.Message}");
     }
 });
 
 app.MapGet("/logout", (HttpContext ctx) =>
 {
     ctx.Response.Cookies.Delete(SessionCookie, new CookieOptions { Path = "/" });
-    return Text(200, "ログアウトした");
+    return Text(200, "ログアウトしました");
 });
 
 app.MapGet("/api/session", (HttpContext ctx) =>
@@ -221,7 +221,7 @@ app.MapGet("/api/token", (HttpContext ctx) =>
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return NeedLogin();
     // RDP の先でも AMT の先でも出す。使う側(/ws、/wt、/ws/amt)が種類を確かめる
-    if (config.Targets.FirstOrDefault(t => t.Name == ctx.Request.Query["target"]) is not { } target) return Text(404, "そのつなぐ先は無い");
+    if (config.Targets.FirstOrDefault(t => t.Name == ctx.Request.Query["target"]) is not { } target) return Text(404, "その接続先はありません");
     var token = tokens.Issue(new RelayToken(s.Sub, target.Name, Oidc.RandomToken(16), s.Name));
     return Results.Json(new TokenInfo(token), ApiJson.Default.TokenInfo);
 });
@@ -229,9 +229,9 @@ app.MapGet("/api/token", (HttpContext ctx) =>
 app.Map("/ws", async (HttpContext ctx) =>
 {
     // 別のサイトのページから、この Cookie を使ってつながせない
-    if (ctx.Request.Headers.Origin != origin) { await Text(403, "origin が違う").ExecuteAsync(ctx); return; }
-    if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていない").ExecuteAsync(ctx); return; }
-    if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で来て").ExecuteAsync(ctx); return; }
+    if (ctx.Request.Headers.Origin != origin) { await Text(403, "origin が違います").ExecuteAsync(ctx); return; }
+    if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていません").ExecuteAsync(ctx); return; }
+    if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で接続してください").ExecuteAsync(ctx); return; }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
     await Relay.Serve("ws", user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? RdpOf(t.Target) : null,
         log.Write, CountSession, ctx.RequestAborted);
@@ -243,16 +243,16 @@ app.MapPost("/api/amt/{name}/wsman", async (HttpContext ctx, string name) =>
 {
     ctx.Response.Headers.CacheControl = "no-store";
     // Cookie で動く POST なので、別のサイトのページからは受けない
-    if (ctx.Request.Headers.Origin != origin) return Text(403, "origin が違う");
+    if (ctx.Request.Headers.Origin != origin) return Text(403, "origin が違います");
     if (SessionOf(ctx) is not { } user) return NeedLogin();
-    if (config.Amt(name) is not { } target) return Text(404, "その AMT は無い");
-    if (ctx.Request.ContentLength > AmtWsman.MaxRequest) return Text(413, "本文が大きすぎる");
+    if (config.Amt(name) is not { } target) return Text(404, "その AMT はありません");
+    if (ctx.Request.ContentLength > AmtWsman.MaxRequest) return Text(413, "本文が大きすぎます");
     using var ms = new MemoryStream();
     var buf = new byte[16 * 1024];
     int n;
     while ((n = await ctx.Request.Body.ReadAsync(buf, ctx.RequestAborted)) > 0)
     {
-        if (ms.Length + n > AmtWsman.MaxRequest) return Text(413, "本文が大きすぎる");
+        if (ms.Length + n > AmtWsman.MaxRequest) return Text(413, "本文が大きすぎます");
         ms.Write(buf, 0, n);
     }
     var body = ms.ToArray();
@@ -265,7 +265,7 @@ app.MapPost("/api/amt/{name}/wsman", async (HttpContext ctx, string name) =>
     catch (Exception e) when (e is HttpRequestException or IOException || (e is OperationCanceledException && !ctx.RequestAborted.IsCancellationRequested))
     {
         log.Write($"{user.Name}: amt wsman {target.Name} failed: {e.Message}");
-        return Text(502, $"AMT({target.Host}:{target.Port})につなげない: {(e is OperationCanceledException ? "時間切れ" : e.Message)}");
+        return Text(502, $"AMT({target.Host}:{target.Port})に接続できません: {(e is OperationCanceledException ? "時間切れです" : e.Message)}");
     }
     // 電源の操作は残す。Digest の 1 回目(401)は数えない
     if (r.Status != 401 && Amt.PowerRequest(body) is { } state)
@@ -281,9 +281,9 @@ app.MapPost("/api/amt/{name}/wsman", async (HttpContext ctx, string name) =>
 // AMT のリダイレクト(SOL)。最初の行が /api/token のトークン
 app.Map(AmtRelay.Path, async (HttpContext ctx) =>
 {
-    if (ctx.Request.Headers.Origin != origin) { await Text(403, "origin が違う").ExecuteAsync(ctx); return; }
-    if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていない").ExecuteAsync(ctx); return; }
-    if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で来て").ExecuteAsync(ctx); return; }
+    if (ctx.Request.Headers.Origin != origin) { await Text(403, "origin が違います").ExecuteAsync(ctx); return; }
+    if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていません").ExecuteAsync(ctx); return; }
+    if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で接続してください").ExecuteAsync(ctx); return; }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
     await AmtRelay.Serve(user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? config.Amt(t.Target) : null,
         log.Write, CountSession, ctx.RequestAborted);

@@ -13,8 +13,8 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main id="home" class="container" hidden>
-      <article>
+    <main id="home" hidden>
+      <div class="column">
         <header class="brand">
           <svg
             viewBox="0 0 24 24"
@@ -59,57 +59,47 @@
             />
             <span id="password-label">パスワード</span>
           </label>
-          <button type="submit">つなぐ</button>
-          <small id="status" role="status"></small>
+          <button type="submit">接続</button>
+          <p id="status" class="note" role="status"></p>
         </form>
         <footer>
-          <small
-            ><a href="/logout">ログアウト</a> · <span id="version"></span
-          ></small>
+          <a href="/logout">ログアウト</a> · <span id="version"></span>
         </footer>
-      </article>
+      </div>
     </main>
-    <nav id="toolbar" hidden>
+    <nav id="toolbar" class="bar" hidden>
       <ul>
-        <li><strong id="current"></strong></li>
+        <li><strong id="current" class="live"></strong></li>
       </ul>
       <ul>
         <li>
-          <button
-            type="button"
-            class="secondary outline"
-            data-action="ctrl-alt-del"
-          >
+          <button type="button" class="secondary" data-action="ctrl-alt-del">
             Ctrl+Alt+Del
           </button>
         </li>
         <li>
-          <button type="button" class="secondary outline" data-action="meta">
+          <button type="button" class="secondary" data-action="meta">
             Windows キー
           </button>
         </li>
         <li>
-          <button type="button" class="secondary outline" data-action="diag">
+          <button type="button" class="secondary" data-action="diag">
             診断
           </button>
         </li>
         <li>
-          <button
-            type="button"
-            class="secondary outline"
-            data-action="fullscreen"
-          >
+          <button type="button" class="secondary" data-action="fullscreen">
             全画面
           </button>
         </li>
         <li>
-          <button type="button" class="contrast" data-action="disconnect">
+          <button type="button" class="secondary" data-action="disconnect">
             切断
           </button>
         </li>
       </ul>
     </nav>
-    <!-- はじめてつなぐ先、または証明書が前と違うときに出す(app.ts の confirmCert) -->
+    <!-- 初めて接続する先、または証明書が前と違うときに出す(app.ts の askCert) -->
     <dialog id="cert" aria-labelledby="cert-title" aria-describedby="cert-lead">
       <article>
         <header>
@@ -118,10 +108,8 @@
         <p id="cert-lead"></p>
         <dl id="cert-info"></dl>
         <footer>
-          <button type="button" class="secondary outline" value="cancel">
-            やめる
-          </button>
-          <button type="button" class="outline" value="trust"></button>
+          <button type="button" class="secondary" value="cancel">取消</button>
+          <button type="button" value="trust"></button>
         </footer>
       </article>
     </dialog>
@@ -129,39 +117,33 @@
     <section id="amt" hidden>
       <nav class="bar">
         <ul>
-          <li><strong id="amt-name"></strong></li>
-          <li><span class="kind">AMT</span></li>
+          <li><strong id="amt-name"></strong><span class="kind">AMT</span></li>
         </ul>
         <ul>
           <li>
-            <button type="button" class="secondary outline" data-amt="refresh">
-              状態を読み直す
+            <button type="button" class="secondary" data-amt="refresh">
+              更新
             </button>
           </li>
           <li>
-            <button
-              type="button"
-              class="secondary outline"
-              id="amt-sol"
-              data-amt="sol"
-            >
-              SOL をつなぐ
+            <button type="button" class="secondary" id="amt-sol" data-amt="sol">
+              SOL に接続
             </button>
           </li>
           <li>
-            <button type="button" class="contrast" data-amt="close">
+            <button type="button" class="secondary" data-amt="close">
               閉じる
             </button>
           </li>
         </ul>
       </nav>
-      <article id="amt-power">
+      <div class="amt-section" id="amt-power">
         <p>
-          電源: <strong id="amt-state" data-on="false"></strong>
-          <small id="amt-status" role="status"></small>
+          <span>電源: <strong id="amt-state" data-on="false"></strong></span>
+          <span id="amt-status" class="note" role="status"></span>
         </p>
-        <div id="amt-actions"></div>
-      </article>
+        <div class="amt-actions" id="amt-actions"></div>
+      </div>
       <div id="sol" hidden></div>
     </section>
     <!-- AMT の電源の操作の前に出す(amt/view.ts の ask) -->
@@ -176,10 +158,8 @@
         </header>
         <p id="confirm-lead"></p>
         <footer>
-          <button type="button" class="secondary outline" value="cancel">
-            やめる
-          </button>
-          <button type="button" class="outline" value="ok"></button>
+          <button type="button" class="secondary" value="cancel">取消</button>
+          <button type="button" value="ok"></button>
         </footer>
       </article>
     </dialog>

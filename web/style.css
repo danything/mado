@@ -1,66 +1,117 @@
-/* 土台は Blades CSS(Pico CSS の後継。https://blades.ninja/)。ここでは色、角丸、影と並べ方を決める。
- * 色は Pico の変数を上書きする。同じ詳細度のセレクタなので、後に書いたほうが勝つ */
+/* 土台は Blades CSS(Pico CSS の後継。https://blades.ninja/)。見た目の決まりは docs/design.md。
+ * 合言葉は「塗らない。囲みすぎない。浮かせすぎない。でも、ちゃんと伝わる」(denpa の見た目の決まりを mado に写したもの)。
+ * 値はこの頭の --mado-* から選び、画面ごとに新しい値を作らない */
 @import "@anyblades/blades";
 /* SOL の端末(AMT の画面)。xterm.js の決まりの CSS */
 @import "@xterm/xterm/css/xterm.css";
 
-:root:not([data-theme="dark"]) {
+/* --- 値 ------------------------------------------------------------------------------------- */
+:root {
+  /* 地・面・字。字は地と面のどちらの上でも 4.5:1 以上 */
   --mado-bg: #fafafa;
-  --mado-bg-accent: rgb(99 102 241 / 0.08);
+  --mado-surface: #ffffff;
+  --mado-pop: #ffffff;
+  --mado-subtle: #f0f0f3;
   --mado-fg: #18181b;
-  --mado-muted: #71717a;
-  --mado-border: #e4e4e7;
-  --mado-card: #ffffff;
-  --mado-input: #ffffff;
-  --mado-primary: #18181b;
-  --mado-primary-fg: #fafafa;
-  --mado-primary-hover: #27272a;
-  --mado-ring: rgb(24 24 27 / 0.12);
-  --mado-danger: #b91c1c;
-  --mado-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.06);
+  --mado-muted: #5f5f6b;
+  /* 主の色。線・焦点・リンク・見せる画面の淡い光。淡い地の上で字にするときは -text */
+  --mado-primary: #4f46e5;
+  --mado-primary-text: #4338ca;
+  /* 状態の色。字やアイコンにするときは -text */
+  --mado-danger-text: #b42318;
+  --mado-ok: #16a34a;
+  --mado-warn-text: #8a5a00;
+  /* 入力欄の面。下を透かす薄い色で、地の上で一段濃くなる */
+  --mado-field: rgb(24 24 40 / 0.07);
+  /* 指を乗せたときの、ごく薄い地 */
+  --mado-hover: rgb(24 24 40 / 0.05);
+  /* 操作の層の影(2 段)と、隙間を詰めて並ぶものの近い影 */
+  --mado-shadow-pop:
+    0 4px 12px rgb(24 28 37 / 0.08), 0 16px 32px -8px rgb(24 28 37 / 0.16);
+  --mado-shadow-tight: 0 1px 3px rgb(24 28 37 / 0.12);
+  --mado-backdrop: rgb(24 28 37 / 0.16);
+  /* 見せる画面(ログインの前)の地に敷く淡い光 */
+  --mado-glow: color-mix(in srgb, var(--mado-primary) 12%, transparent);
+
+  /* 角。ボタンはカプセル、行と入力欄は --mado-radius、ダイアログは大きめ */
+  --mado-radius: 0.5rem;
+  --mado-radius-lg: 1rem;
+  --mado-radius-full: 999px;
+  --mado-btn-h: 2.625rem;
+  --mado-btn-h-sm: 2.125rem;
+
+  /* 動き。色と影は短く、開くものはばねで、閉じるものは短く */
+  --mado-duration: 120ms;
+  --mado-duration-enter: 240ms;
+  --mado-duration-move: 300ms;
+  --mado-duration-exit: 150ms;
+  --mado-ease: cubic-bezier(0.2, 0, 0, 1);
+  --mado-ease-spring: linear(
+    0,
+    0.06 4%,
+    0.24 9%,
+    0.5 15%,
+    0.74 22%,
+    0.9 30%,
+    1.02 40%,
+    1.04 48%,
+    1.02 60%,
+    1 75%,
+    1
+  );
+  --mado-ease-exit: cubic-bezier(0.3, 0, 1, 1);
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --mado-bg: #09090b;
-    --mado-bg-accent: rgb(129 140 248 / 0.12);
-    --mado-fg: #fafafa;
-    --mado-muted: #a1a1aa;
-    --mado-border: #27272a;
-    --mado-card: #111113;
-    --mado-input: #18181b;
-    --mado-primary: #fafafa;
-    --mado-primary-fg: #18181b;
-    --mado-primary-hover: #e4e4e7;
-    --mado-ring: rgb(250 250 250 / 0.14);
-    --mado-danger: #f87171;
-    --mado-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.35);
+  :root:not([data-theme="light"]) {
+    --mado-bg: #0b0b0e;
+    --mado-surface: #141418;
+    --mado-pop: #1d1d23;
+    --mado-subtle: #1a1a1f;
+    --mado-fg: #f4f4f5;
+    --mado-muted: #a1a1ad;
+    --mado-primary: #818cf8;
+    --mado-primary-text: #a5b4fc;
+    --mado-danger-text: #f38f79;
+    --mado-ok: #22c55e;
+    --mado-warn-text: #fecc63;
+    --mado-field: rgb(220 220 255 / 0.1);
+    --mado-hover: rgb(220 220 255 / 0.06);
+    --mado-shadow-pop:
+      0 4px 12px rgb(0 0 0 / 0.3), 0 16px 40px -8px rgb(0 0 0 / 0.5);
+    --mado-shadow-tight: 0 1px 3px rgb(0 0 0 / 0.45);
+    --mado-backdrop: rgb(0 0 0 / 0.45);
+    --mado-glow: color-mix(in srgb, var(--mado-primary) 16%, transparent);
   }
 }
+/* 操作の層の面。ダイアログとメニューより少し透かす(裏が動くときだけ見える) */
+:root {
+  --mado-float: color-mix(in srgb, var(--mado-pop) 92%, transparent);
+}
 
-:root:not([data-theme="dark"]),
-:root:not([data-theme]) {
+:root {
   --pico-font-family-sans-serif:
     "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
     "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
   --pico-font-size: 15px;
-  --pico-border-radius: 10px;
+  --pico-border-radius: var(--mado-radius);
   --pico-background-color: var(--mado-bg);
   --pico-color: var(--mado-fg);
   --pico-muted-color: var(--mado-muted);
-  --pico-muted-border-color: var(--mado-border);
-  --pico-card-background-color: var(--mado-card);
-  --pico-card-sectioning-background-color: var(--mado-card);
-  --pico-card-box-shadow: var(--mado-shadow);
-  --pico-form-element-background-color: var(--mado-input);
-  --pico-form-element-border-color: var(--mado-border);
-  --pico-form-element-focus-color: var(--mado-ring);
-  --pico-primary: var(--mado-fg);
-  --pico-primary-background: var(--mado-primary);
-  --pico-primary-border: var(--mado-primary);
-  --pico-primary-hover-background: var(--mado-primary-hover);
-  --pico-primary-hover-border: var(--mado-primary-hover);
-  --pico-primary-inverse: var(--mado-primary-fg);
-  --pico-primary-focus: var(--mado-ring);
+  --pico-muted-border-color: transparent;
+  --pico-primary: var(--mado-primary-text);
+  --pico-primary-hover: var(--mado-primary-text);
+  --pico-primary-focus: var(--mado-primary);
+  --pico-form-element-background-color: var(--mado-field);
+  --pico-form-element-active-background-color: var(--mado-field);
+  --pico-form-element-focus-color: transparent;
+  --pico-form-element-border-color: transparent;
+  --pico-form-element-active-border-color: transparent;
+  --pico-card-background-color: var(--mado-surface);
+  --pico-card-sectioning-background-color: var(--mado-surface);
+  --pico-card-box-shadow: var(--mado-shadow-pop);
+  --pico-modal-overlay-background-color: var(--mado-backdrop);
+  --pico-modal-overlay-backdrop-filter: none;
+  --pico-transition: var(--mado-duration) var(--mado-ease);
 }
 
 html,
@@ -71,47 +122,229 @@ body {
   display: flex;
   flex-direction: column;
   margin: 0;
-  /* 上のほうにうっすら色を差す */
-  background:
-    radial-gradient(
-      60rem 30rem at 50% -10rem,
-      var(--mado-bg-accent),
-      transparent 70%
-    ),
-    var(--mado-bg);
+  background: var(--mado-bg);
   -webkit-font-smoothing: antialiased;
+  /* 日本語は文節で折り返す */
+  word-break: auto-phrase;
+  line-break: strict;
+}
+:where(p, li, dd) {
+  text-wrap: pretty;
+}
+:where(h1, h2) {
+  text-wrap: balance;
 }
 
-/* --- ログインの前の画面 ---------------------------------------------------------------------- */
+/* 焦点は外側の 2px の線。マウスで押したときは出さない */
+:where(a, button, input, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--mado-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* --- ボタン ---------------------------------------------------------------------------------
+ * 強弱は層と字の太さで付け、色では塗らない。
+ * - 主(クラス無し): 操作の層の面と影のカプセル。字は本文の色の太字。1 画面に 1 つか 2 つ
+ * - 控え(.secondary):平ら。地も枠も影も無く、乗せたら薄い地
+ * - 戻せないもの: 1 回目(.secondary.danger)は控えと同じで、乗せたときだけ赤い字。確定(.danger)は主と同じ層で赤い字
+ * - 浮いたもの(ダイアログ)の中では、主のボタンも浮かせず太字だけ */
+:is(button, [type="submit"], [type="button"], [type="reset"], [role="button"]) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: var(--mado-btn-h);
+  margin: 0;
+  padding: 0 1.125rem;
+  border: 0;
+  outline-color: var(--mado-primary);
+  border-radius: var(--mado-radius-full);
+  background: var(--mado-float);
+  box-shadow: var(--mado-shadow-pop);
+  color: var(--mado-fg);
+  font-weight: 650;
+  transition:
+    background-color var(--mado-duration) var(--mado-ease),
+    color var(--mado-duration) var(--mado-ease),
+    box-shadow var(--mado-duration) var(--mado-ease),
+    scale var(--mado-duration-move) var(--mado-ease-spring);
+}
+:is(
+  button,
+  [type="submit"],
+  [type="button"],
+  [type="reset"],
+  [role="button"]
+):hover {
+  background: var(--mado-pop);
+  color: var(--mado-fg);
+}
+/* 押すと少し縮み、離すとばねで戻る */
+:is(
+    button,
+    [type="submit"],
+    [type="button"],
+    [type="reset"],
+    [role="button"]
+  ):not(.secondary, :disabled):active {
+  scale: 0.97;
+  transition: scale var(--mado-duration) var(--mado-ease);
+}
+:is(
+  button,
+  [type="submit"],
+  [type="button"],
+  [type="reset"],
+  [role="button"]
+).secondary {
+  background: transparent;
+  box-shadow: none;
+  color: var(--mado-fg);
+  font-weight: 500;
+}
+:is(
+    button,
+    [type="submit"],
+    [type="button"],
+    [type="reset"],
+    [role="button"]
+  ).secondary:hover {
+  background: var(--mado-hover);
+}
+:is(
+    button,
+    [type="submit"],
+    [type="button"],
+    [type="reset"],
+    [role="button"]
+  ).danger:not(.secondary),
+:is(
+    button,
+    [type="submit"],
+    [type="button"],
+    [type="reset"],
+    [role="button"]
+  ).secondary.danger:hover:not(:disabled) {
+  color: var(--mado-danger-text);
+}
+:is(
+  button,
+  [type="submit"],
+  [type="button"],
+  [type="reset"],
+  [role="button"]
+):disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+  box-shadow: none;
+}
+:is(
+  button,
+  [type="submit"],
+  [type="button"],
+  [type="reset"],
+  [role="button"]
+).small {
+  min-height: var(--mado-btn-h-sm);
+  padding: 0 0.875rem;
+  font-size: 0.8125rem;
+}
+:is(
+  button,
+  [type="submit"],
+  [type="button"],
+  [type="reset"],
+  [role="button"]
+)[aria-busy="true"] {
+  pointer-events: none;
+  opacity: 0.7;
+}
+dialog
+  :is(
+    button,
+    [type="submit"],
+    [type="button"],
+    [type="reset"],
+    [role="button"]
+  ) {
+  background: transparent;
+  box-shadow: none;
+}
+dialog
+  :is(
+    button,
+    [type="submit"],
+    [type="button"],
+    [type="reset"],
+    [role="button"]
+  ):hover {
+  background: var(--mado-hover);
+}
+
+/* --- 入力欄 ---------------------------------------------------------------------------------
+ * 線も凹みも付けず、平らな面だけ。打っている間は外側の 2px の主の色の線 */
+input:not([type="radio"], [type="checkbox"], [type="file"]),
+select {
+  border: 0;
+  box-shadow: none;
+  background: var(--mado-field);
+  border-radius: var(--mado-radius);
+}
+input:not([type="radio"], [type="checkbox"], [type="file"]):focus,
+select:focus {
+  outline: 2px solid var(--mado-primary);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+/* --- 通知(状態の文)---------------------------------------------------------------------------
+ * 種類は頭のアイコンと言葉で示し、地は塗らない。状態の色はアイコンにだけ使い、字は本文の色。
+ * data-kind が error なら ✕、ok なら ✓、無ければ控えた字の案内 */
+.note {
+  color: var(--mado-muted);
+}
+.note:empty {
+  display: none;
+}
+.note[data-kind] {
+  color: var(--mado-fg);
+}
+.note[data-kind]::before {
+  margin-right: 0.375rem;
+  font-weight: 700;
+}
+.note[data-kind="error"]::before {
+  content: "✕";
+  color: var(--mado-danger-text);
+}
+.note[data-kind="ok"]::before {
+  content: "✓";
+  color: var(--mado-ok);
+}
+.note[data-kind="warn"]::before {
+  content: "⚠";
+  color: var(--mado-warn-text);
+}
+
+/* --- ログインの前の画面(見せる画面)----------------------------------------------------------
+ * 地に置いて平らに。囲みも影も付けず、主の色の淡い光を地に敷く(動かさない、ぼかさない) */
 #home {
   flex: 1;
   display: grid;
   place-items: center;
   max-width: none;
-  padding: 1.5rem 1rem;
+  padding: 2rem 1rem;
+  background: radial-gradient(
+    60rem 32rem at 50% -8rem,
+    var(--mado-glow),
+    transparent 70%
+  );
 }
-#home > article {
+#home > .column {
+  display: grid;
+  gap: 1.75rem;
   width: min(24rem, 100%);
-  margin: 0;
-  padding: 2rem;
-  border: 1px solid var(--mado-border);
-  border-radius: 16px;
-}
-#home > article > header,
-#home > article > footer {
-  margin: 0;
-  padding: 0;
-  background: none;
-  border: 0;
-}
-#home > article > header {
-  margin-bottom: 1.75rem;
-}
-#home > article > footer {
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--mado-border);
-  text-align: center;
 }
 .brand {
   display: flex;
@@ -120,12 +353,12 @@ body {
 }
 .brand svg {
   flex: none;
-  width: 40px;
-  height: 40px;
-  padding: 8px;
-  border-radius: 12px;
-  background: var(--mado-primary);
-  color: var(--mado-primary-fg);
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0.5rem;
+  border-radius: 0.75rem;
+  background: var(--mado-fg);
+  color: var(--mado-bg);
 }
 .brand h1 {
   margin: 0;
@@ -149,68 +382,135 @@ body {
 #login :is(input:not([type="radio"]), select) {
   margin: 0;
   height: 2.875rem;
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
 }
 #login button[type="submit"] {
-  margin: 0.25rem 0 0;
-  height: 2.75rem;
-  font-weight: 600;
-  transition: background-color 0.15s;
-}
-#login button[aria-busy="true"] {
-  pointer-events: none;
-  opacity: 0.7;
+  margin-top: 0.375rem;
 }
 #status {
+  text-align: center;
+  font-size: 0.875rem;
+}
+#home footer {
+  font-size: 0.8125rem;
   color: var(--mado-muted);
   text-align: center;
 }
-#status:empty {
-  display: none;
-}
-#home a {
+#home footer a {
   color: var(--mado-muted);
   text-decoration: none;
 }
-#home a:hover {
+#home footer a:hover {
   color: var(--mado-fg);
 }
 
-/* --- つないでいる間 -------------------------------------------------------------------------- */
-#toolbar {
+/* つなぐ先の一覧(RDP と AMT が並ぶ)。1 行の並びなので地に置く。
+ * 選んでいるものは左の縦線と主の色の太字で示し、行は塗らない。種類は事実なので、札にせず控えた字で添える */
+#target-field {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+#target-field .target {
+  position: relative;
+  display: flex;
   align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.75rem;
+  margin: 0;
+  padding: 0.5rem 0.875rem;
+  border-radius: var(--mado-radius);
+  cursor: pointer;
+  transition: background-color var(--mado-duration) var(--mado-ease);
+}
+#target-field .target:hover {
+  background: var(--mado-hover);
+}
+/* 選ぶ印は線と字で出すので、丸いラジオは見せない(読み上げとキーボードには残す) */
+#target-field input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+#target-field .target:has(input:focus-visible) {
+  outline: 2px solid var(--mado-primary);
+  outline-offset: -2px;
+}
+#target-field .target::before {
+  content: "";
+  position: absolute;
+  inset: 0.5rem auto 0.5rem 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--mado-primary);
+  opacity: 0;
+  transition: opacity var(--mado-duration) var(--mado-ease);
+}
+#target-field .target:has(input:checked)::before {
+  opacity: 1;
+}
+#target-field .name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#target-field .target:has(input:checked) .name {
+  color: var(--mado-primary-text);
+  font-weight: 650;
+}
+.kind {
+  flex: none;
+  font-size: 0.8125rem;
+  color: var(--mado-muted);
+}
+
+/* --- つないでいる間(RDP)----------------------------------------------------------------------
+ * 操作の 1 行は画面(canvas)の上に重ならないので、地に平らに置く。線も影も付けない */
+nav.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
   padding: 0.375rem 0.75rem;
-  border-bottom: 1px solid var(--mado-border);
-  background: color-mix(in srgb, var(--mado-card) 80%, transparent);
-  backdrop-filter: blur(12px);
 }
-#toolbar ul {
-  gap: 0.375rem;
-}
-#toolbar li {
+nav.bar ul {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.125rem;
+  margin: 0;
   padding: 0;
 }
-#toolbar strong {
-  font-size: 0.875rem;
-  font-weight: 600;
+nav.bar li {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
-#toolbar strong::before {
+.bar strong {
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.bar .kind {
+  margin-left: 0.5rem;
+}
+.bar button {
+  min-height: var(--mado-btn-h-sm);
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+}
+/* つないでいる印。状態の色の点と、横の名前 */
+.live::before {
   content: "";
   display: inline-block;
   width: 0.5rem;
   height: 0.5rem;
   margin-right: 0.5rem;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--mado-ok);
   vertical-align: 0.05em;
-}
-#toolbar button {
-  margin: 0;
-  padding: 0.3rem 0.75rem;
-  font-size: 0.8125rem;
-  border-radius: 8px;
 }
 
 #home[hidden],
@@ -232,7 +532,7 @@ body {
   background: #000;
 }
 
-/* 診断表示(ツールバーの「診断」)。画面の左下に重ねる */
+/* 診断(ツールバーの「診断」)。動く画面の上に重ねるので、暗い面で画面を透かす(ぼかさない) */
 #diag {
   position: fixed;
   left: 8px;
@@ -248,44 +548,65 @@ body {
   white-space: pre-wrap;
   color: #fff;
   background: rgb(0 0 0 / 0.75);
-  border-radius: 6px;
+  border-radius: var(--mado-radius);
   pointer-events: none;
 }
 
-/* 証明書を確かめる画面(app.ts の askCert)。前と違うときは赤い線と見出しで強く知らせる。塗りはしない */
-#cert > article,
-#confirm > article {
+/* --- ダイアログ(証明書・操作の確認)---------------------------------------------------------
+ * 縁を付けず影だけで浮かせる。危ないときは見出しの頭の ⚠ を赤くし、面も線も赤くしない。
+ * 少し小さく透明な姿からばねで出て、閉じるときは短く引っ込む */
+dialog > article {
   width: min(36rem, 100%);
   padding: 1.5rem;
-  border: 1px solid var(--mado-border);
-  border-radius: 16px;
+  border: 0;
+  border-radius: var(--mado-radius-lg);
+  background: var(--mado-surface);
+  box-shadow: var(--mado-shadow-pop);
 }
-#cert > article > header,
-#cert > article > footer,
-#confirm > article > header,
-#confirm > article > footer {
+dialog > article > :is(header, footer) {
   margin: 0;
   padding: 0;
   background: none;
   border: 0;
 }
-#cert > article > header,
-#confirm > article > header {
-  margin-bottom: 1rem;
+dialog > article > header {
+  margin-bottom: 0.75rem;
 }
-#cert > article > footer,
-#confirm > article > footer {
+dialog > article > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
   margin-top: 1.25rem;
 }
-#cert h2,
-#confirm h2 {
+dialog h2 {
+  margin: 0;
   font-size: 1.125rem;
   font-weight: 650;
 }
-#cert p,
-#confirm p {
+dialog p {
   margin-bottom: 1rem;
   font-size: 0.875rem;
+}
+dialog.danger h2::before {
+  content: "⚠";
+  margin-right: 0.5rem;
+  color: var(--mado-danger-text);
+}
+dialog[open] > article {
+  opacity: 1;
+  scale: 1;
+  translate: 0;
+  transition:
+    opacity var(--mado-duration-enter) var(--mado-ease),
+    scale var(--mado-duration-enter) var(--mado-ease-spring),
+    translate var(--mado-duration-enter) var(--mado-ease-spring);
+}
+@starting-style {
+  dialog[open] > article {
+    opacity: 0;
+    scale: 0.96;
+    translate: 0 0.5rem;
+  }
 }
 #cert dl {
   display: grid;
@@ -310,23 +631,6 @@ body {
     monospace;
   overflow-wrap: anywhere;
 }
-#cert footer button,
-#confirm footer button {
-  transition:
-    border-color 0.15s,
-    color 0.15s;
-}
-#cert.changed > article,
-#confirm.danger > article {
-  border-color: var(--mado-danger);
-  box-shadow:
-    inset 4px 0 0 var(--mado-danger),
-    var(--mado-shadow);
-}
-#cert.changed h2,
-#confirm.danger h2 {
-  color: var(--mado-danger);
-}
 @media (max-width: 30rem) {
   #cert dl {
     grid-template-columns: 1fr;
@@ -337,102 +641,43 @@ body {
   }
 }
 
-/* --- つなぐ先の一覧(RDP と AMT が並ぶ) ---------------------------------------------------------- */
-#target-field {
-  display: grid;
-  gap: 0.375rem;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-#target-field .target {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 0.625rem;
-  margin: 0;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--mado-border);
-  border-radius: 10px;
-  cursor: pointer;
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
-}
-#target-field .target:has(input:checked) {
-  border-color: var(--mado-fg);
-  box-shadow: 0 0 0 3px var(--mado-ring);
-}
-#target-field input {
-  margin: 0;
-}
-#target-field .target > span:first-of-type {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-/* 種類の札。RDP と AMT を見分ける */
-.kind {
-  flex: none;
-  padding: 0.0625rem 0.4375rem;
-  border: 1px solid var(--mado-border);
-  border-radius: 999px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--mado-muted);
-}
-.kind.amt {
-  color: var(--mado-fg);
-  background: var(--mado-bg-accent);
-}
-
-/* --- AMT の画面(amt/view.ts) ---------------------------------------------------------------- */
+/* --- AMT の画面(amt/view.ts)---------------------------------------------------------------
+ * 操作の 1 行と電源の行は地に平らに置く。SOL の端末は舞台なのでテーマにかかわらず黒い */
 #amt {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
-#amt > .bar {
-  align-items: center;
-  padding: 0.375rem 0.75rem;
-  border-bottom: 1px solid var(--mado-border);
-  background: color-mix(in srgb, var(--mado-card) 80%, transparent);
+.amt-section {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0.5rem;
 }
-#amt > .bar ul {
-  gap: 0.375rem;
-}
-#amt > .bar li {
-  padding: 0;
-}
-#amt > .bar strong {
-  font-size: 0.875rem;
-  font-weight: 600;
-}
-#amt button {
-  margin: 0;
-  padding: 0.3rem 0.75rem;
-  font-size: 0.8125rem;
-  border-radius: 8px;
-}
-#amt button[aria-busy="true"] {
-  pointer-events: none;
-  opacity: 0.7;
-}
-#amt-power {
-  margin: 0.75rem;
-  padding: 1rem;
-  border: 1px solid var(--mado-border);
-  border-radius: 12px;
-}
-#amt-power p {
+.amt-section > p {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.5rem;
-  margin: 0 0 0.75rem;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
 }
+.amt-section h2 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.amt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-left: -0.75rem;
+}
+.amt-actions button {
+  min-height: var(--mado-btn-h-sm);
+  padding: 0 0.75rem;
+  font-size: 0.875rem;
+}
+/* 電源の状態。状態の色の点と言葉 */
 #amt-state::before {
   content: "";
   display: inline-block;
@@ -444,26 +689,27 @@ body {
   vertical-align: 0.05em;
 }
 #amt-state[data-on="true"]::before {
-  background: #22c55e;
+  background: var(--mado-ok);
 }
 #amt-status {
-  color: var(--mado-muted);
+  font-size: 0.875rem;
 }
-#amt-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-#amt-actions button.danger:not(:disabled) {
-  color: var(--mado-danger);
-  border-color: var(--mado-danger);
-}
-/* SOL の端末。残りの高さを使う */
 #sol {
   flex: 1;
   min-height: 12rem;
-  margin: 0 0.75rem 0.75rem;
+  margin: 0.25rem 1rem 1rem;
   padding: 0.5rem;
-  border-radius: 10px;
+  border-radius: var(--mado-radius);
   background: #000;
+}
+
+/* --- 動きを減らす設定 -------------------------------------------------------------------------
+ * 動きを止めて、終わった姿を見せる */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --mado-duration: 0s;
+    --mado-duration-enter: 0s;
+    --mado-duration-move: 0s;
+    --mado-duration-exit: 0s;
+  }
 }

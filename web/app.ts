@@ -68,7 +68,8 @@ async function getJson<T>(url: string): Promise<T> {
 const session = await getJson<SessionInfo>("/api/session");
 $<HTMLElement>("#who").textContent = `${session.name} でログイン中`;
 $<HTMLElement>("#version").textContent = `mado ${session.version}`;
-const KIND_NAMES = { rdp: "RDP", amt: "AMT" } as const;
+/** 種類は事実なので、札にせず控えた字で添える */
+const KIND_NAMES = { rdp: "RDP", amt: "AMT・電源と SOL" } as const;
 const targetList = $<HTMLElement>("#target-field");
 targetList.replaceChildren(
   ...session.targets.map((t) => {
@@ -79,9 +80,10 @@ targetList.replaceChildren(
     radio.name = "target";
     radio.value = t.name;
     const name = document.createElement("span");
+    name.className = "name";
     name.textContent = t.name;
     const kind = document.createElement("span");
-    kind.className = `kind ${t.type}`;
+    kind.className = "kind";
     kind.textContent = KIND_NAMES[t.type] ?? t.type;
     label.append(radio, name, kind);
     return label;
@@ -118,7 +120,7 @@ const onTarget = () => {
     : "パスワード";
   (form.querySelector("button[type=submit]") as HTMLElement).textContent = amt
     ? "開く"
-    : "つなぐ";
+    : "接続";
   const u = amt
     ? (remembered.usernames[t.name] ?? "admin")
     : usernameFor(remembered, t.name);
@@ -162,7 +164,7 @@ type Login = {
 };
 
 /** 1 回のつなぎの終わり方。fallback があれば、その方式でつなぎ直す */
-type SessionEnd = { message: string; fallback?: Mode };
+type SessionEnd = { message: string; fallback?: Mode; error?: boolean };
 
 /** 方式を切り替えた記録(診断用) */
 const switches: string[] = [];
@@ -206,7 +208,7 @@ form.addEventListener("submit", async (e) => {
     field("password").value = "";
     return;
   }
-  status.textContent = "つないでいます…";
+  setNote(status, "接続しています…");
   switches.length = 0;
   scaleSwitches.length = 0;
   // H.264 は、ブラウザが復号できるときだけ頼む
@@ -215,7 +217,7 @@ form.addEventListener("submit", async (e) => {
   for (;;) {
     const end = await runSession(login, mode, avc?.hardware === true);
     if (!end.fallback) {
-      status.textContent = end.message;
+      setNote(status, end.message, end.error ? "error" : undefined);
       break;
     }
     switches.push(
@@ -234,7 +236,7 @@ form.addEventListener("submit", async (e) => {
 
 /** AMT の画面を開いて、閉じるまで待つ。最初に電源の状態を読んで、ユーザー名とパスワードを確かめる */
 async function openAmt(login: Login): Promise<void> {
-  status.textContent = "AMT につないでいます…";
+  setNote(status, "AMT に接続しています…");
   const view = new AmtView(login, {
     ws: session.ws,
     newToken: async (target) =>
@@ -247,13 +249,16 @@ async function openAmt(login: Login): Promise<void> {
   try {
     await view.open();
   } catch (err) {
-    status.textContent =
+    setNote(
+      status,
       err instanceof AmtAuthError
-        ? "AMT のユーザー名かパスワードが違う。AMT は続けて間違えるとしばらく締め出すので、確かめてから"
-        : `AMT につなげなかった: ${describe(err)}`;
+        ? "AMT のユーザー名かパスワードが違います。続けて間違えると、AMT がしばらく受け付けなくなります"
+        : `AMT に接続できませんでした: ${describe(err)}`,
+      "error",
+    );
     return;
   }
-  status.textContent = "";
+  setNote(status, "");
   home.hidden = true;
   await view.wait();
   home.hidden = false;
@@ -328,14 +333,14 @@ async function runSession(
       gfxClient.onFatal = (e) => {
         console.error("GFX:", e);
         fallback = {
-          message: `GFX が壊れた: ${describe(e)}`,
+          message: `GFX が使えなくなりました: ${describe(e)}`,
           fallback: "bitmap",
         };
         client.close();
       };
       gfxClient.onAvcBroken = () => {
         console.warn("GFX: H.264 を復号できない");
-        fallback = { message: "H.264 を復号できない", fallback: "gfx" };
+        fallback = { message: "H.264 をデコードできません", fallback: "gfx" };
         client.close();
       };
     }
@@ -380,11 +385,11 @@ async function runSession(
     stops.push(() => clearInterval(sampler));
     currentScale = () => auto.scale;
     display.canvas.focus();
-    status.textContent = "";
+    setNote(status, "");
     const reason = await client.run();
-    return fallback ?? { message: `切れた: ${reason}` };
+    return fallback ?? { message: `切断されました: ${reason}` };
   } catch (err) {
-    return { message: `つなげなかった: ${describe(err)}` };
+    return { message: `接続できませんでした: ${describe(err)}`, error: true };
   } finally {
     for (const stop of stops) stop();
   }
@@ -424,7 +429,7 @@ async function verifyCert(target: string, cert: Uint8Array): Promise<void> {
   const verdict = decide(stored, fp);
   if (verdict === "same") return;
   if (!(await askCert(target, verdict, fp, stored, certInfo(cert))))
-    throw new Error("証明書を信頼しなかった");
+    throw new Error("証明書を信頼しませんでした");
   try {
     localStorage.setItem(CERT_PINS, serializePins(pin(loadPins(), target, fp)));
   } catch {}
@@ -439,15 +444,15 @@ function askCert(
   info: CertInfo,
 ): Promise<boolean> {
   const changed = verdict === "changed";
-  certDialog.classList.toggle("changed", changed);
+  certDialog.classList.toggle("danger", changed);
   $<HTMLElement>("#cert-title").textContent = changed
-    ? "証明書が前と違う"
-    : "はじめてつなぐ先";
+    ? "証明書が前と違います"
+    : "初めて接続する先です";
   $<HTMLElement>("#cert-lead").textContent = changed
-    ? `${target} の証明書が、前に信頼したものと違う。PC で証明書を作り直したのでなければ、途中で誰かが通信を横取りしている(中間者攻撃)おそれがある。つなぐと、Windows の認証のやりとりをその相手に渡すことになる。`
-    : `${target} の証明書は、このブラウザではまだ信頼していない。PC の証明書の指紋と同じか確かめてからつなぐ。信頼すると覚えておき、次からは聞かない。`;
+    ? `${target} の証明書が、前に信頼したものと違います。PC で証明書を作り直したのでなければ、途中で誰かが通信を横取りしている(中間者攻撃)おそれがあります。接続すると、Windows の認証のやりとりをその相手に渡すことになります。`
+    : `${target} の証明書は、このブラウザではまだ信頼していません。PC の証明書の指紋と同じか確かめてから接続してください。信頼すると覚えておき、次からは聞きません。`;
   const day = (d?: Date) => d?.toLocaleDateString() ?? "?";
-  const rows: [string, string, boolean?][] = [["つなぐ先", target]];
+  const rows: [string, string, boolean?][] = [["接続先", target]];
   if (info.commonName) rows.push(["名前(CN)", info.commonName]);
   if (info.notBefore || info.notAfter)
     rows.push(["有効期間", `${day(info.notBefore)} 〜 ${day(info.notAfter)}`]);
@@ -463,8 +468,9 @@ function askCert(
       return [dt, dd];
     }),
   );
-  certTrust.textContent = changed ? "置き換えてつなぐ" : "信頼してつなぐ";
-  certTrust.className = changed ? "contrast outline" : "outline";
+  certTrust.textContent = changed ? "置き換えて接続" : "信頼して接続";
+  // 前と違うときの「置き換えて接続」は戻せない操作なので赤い字
+  certTrust.className = changed ? "danger" : "";
   certDialog.returnValue = "";
   return new Promise((resolve) => {
     certDialog.addEventListener(
@@ -524,7 +530,9 @@ function diagText(
     lines.push(
       `負荷: 遅延+${Math.round(gfx.latency.queued ?? 0)}ms  未描画 ${gfx.backlog}  解像度 ${Math.round(currentScale() * 100)}%`,
       ...scaleSwitches,
-      `GFX: 版=${gfx.confirmedVersion ?? "-"} ${Object.entries(gfx.stats)
+      `GFX: バージョン=${gfx.confirmedVersion ?? "-"} ${Object.entries(
+        gfx.stats,
+      )
         .map(([k, v]) => `${k}=${Math.round(v)}`)
         .join(" ")} clear未対応=${gfx.clearUnsupported}`,
     );
@@ -649,6 +657,17 @@ async function detectKeyboardLayout(): Promise<number> {
     }
   } catch {}
   return 0x0411;
+}
+
+/** 状態の文を出す。kind が error / ok / warn なら頭にアイコンを付ける(style.css の .note) */
+function setNote(
+  el: HTMLElement,
+  text: string,
+  kind?: "error" | "ok" | "warn",
+): void {
+  el.textContent = text;
+  if (kind) el.dataset.kind = kind;
+  else delete el.dataset.kind;
 }
 
 function describe(err: unknown): string {
