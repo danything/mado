@@ -27,21 +27,25 @@ KVM はまだ無い。
 | `cert_sha256` | `tls` のとき、AMT の証明書(leaf の DER)の SHA-256。書けば一致しない相手にはつながない。書かなければ確かめない(AMT の証明書はふつう自己署名) |
 
 AMT 側では、MEBx か AMT の Web(`http://<AMT>:16992/`)で、ネットワークのアクセスを有効にしておく。
-SOL と IDE-R は、無効なら mado の画面の「SOL・IDE-R を有効にする」で有効にできる(下の「SOL・IDE-R の受け口」)。
+SOL と IDE-R は、無効なら mado の画面のバーの「SOL・IDE-R を有効にする」で有効にできる(下の「SOL・IDE-R の受け口」)。
 
 ## 使い方
 
 1. 一覧で種類が `AMT` の先を選ぶ。欄が「AMT のユーザー名」「AMT のパスワード」に変わる。ユーザー名の既定は `admin`
 2. 「開く」で、電源の状態を読む。ユーザー名かパスワードが違えばここで止まる(AMT は続けて間違えると締め出すので、1 回の操作で試すのは 1 度だけ)
-3. 電源: 状態(オン(S0)、オフ(S5) など)と、操作のボタン。押すと確かめる窓が出る。OS を止めない操作(リセット・電源の入れ直し・強制電源オフ)は戻せない操作として赤い字になり、窓では「取消」が選ばれている
-   - 電源オン(PowerState 2)、リセット(10)、電源の入れ直し(5)、強制電源オフ(8)
-   - OS のシャットダウン(12)、OS の再起動(14)は、AMT がリクエストできると答えたときだけ出る(OS 側の対応が要る)
-   - 押せるボタンは AMT が返す `AvailableRequestedPowerStates` に従う。状態は 15 秒ごとに読み直す
-4. 「SOL に接続」で端末(xterm.js)を開く。キー入力はそのまま送る。「SOL を切断」「閉じる」で終える
-5. SOL・IDE-R: 受け口(16994 / 16995)と SOL・IDE-R が有効かを出す。どれかが無効なら「SOL・IDE-R を有効にする」が出る(押すと確かめる窓が出る)。SOL や IDE-R が「AMT のリダイレクトが無効です」で失敗したときもこれを押す
-6. IDE-R: 「IDE-R の CD」で ISO を選び、「IDE-R の CD から起動」。確かめる窓のあと、ISO を CD-ROM として見せ、次の 1 回の起動をそこからにして、電源を入れる(入っていればリセットする)
-   - 転送は起動している間ずっと続く。**タブを閉じると CD が抜けて起動が止まる**(閉じようとするとブラウザが確かめる)。転送した量と最後に読まれたセクタが出る
-   - 起動の様子は SOL で見る(BIOS の画面も SOL に出すよう `UseSOL` を立てる)。終わったら「IDE-R を終了」
+3. 開くとすぐ SOL(xterm.js)につなぎ、端末が画面いっぱいに出る。キー入力はそのまま送る。OS が何も書かなければ何も出ない(Talos はログインの画面を出さず、起動の後はカーネルがほとんど書かない。起動の間は BIOS とカーネルの文字が出る)
+   - BIOS は罫線を CP437 で、Linux は UTF-8 で送る。3〜4 バイトの UTF-8 として正しく読める並び(日本語や記号)は UTF-8、ほかは CP437 として読む(`web/amt/serial-text.ts`)。2 バイトの UTF-8(ü など)は罫線と形が同じで区別できないので CP437 になる
+4. 操作は上に重ねるバー(RDP と同じ形)。触らなければ 2.5 秒で引っ込み、マウスを動かすと出る。メニューを開いている間とキーボードで触っている間は残す
+   - 名前の横に電源の状態(オン(S0)、オフ(S5) など)
+   - 「電源」のメニュー: 開くと状態を読み直す。押すと確かめる窓が出る。OS を止めない操作(リセット・電源の入れ直し・強制電源オフ)は戻せない操作として赤い字になり、窓では「取消」が選ばれている
+     - 電源オン(PowerState 2)、リセット(10)、電源の入れ直し(5)、強制電源オフ(8)
+     - OS のシャットダウン(12)、OS の再起動(14)は、AMT がリクエストできると答えたときだけ出る(OS 側の対応が要る)
+     - 押せるものは AMT が返す `AvailableRequestedPowerStates` に従う。状態は 15 秒ごとにも読み直す
+   - 「SOL を切断」「SOL に接続」「閉じる」
+5. SOL・IDE-R の受け口(16994 / 16995)か SOL・IDE-R が無効なら、SOL にはつながず、バーに「SOL・IDE-R を有効にする」が出る(押すと確かめる窓が出て、有効にできたら SOL につなぐ)
+6. 「ISO から起動」で ISO を選ぶ。確かめる窓のあと、ISO を CD-ROM として見せ、次の 1 回の起動をそこからにして、電源を入れる(入っていればリセットする)
+   - 転送は起動している間ずっと続く。**タブを閉じると CD が抜けて起動が止まる**(閉じようとするとブラウザが確かめる)。転送した量と最後に読まれたセクタがバーに出る
+   - 起動の様子は SOL に出る(BIOS の画面も SOL に出すよう `UseSOL` を立てる)。終わったら「IDE-R を終了」
    - 速さは AMT と回線しだいで、数 MB/秒ほど。Talos の metal ISO(100MB 前後)は、起動に要る分だけ読まれるので数分かかる
 
 ユーザー名は RDP と同じく、つなぐ先ごとにブラウザ(localStorage)に覚える。パスワードは覚えない(ブラウザのパスワードの保存は使える)。
@@ -89,9 +93,25 @@ AMT はリダイレクト(SOL・IDE-R)を `AMT_RedirectionService` で切り替�
 - `/ws/amt` の WebSocket。最初に `/api/token` の使い捨てのトークン(60 秒、1 度だけ)を 1 行(`\n` まで)で送る。トークンの中の先が AMT のときだけ、その AMT の 16994(TLS なら 16995)に TCP でつなぎ、あとはバイト列をそのまま流す
 - RDP の中継(`/ws`、`/wt`)は RDP の先だけ、AMT の中継は AMT の先だけにつなぐ。トークンを別の種類の中継に出してもつながらない
 - リダイレクトのプロトコル(StartRedirectionSession、Digest の AuthenticateSession、SOL の開始、0x28 / 0x2A のデータ、2 秒ごとの生存確認)はブラウザが話す(`web/amt/redirect.ts`)。
-  形は Intel の [Device Management Toolkit の UI Toolkit](https://github.com/device-management-toolkit/ui-toolkit)(`src/core/AMTRedirector.ts`、Apache-2.0)と MeshCentral に合わせて自分で書いた。コードは写していない。端末の文字の処理は xterm.js に任せるので、UI Toolkit の `TerminalDataProcessor` は使わない
+  形は Intel の [Device Management Toolkit の UI Toolkit](https://github.com/device-management-toolkit/ui-toolkit)(`src/core/AMTRedirector.ts`、Apache-2.0)と MeshCentral に合わせて自分で書いた。コードは写していない。端末の文字の処理は xterm.js に任せる。UI Toolkit の `TerminalDataProcessor` がしている CP437 の変換だけは `web/amt/serial-text.ts` でする(3〜4 バイトの UTF-8 は UTF-8 のまま)
 - SOL は WebSocket だけを使う。文字の端末は量が小さく、WebTransport の利点(損失に強い)が効かないため
 - SOL でつないでいる間は接続として数え、その間は自動更新しない
+
+### 端末(xterm.js)を選んだ理由
+
+2026-11-02 に比べた(星・リリース・更新は GitHub、大きさは npm の tarball の dist を gzip した値)。VT100 / xterm の互換・枠に合わせる大きさ・スクロールバック・選択のコピーを、成熟度と保守の厚さの両方で満たすのは xterm.js だけだった。Intel の UI Toolkit も SOL の表示は xterm.js。
+
+| 候補                                                                         | GitHub の星  | 最新のリリース                                 | 直近の更新 | ライセンス | 大きさ(gz)                                 | 結論                                                          |
+| ---------------------------------------------------------------------------- | ------------ | ---------------------------------------------- | ---------- | ---------- | ------------------------------------------ | ------------------------------------------------------------- |
+| **[xterm.js](https://github.com/xtermjs/xterm.js) + addon-fit**              | 21.3k        | 6.0.0(2025-12-22)。6.1.0 のベータは 2026-10-29 | 2026-10-29 | MIT        | 87KB + 0.8KB(AMT の画面を開くときだけ読む) | 採用。VS Code が使う                                          |
+| [wterm](https://github.com/vercel-labs/wterm)                                | 3.6k         | v0.5.7(2026-10-28)                             | 2026-11-01 | Apache-2.0 | 約 80KB(軽い core のとき)                  | 小さいが Labs の試みで 0.x。1.0 が出たら見直す                |
+| [ghostty-web](https://github.com/coder/ghostty-web)                          | 3.0k         | v0.4.0(2025-12-09)                             | 2026-10-31 | MIT        | 約 191KB(WASM を埋め込み)                  | xterm より大きく、正式版が 2025-12 から出ていない             |
+| [restty](https://github.com/wiedymi/restty)                                  | 0.4k         | v0.3.0(2026-09-05)                             | 2026-09-05 | MIT        | 未測定                                     | 若く、WebGPU / WebGL2 が要る                                  |
+| hterm([libapps](https://github.com/libapps/libapps-mirror))                  | 0.1k(ミラー) | npm の配布なし(hterm-umdjs は 2018 年)         | 2026-10-26 | BSD-3      | -                                          | npm で配布されていない                                        |
+| [UI Toolkit](https://github.com/device-management-toolkit/ui-toolkit)(Intel) | 14           | v3.3.22(2026-10-23)                            | 2026-10-30 | Apache-2.0 | -                                          | 端末ではない(CP437 の変換と画面の消去だけで、表示は xterm.js) |
+| [MeshCommander](https://github.com/Ylianst/MeshCommander)                    | 0.7k         | リリースなし                                   | 2026-07-28 | Apache-2.0 | -                                          | 自前の端末は古い VT100 だけ。npm の配布なし                   |
+
+addon-fit は枠の大きさから行と桁を出す公式の部品(1KB 足らず)。自分で書くと xterm.js の公開されていない内部の値(文字の大きさ)を読むことになるので使う。
 
 ## ネットワークとセキュリティ
 

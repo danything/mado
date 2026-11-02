@@ -1,10 +1,13 @@
-// Intel AMT の画面。電源の状態と操作(WS-Man)、SOL の端末(xterm.js)。
+// Intel AMT の画面。SOL の端末(xterm.js)が全面で、電源(WS-Man)・IDE-R・リダイレクトの設定は上に重ねるバー。
+// 開くとすぐ SOL につなぐ(RDP の画面と同じく、見るものが主)。
 // AMT のユーザー名とパスワードはこの画面を閉じるまでメモリに置くだけで、保存も mado への送信もしない。
 
+import { type AutoHide, autoHide } from "../autohide";
 import { WsStream } from "../rdp/stream";
 import { LoginRequired, WsmanClient } from "./client";
 import { IderSession } from "./ider";
 import { SolSession } from "./redirect";
+import { SerialText } from "./serial-text";
 import { isOn, type PowerInfo, powerStateName, returnValueText } from "./wsman";
 
 type Xterm = import("@xterm/xterm").Terminal;
@@ -99,11 +102,18 @@ const $ = <T extends HTMLElement>(sel: string) =>
 
 /** 状態を読み直す間隔。操作の後は早めに読む */
 const POLL_MS = 15_000;
+/** 知らせを書いたときにバーを出しておく長さ */
+const NOTE_MS = 6000;
+
+/** 端末に書く、mado からの控えた知らせ(灰色) */
+const gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
 
 export class AmtView {
   private readonly root = $<HTMLElement>("#amt");
+  private readonly barEl = $<HTMLElement>("#amt-bar");
   private readonly state = $<HTMLElement>("#amt-state");
   private readonly status = $<HTMLElement>("#amt-status");
+  private readonly powerMenu = $<HTMLDetailsElement>("#amt-power");
   private readonly actions = $<HTMLElement>("#amt-actions");
   private readonly term = $<HTMLElement>("#sol");
   private readonly solButton = $<HTMLButtonElement>("#amt-sol");
@@ -111,9 +121,7 @@ export class AmtView {
   private readonly iderFile = $<HTMLInputElement>("#ider-file");
   private readonly iderBoot = $<HTMLButtonElement>("#ider-boot");
   private readonly iderStop = $<HTMLButtonElement>("#ider-stop");
-  private readonly iderStatus = $<HTMLElement>("#ider-status");
   private ider?: IderSession;
-  private readonly redirectionText = $<HTMLElement>("#amt-redirection");
   private readonly enableRedirectionButton = $<HTMLButtonElement>(
     "#amt-enable-redirection",
   );
@@ -122,8 +130,11 @@ export class AmtView {
   private poll?: ReturnType<typeof setTimeout>;
   private sol?: SolSession;
   private solConnecting = false;
+  /** UTF-8 の途中で止まったバイトを出すタイマー(connectSol) */
+  private solFlush?: ReturnType<typeof setTimeout>;
   private xterm?: Xterm;
   private resize?: ResizeObserver;
+  private bar?: AutoHide;
   private closed?: () => void;
 
   constructor(
@@ -133,33 +144,48 @@ export class AmtView {
     this.wsman = new WsmanClient(login.target, login.username, login.password);
   }
 
-  /** 認証を確かめる。最初の状態を読めたら画面を出す。だめなら例外 */
+  /** 認証を確かめる。最初の状態を読めたら画面を出し、SOL につなぐ。だめなら例外 */
   async open(): Promise<void> {
     this.info = await this.wsman.power();
     $<HTMLElement>("#amt-name").textContent = this.login.target;
     this.renderPower();
     this.root.hidden = false;
     this.root.addEventListener("click", this.onClick);
+    this.powerMenu.addEventListener("toggle", this.onMenu);
     this.iderFile.addEventListener("change", this.onFile);
-    this.onFile();
-    void this.refreshRedirection();
+    this.bar = autoHide(this.barEl, "move");
     this.schedule(POLL_MS);
+    let term: Xterm;
+    try {
+      term = await this.terminal();
+    } catch (e) {
+      // xterm.js を読めなければ、半端に開いたままにしない
+      this.close();
+      throw e;
+    }
+    if (await this.checkRedirection()) void this.connectSol();
+    else
+      term.writeln(
+        gray(
+          "SOL・IDE-R が無効です。上のバーの「SOL・IDE-R を有効にする」で有効にできます",
+        ),
+      );
   }
 
-  /** リダイレクト(SOL・IDE-R)の受け口の状態を読んで出す。読めなくても電源の画面は使える */
-  private async refreshRedirection(): Promise<void> {
+  /** リダイレクト(SOL・IDE-R)の受け口が使えるかを読む。無効なら有効にするボタンを出す。読めなければ試してみる */
+  private async checkRedirection(): Promise<boolean> {
     try {
       const r = await this.wsman.redirection();
-      const on = (v: boolean) => (v ? "有効" : "無効");
-      this.redirectionText.textContent = `受け口 ${on(r.listener)}・SOL ${on(r.sol)}・IDE-R ${on(r.ider)}`;
-      this.enableRedirectionButton.hidden = r.listener && r.sol && r.ider;
-    } catch (e) {
-      this.redirectionText.textContent = `読めませんでした(${e instanceof Error ? e.message : String(e)})`;
-      this.enableRedirectionButton.hidden = false;
+      const ok = r.listener && r.sol && r.ider;
+      this.enableRedirectionButton.hidden = ok;
+      if (!ok) this.bar?.reveal(NOTE_MS);
+      return ok;
+    } catch {
+      return true;
     }
   }
 
-  /** SOL・IDE-R を有効にする。AMT の設定を変えるので先に確かめる */
+  /** SOL・IDE-R を有効にする。AMT の設定を変えるので先に確かめる。できたら SOL につなぐ */
   private async enableRedirection(): Promise<void> {
     if (
       !(await this.ask(
@@ -178,8 +204,8 @@ export class AmtView {
       this.handle(e);
     } finally {
       b.removeAttribute("aria-busy");
-      await this.refreshRedirection();
     }
+    if ((await this.checkRedirection()) && !this.sol) void this.connectSol();
   }
 
   /** 閉じるまで待つ */
@@ -192,17 +218,35 @@ export class AmtView {
   private onClick = (e: Event) => {
     const b = (e.target as HTMLElement).closest("button");
     if (!b) return;
-    if (b.dataset.power) void this.changePower(Number(b.dataset.power));
-    else if (b.dataset.amt === "refresh") void this.refresh();
-    else if (b.dataset.amt === "sol") void this.toggleSol();
+    if (b.dataset.power) {
+      this.powerMenu.open = false;
+      void this.changePower(Number(b.dataset.power));
+    } else if (b.dataset.amt === "sol") void this.toggleSol();
     else if (b.dataset.amt === "close") this.close();
-    else if (b === this.iderBoot) void this.bootFromIder();
+    else if (b === this.iderBoot) this.iderFile.click();
     else if (b === this.enableRedirectionButton) void this.enableRedirection();
     else if (b === this.iderStop) this.ider?.close();
   };
 
+  /** 電源のメニューを開いたら状態を読み直す。外を押したら閉じる */
+  private onMenu = () => {
+    if (!this.powerMenu.open) {
+      removeEventListener("pointerdown", this.onOutside, true);
+      return;
+    }
+    addEventListener("pointerdown", this.onOutside, true);
+    void this.refresh();
+  };
+
+  private onOutside = (e: PointerEvent) => {
+    if (!this.powerMenu.contains(e.target as Node)) this.powerMenu.open = false;
+  };
+
   private onFile = () => {
-    this.iderBoot.disabled = !this.iderFile.files?.length || !!this.ider;
+    const file = this.iderFile.files?.[0];
+    // 同じ ISO をもう一度選んでも change が来るように、選んだら空にする
+    this.iderFile.value = "";
+    if (file) void this.bootFromIder(file);
   };
 
   // ---- IDE-R ----
@@ -211,9 +255,8 @@ export class AmtView {
    * 選んだ ISO を IDE-R の CD-ROM として見せ、次の起動をそこからにして電源を入れる(入っていればリセット)。
    * ISO はブラウザが読んで AMT に送る。mado は AMT へのバイト列を中継するだけ。転送の間はタブを閉じられない
    */
-  private async bootFromIder(): Promise<void> {
-    const file = this.iderFile.files?.[0];
-    if (!file || this.ider) return;
+  private async bootFromIder(file: File): Promise<void> {
+    if (this.ider) return;
     const on = isOn(this.info?.state);
     const mb = (file.size / 1024 / 1024).toFixed(
       file.size < 10 * 1024 * 1024 ? 1 : 0,
@@ -233,7 +276,7 @@ export class AmtView {
       return;
     this.iderBoot.disabled = true;
     this.iderBoot.setAttribute("aria-busy", "true");
-    this.iderNote("IDE-R を準備しています…");
+    this.note("IDE-R を準備しています…");
     let ider: IderSession | undefined;
     try {
       const token = await this.deps.newToken(this.login.target);
@@ -253,44 +296,44 @@ export class AmtView {
       this.iderStop.hidden = false;
       window.addEventListener("beforeunload", keepOpen);
       const started = ider;
+      // 進み具合はバーの文だけ書き換える(バーは出さない。端末を隠さないため)
       started.onProgress = (s) =>
-        this.iderNote(
-          `転送 ${(s.bytesRead / 1024 / 1024).toFixed(1)} MB・最後に読まれたセクタ ${s.lastLba}。タブを閉じると起動が止まります`,
+        this.note(
+          `IDE-R ${(s.bytesRead / 1024 / 1024).toFixed(1)} MB・セクタ ${s.lastLba}。タブを閉じると起動が止まります`,
+          undefined,
+          false,
         );
       void started.done.then((reason) => {
         if (this.ider !== started) return;
         this.ider = undefined;
         window.removeEventListener("beforeunload", keepOpen);
         this.iderStop.hidden = true;
-        this.onFile();
-        this.iderNote(`IDE-R を終了しました: ${reason}`);
+        this.iderBoot.disabled = false;
+        this.note(`IDE-R を終了しました: ${reason}`);
       });
       const r = await this.wsman.bootFromIder();
-      this.iderNote(
-        r.result === 0 || r.result === 4096
-          ? `${r.state === 10 ? "リセット" : "電源オン"}を受け付けました。SOL に接続すると起動の様子が見えます。タブは閉じないでください`
+      const ok = r.result === 0 || r.result === 4096;
+      this.note(
+        ok
+          ? `${r.state === 10 ? "リセット" : "電源オン"}を受け付けました。タブは閉じないでください`
           : `電源の操作に失敗しました: ${returnValueText(r.result)}`,
-        r.result === 0 || r.result === 4096 ? "ok" : "error",
+        ok ? "ok" : "error",
       );
+      // 起動の様子は SOL に出る。つないでいなければつなぐ
+      if (ok && !this.sol) void this.connectSol();
       this.schedule(3000);
     } catch (e) {
       ider?.close();
       if (e instanceof LoginRequired) this.handle(e);
       else
-        this.iderNote(
+        this.note(
           `IDE-R で起動できませんでした: ${explainRedirectError(e)}`,
           "error",
         );
     } finally {
       this.iderBoot.removeAttribute("aria-busy");
-      this.onFile();
+      this.iderBoot.disabled = !!this.ider;
     }
-  }
-
-  private iderNote(text: string, kind?: "error" | "ok"): void {
-    this.iderStatus.textContent = text;
-    if (kind) this.iderStatus.dataset.kind = kind;
-    else delete this.iderStatus.dataset.kind;
   }
 
   private schedule(ms: number): void {
@@ -302,7 +345,6 @@ export class AmtView {
     try {
       this.info = await this.wsman.power();
       this.renderPower();
-      this.note("");
     } catch (e) {
       this.handle(e);
     }
@@ -315,6 +357,7 @@ export class AmtView {
     this.state.dataset.on = String(isOn(s));
     this.actions.replaceChildren(
       ...powerButtons(this.info).map(({ action, enabled }) => {
+        const li = document.createElement("li");
         const b = document.createElement("button");
         b.type = "button";
         b.dataset.power = String(action.value);
@@ -322,7 +365,8 @@ export class AmtView {
         // 戻せない操作の 1 回目は控えのボタンで、乗せたときだけ赤い字。確定は確認の窓で
         b.className = action.danger ? "secondary danger" : "secondary";
         b.disabled = !enabled;
-        return b;
+        li.append(b);
+        return li;
       }),
     );
   }
@@ -371,19 +415,26 @@ export class AmtView {
     d.classList.toggle("danger", danger);
     d.returnValue = "";
     return new Promise((resolve) => {
-      d.addEventListener("close", () => resolve(d.returnValue === "ok"), {
-        once: true,
-      });
+      d.addEventListener(
+        "close",
+        () => {
+          resolve(d.returnValue === "ok");
+          // 窓を閉じたら、キー入力を端末に戻す
+          this.xterm?.focus();
+        },
+        { once: true },
+      );
       d.showModal();
       (danger ? cancel : okButton).focus();
     });
   }
 
-  /** 状態の文。kind があれば頭にアイコン(style.css の .note) */
-  private note(text: string, kind?: "error" | "ok"): void {
+  /** バーの状態の文。kind があれば頭にアイコン(style.css の .note)。書いたらしばらくバーを出す */
+  private note(text: string, kind?: "error" | "ok", reveal = true): void {
     this.status.textContent = text;
     if (kind) this.status.dataset.kind = kind;
     else delete this.status.dataset.kind;
+    if (reveal && text) this.bar?.reveal(NOTE_MS);
   }
 
   private handle(e: unknown): void {
@@ -396,17 +447,21 @@ export class AmtView {
 
   // ---- SOL ----
 
-  private async toggleSol(): Promise<void> {
+  private toggleSol(): Promise<void> {
     if (this.sol) {
       this.sol.close();
-      return;
+      return Promise.resolve();
     }
-    if (this.solConnecting) return;
+    return this.connectSol();
+  }
+
+  private async connectSol(): Promise<void> {
+    if (this.sol || this.solConnecting) return;
     this.solConnecting = true;
     this.solButton.setAttribute("aria-busy", "true");
     try {
       const term = await this.terminal();
-      term.writeln("\x1b[90mSOL に接続しています…\x1b[0m");
+      term.writeln(gray("SOL に接続しています…"));
       const token = await this.deps.newToken(this.login.target);
       const io = await WsStream.open(this.deps.ws.replace(/\/ws$/, "/ws/amt"));
       io.write(new TextEncoder().encode(`${token}\n`));
@@ -421,29 +476,42 @@ export class AmtView {
         throw e;
       }
       this.sol = sol;
-      sol.onData = (b) => term.write(b);
-      term.writeln("\x1b[90m接続しました。キー入力はそのまま送ります\x1b[0m");
+      // BIOS の CP437 と Linux の UTF-8 の両方を読む(serial-text.ts)。UTF-8 の途中で止まったら少し待って出す
+      const text = new SerialText();
+      sol.onData = (b) => {
+        clearTimeout(this.solFlush);
+        term.write(text.decode(b));
+        if (text.waiting)
+          this.solFlush = setTimeout(() => term.write(text.flush()), 100);
+      };
+      term.writeln(
+        gray(
+          "接続しました。キー入力はそのまま送ります。OS が何も書かなければ何も出ません(起動の間は出ます)",
+        ),
+      );
       this.solButton.textContent = "SOL を切断";
       term.focus();
       void sol.done.then((reason) => {
         if (this.sol !== sol) return;
         this.sol = undefined;
+        clearTimeout(this.solFlush);
         this.solButton.textContent = "SOL に接続";
-        this.xterm?.writeln(
-          `\r\n\x1b[90mSOL が切断されました: ${reason}\x1b[0m`,
-        );
+        this.xterm?.writeln(`\r\n${gray(`SOL が切断されました: ${reason}`)}`);
+        this.bar?.reveal(NOTE_MS);
       });
     } catch (e) {
+      this.solButton.textContent = "SOL に接続";
       this.xterm?.writeln(
         `\x1b[31m✕\x1b[0m SOL に接続できませんでした: ${explainRedirectError(e)}`,
       );
+      this.bar?.reveal(NOTE_MS);
     } finally {
       this.solConnecting = false;
       this.solButton.removeAttribute("aria-busy");
     }
   }
 
-  /** 端末は SOL を初めて開くときに読み込む(RDP だけ使うときは xterm.js を読まない) */
+  /** 端末は AMT の画面を開くときに読み込む(RDP だけ使うときは xterm.js を読まない) */
   private async terminal(): Promise<Xterm> {
     if (this.xterm) return this.xterm;
     const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -460,7 +528,6 @@ export class AmtView {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    this.term.hidden = false;
     term.open(this.term);
     fit.fit();
     const enc = new TextEncoder();
@@ -480,16 +547,22 @@ export class AmtView {
     this.ider = undefined;
     window.removeEventListener("beforeunload", keepOpen);
     this.iderStop.hidden = true;
+    this.iderBoot.disabled = false;
     this.iderFile.removeEventListener("change", this.onFile);
-    this.iderNote("");
+    this.powerMenu.open = false;
+    this.powerMenu.removeEventListener("toggle", this.onMenu);
+    removeEventListener("pointerdown", this.onOutside, true);
+    this.enableRedirectionButton.hidden = true;
     this.sol?.close();
     this.sol = undefined;
+    clearTimeout(this.solFlush);
     this.resize?.disconnect();
     this.xterm?.dispose();
     this.xterm = undefined;
-    this.term.hidden = true;
     this.term.replaceChildren();
+    // つないだら「SOL を切断」にする(connectSol)
     this.solButton.textContent = "SOL に接続";
+    this.bar?.stop();
     this.note("");
     this.root.removeEventListener("click", this.onClick);
     this.root.hidden = true;
@@ -509,7 +582,7 @@ function keepOpen(e: BeforeUnloadEvent): void {
 export function explainRedirectError(e: unknown): string {
   const m = e instanceof Error ? e.message : String(e);
   if (m.includes("cannot reach AMT"))
-    return "AMT のリダイレクトが無効です。「SOL・IDE-R を有効にする」を押すか、MEBx で有効にしてください";
+    return "AMT のリダイレクトが無効です。上のバーの「SOL・IDE-R を有効にする」を押すか、MEBx で有効にしてください";
   if (m.includes("AMT TLS failed"))
     return "AMT と TLS でつなげませんでした。AMT の TLS の設定と cert_sha256 を確かめてください";
   return m;

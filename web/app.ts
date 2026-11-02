@@ -3,6 +3,7 @@
 
 import { AmtAuthError } from "./amt/client";
 import { AmtView } from "./amt/view";
+import { autoHide } from "./autohide";
 import {
   CERT_PINS,
   decide,
@@ -283,6 +284,7 @@ async function runSession(
     // RDP の解像度は窓の大きさそのまま。混んでいたら、つないだあとで下げる
     home.hidden = true;
     toolbar.hidden = false;
+    stops.push(autoHide(toolbar, "edge").stop);
     $<HTMLElement>("#current").textContent = login.target;
     screen.classList.remove("idle");
     const width = screen.clientWidth || innerWidth;
@@ -598,8 +600,11 @@ toolbar.addEventListener("click", (e) => {
   else if (action === "diag") {
     diag.hidden = !diag.hidden;
     if (!diag.hidden) diagNow?.();
-  } else if (action === "fullscreen") void screen.requestFullscreen();
-  else if (action === "disconnect") {
+  } else if (action === "fullscreen") {
+    // バーも一緒に全画面に入れる(画面だけにすると、バーを呼び出せない)
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen();
+  } else if (action === "disconnect") {
     current?.client.close();
     connecting?.abort();
   }
