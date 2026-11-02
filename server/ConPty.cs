@@ -34,6 +34,8 @@ internal sealed partial class ConPty : ITerminal
     bool _closed;
     // 終了コード。WaitExit(スレッドプール)が書き、中継が読む。int.MinValue はまだ
     int _exitCode = int.MinValue;
+    /// <summary>最後に出力が来た時刻(Environment.TickCount64)</summary>
+    long _lastOutput = Environment.TickCount64;
     int _disposed;
 
     public int ProcessId { get; }
@@ -146,7 +148,11 @@ internal sealed partial class ConPty : ITerminal
         try
         {
             int n;
-            while ((n = await _output.ReadAsync(b)) > 0) _out.Writer.TryWrite(b[..n]);
+            while ((n = await _output.ReadAsync(b)) > 0)
+            {
+                Volatile.Write(ref _lastOutput, Environment.TickCount64);
+                _out.Writer.TryWrite(b[..n]);
+            }
         }
         catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException) { }
         finally
@@ -164,6 +170,12 @@ internal sealed partial class ConPty : ITerminal
         try { await done.Task; }
         finally { reg.Unregister(null); }
         Volatile.Write(ref _exitCode, GetExitCodeProcess(_process, out var code) ? (int)code : -1);
+        // ConPTY は画面を後から描いて送るので、すぐ閉じると最後の出力(すぐ終わるコマンドの全部や、失敗の理由)が落ちる。
+        // 終わってから 100 ms は待ち、そのあと出力が 150 ms 止まるまで(長くても 2 秒)待ってから閉じる
+        var start = Environment.TickCount64;
+        while (Environment.TickCount64 - start < 2000
+            && (Environment.TickCount64 - start < 100 || Environment.TickCount64 - Volatile.Read(ref _lastOutput) < 150))
+            await Task.Delay(50);
         ClosePty();
     }
 
