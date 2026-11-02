@@ -91,7 +91,7 @@ export function authorization(
   cnonce: string = newCnonce(),
 ): string {
   if (ch.algorithm && ch.algorithm.toUpperCase() !== "MD5")
-    throw new Error(`Digest の algorithm ${ch.algorithm} には対応していない`);
+    throw new Error(`Digest の algorithm ${ch.algorithm} には対応していません`);
   const qop = hasAuthQop(ch.qop) ? "auth" : undefined;
   const ncs = nc.toString(16).padStart(8, "0");
   const response = digestResponse({

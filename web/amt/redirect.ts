@@ -47,7 +47,7 @@ const latin1 = (b: Uint8Array) => String.fromCharCode(...b);
 /** 1 バイトの長さ + 文字列 */
 function lstr(w: Writer, s: string): void {
   const b = ascii.encode(s);
-  if (b.length > 255) throw new Error("リダイレクトの文字列が長すぎる");
+  if (b.length > 255) throw new Error("リダイレクトの文字列が長すぎます");
   w.u8(b.length).bytes(b);
 }
 
@@ -135,7 +135,7 @@ export async function readMessage(io: Transport): Promise<Message> {
     case MSG.authenticateReply: {
       const h = await io.peek(9);
       const len = new DataView(h.buffer, h.byteOffset).getUint32(5, true);
-      if (len > 64 * 1024) throw new Error("AMT: 認証の返事が大きすぎる");
+      if (len > 64 * 1024) throw new Error("AMT: 認証の返事が大きすぎます");
       return whole(9 + len);
     }
     case MSG.startSolReply:
@@ -151,7 +151,7 @@ export async function readMessage(io: Transport): Promise<Message> {
     case MSG.recording:
       return whole(1);
     default:
-      throw new Error(`AMT: 知らないメッセージ 0x${type.toString(16)}`);
+      throw new Error(`AMT: 知らないメッセージです(0x${type.toString(16)})`);
   }
 }
 
@@ -167,7 +167,7 @@ async function expect(io: Transport, type: number): Promise<Message> {
     if (m.type === type) return m;
     if (!isNoise(m))
       throw new Error(
-        `AMT: 0x${type.toString(16)} を待っていたが 0x${m.type.toString(16)} が来た`,
+        `AMT: 0x${type.toString(16)} を待っていましたが、0x${m.type.toString(16)} が届きました`,
       );
   }
 }
@@ -222,7 +222,7 @@ export class SolSession {
     const start = await expect(io, MSG.startRedirectionReply);
     if (start.data[1] !== 0)
       throw new Error(
-        `AMT が SOL を始めなかった(状態 ${start.data[1]})。AMT の設定で SOL が有効か確かめる`,
+        `AMT が SOL を始めませんでした(状態 ${start.data[1]})。AMT の設定で SOL が有効か確かめてください`,
       );
     // 使える認証の種類を問う
     io.write(authenticate(AUTH.query, new Uint8Array()));
@@ -236,13 +236,13 @@ export class SolSession {
         : undefined;
     if (authType === undefined)
       throw new Error(
-        `AMT が Digest 認証を使えない(使えるもの: ${kinds.join(",") || "なし"})`,
+        `AMT が Digest 認証を使えません(使えるもの: ${kinds.join(",") || "なし"})`,
       );
     io.write(digestHello(o.username, authType));
     const ch = authReply(await expect(io, MSG.authenticateReply));
     if (ch.status !== 1 || ch.authType !== authType)
       throw new RedirectAuthError(
-        `AMT の Digest の challenge が来ない(状態 ${ch.status})`,
+        `AMT から Digest の challenge が届きません(状態 ${ch.status})`,
       );
     io.write(
       digestAnswer(
@@ -255,7 +255,7 @@ export class SolSession {
     );
     const result = authReply(await expect(io, MSG.authenticateReply));
     if (result.status !== 0)
-      throw new RedirectAuthError("AMT のユーザー名かパスワードが違う");
+      throw new RedirectAuthError("AMT のユーザー名かパスワードが違います");
     // 0x20 SOL の設定。値は UI Toolkit と同じ(送る緩衝 10000、送信の待ち 100ms、受信の待ち 10000ms、受信をまとめる 100ms、AMT からの生存確認なし)
     io.write(
       new Writer(24)
@@ -292,7 +292,7 @@ export class SolSession {
   }
 
   private async loop(): Promise<void> {
-    let reason = "切れた";
+    let reason = "切断されました";
     try {
       for (;;) {
         const m = await readMessage(this.io);

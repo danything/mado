@@ -24,26 +24,26 @@ type PowerAction = {
   confirm: string;
   /** 電源が入っているときだけ意味がある */
   whenOn?: boolean;
-  /** AMT が頼める状態として挙げたときだけ出す(OS 側の対応が要るもの) */
+  /** AMT がリクエストできる状態として挙げたときだけ出す(OS 側の対応が要るもの) */
   optional?: boolean;
   danger?: boolean;
 };
 
 export const POWER_ACTIONS: PowerAction[] = [
-  { value: 2, label: "電源を入れる", confirm: "電源を入れる。" },
+  { value: 2, label: "電源オン", confirm: "電源を入れます。" },
   {
     value: 12,
-    label: "OS に止めてもらう",
+    label: "OS のシャットダウン",
     confirm:
-      "OS に正しく止めるよう頼む。OS 側が AMT からの頼みに対応していないと何も起きない。",
+      "OS にシャットダウンをリクエストします。OS 側が対応していないと何も起きません。",
     whenOn: true,
     optional: true,
   },
   {
     value: 14,
-    label: "OS に再起動してもらう",
+    label: "OS の再起動",
     confirm:
-      "OS に正しく再起動するよう頼む。OS 側が AMT からの頼みに対応していないと何も起きない。",
+      "OS に再起動をリクエストします。OS 側が対応していないと何も起きません。",
     whenOn: true,
     optional: true,
   },
@@ -51,29 +51,29 @@ export const POWER_ACTIONS: PowerAction[] = [
     value: 10,
     label: "リセット",
     confirm:
-      "リセットボタンを押したのと同じ。OS は止まらずに再起動し、保存していないデータは失われる。",
+      "リセットボタンを押したのと同じです。OS を止めずに再起動するので、保存していないデータは失われます。",
     whenOn: true,
     danger: true,
   },
   {
     value: 5,
-    label: "電源を入れ直す",
+    label: "電源の入れ直し",
     confirm:
-      "電源を切ってから入れ直す。OS は止まらず、保存していないデータは失われる。",
+      "電源を切ってから入れ直します。OS を止めないので、保存していないデータは失われます。",
     whenOn: true,
     danger: true,
   },
   {
     value: 8,
-    label: "電源を切る(強制)",
+    label: "強制電源オフ",
     confirm:
-      "電源ボタンの長押しと同じ。OS は止まらずに電源が切れ、保存していないデータは失われる。",
+      "電源ボタンの長押しと同じです。OS を止めずに電源を切るので、保存していないデータは失われます。",
     whenOn: true,
     danger: true,
   },
 ];
 
-/** 出す操作と、押せるかどうか。AMT が頼める状態を挙げていればそれに従う */
+/** 出す操作と、押せるかどうか。AMT がリクエストできる状態を挙げていればそれに従う */
 export function powerButtons(
   info: PowerInfo | undefined,
 ): { action: PowerAction; enabled: boolean }[] {
@@ -175,9 +175,8 @@ export class AmtView {
         b.type = "button";
         b.dataset.power = String(action.value);
         b.textContent = action.label;
-        b.className = action.danger
-          ? "secondary outline danger"
-          : "secondary outline";
+        // 戻せない操作の 1 回目は控えのボタンで、乗せたときだけ赤い字。確定は確認の窓で
+        b.className = action.danger ? "secondary danger" : "secondary";
         b.disabled = !enabled;
         return b;
       }),
@@ -199,7 +198,10 @@ export class AmtView {
     this.note(`${action.label}…`);
     try {
       const rv = await this.wsman.changePower(value);
-      this.note(`${action.label}: ${returnValueText(rv)}`);
+      this.note(
+        `${action.label}: ${returnValueText(rv)}`,
+        rv === 0 || rv === 4096 ? "ok" : "error",
+      );
     } catch (e) {
       this.handle(e);
     }
@@ -207,7 +209,7 @@ export class AmtView {
     this.schedule(3000);
   }
 
-  /** 確かめる窓。OK なら true。危ない操作は最初にやめるほうを選んでおく */
+  /** 確かめる窓。OK なら true。危ない操作は最初に取消を選んでおく */
   private ask(
     title: string,
     lead: string,
@@ -220,6 +222,8 @@ export class AmtView {
     const okButton = d.querySelector("button[value=ok]") as HTMLButtonElement;
     const cancel = d.querySelector("button[value=cancel]") as HTMLButtonElement;
     okButton.textContent = ok;
+    // 戻せない操作の確定は赤い字(塗らない)。窓の見出しの頭に ⚠
+    okButton.className = danger ? "danger" : "";
     d.classList.toggle("danger", danger);
     d.returnValue = "";
     return new Promise((resolve) => {
@@ -231,8 +235,11 @@ export class AmtView {
     });
   }
 
-  private note(text: string): void {
+  /** 状態の文。kind があれば頭にアイコン(style.css の .note) */
+  private note(text: string, kind?: "error" | "ok"): void {
     this.status.textContent = text;
+    if (kind) this.status.dataset.kind = kind;
+    else delete this.status.dataset.kind;
   }
 
   private handle(e: unknown): void {
@@ -240,7 +247,7 @@ export class AmtView {
       location.href = `/login?to=${encodeURIComponent(location.pathname)}`;
       return;
     }
-    this.note(e instanceof Error ? e.message : String(e));
+    this.note(e instanceof Error ? e.message : String(e), "error");
   }
 
   // ---- SOL ----
@@ -255,7 +262,7 @@ export class AmtView {
     this.solButton.setAttribute("aria-busy", "true");
     try {
       const term = await this.terminal();
-      term.writeln("\x1b[90mSOL につないでいます…\x1b[0m");
+      term.writeln("\x1b[90mSOL に接続しています…\x1b[0m");
       const token = await this.deps.newToken(this.login.target);
       const io = await WsStream.open(this.deps.ws.replace(/\/ws$/, "/ws/amt"));
       io.write(new TextEncoder().encode(`${token}\n`));
@@ -271,18 +278,20 @@ export class AmtView {
       }
       this.sol = sol;
       sol.onData = (b) => term.write(b);
-      term.writeln("\x1b[90mつないだ。キー入力はそのまま送る\x1b[0m");
-      this.solButton.textContent = "SOL を切る";
+      term.writeln("\x1b[90m接続しました。キー入力はそのまま送ります\x1b[0m");
+      this.solButton.textContent = "SOL を切断";
       term.focus();
       void sol.done.then((reason) => {
         if (this.sol !== sol) return;
         this.sol = undefined;
-        this.solButton.textContent = "SOL をつなぐ";
-        this.xterm?.writeln(`\r\n\x1b[90mSOL が切れた: ${reason}\x1b[0m`);
+        this.solButton.textContent = "SOL に接続";
+        this.xterm?.writeln(
+          `\r\n\x1b[90mSOL が切断されました: ${reason}\x1b[0m`,
+        );
       });
     } catch (e) {
       this.xterm?.writeln(
-        `\x1b[31mSOL につなげなかった: ${e instanceof Error ? e.message : String(e)}\x1b[0m`,
+        `\x1b[31m✕\x1b[0m SOL に接続できませんでした: ${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       this.solConnecting = false;
@@ -330,7 +339,7 @@ export class AmtView {
     this.xterm = undefined;
     this.term.hidden = true;
     this.term.replaceChildren();
-    this.solButton.textContent = "SOL をつなぐ";
+    this.solButton.textContent = "SOL に接続";
     this.note("");
     this.root.removeEventListener("click", this.onClick);
     this.root.hidden = true;

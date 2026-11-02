@@ -205,21 +205,21 @@ export const isOn = (state: number | undefined): boolean =>
 export function returnValueText(v: number | undefined): string {
   switch (v) {
     case 0:
-      return "受け付けた";
+      return "受け付けました";
     case 1:
-      return "対応していない操作(1)";
+      return "対応していない操作です(1)";
     case 2:
-      return "失敗(2)";
+      return "失敗しました(2)";
     case 3:
-      return "時間切れ(3)";
+      return "時間切れです(3)";
     case 4:
-      return "失敗(4)";
+      return "失敗しました(4)";
     case 5:
-      return "引数が違う(5)";
+      return "指定が正しくありません(5)";
     case 4096:
-      return "受け付けた(処理中)";
+      return "受け付けました(処理中)";
     case undefined:
-      return "返事に ReturnValue が無い";
+      return "返事に ReturnValue がありません";
     default:
       return `ReturnValue ${v}`;
   }

@@ -67,17 +67,17 @@ export class WsmanClient {
       });
       const amtAuth = res.headers.get("x-amt-authenticate");
       if (res.status === 401 && !amtAuth)
-        throw new LoginRequired("mado にログインし直す");
+        throw new LoginRequired("mado のログインが切れました");
       if (res.status === 401) {
         const next = parseChallenge(amtAuth as string);
-        if (!next) throw new Error("AMT の Digest の challenge が読めない");
+        if (!next) throw new Error("AMT の Digest の challenge を読めません");
         // 認証を付けずに受けた 401 と、前の nonce を使い回して断られた 401 は、新しい challenge で 1 度だけ送り直す。
         // 送り直しても断られたら、ユーザー名かパスワードが違う(AMT は続けて間違えると締め出すので、それ以上は試さない)
         this.challenge = next;
         this.nc = 0;
         if (retried) {
           this.challenge = undefined;
-          throw new AmtAuthError("AMT のユーザー名かパスワードが違う");
+          throw new AmtAuthError("AMT のユーザー名かパスワードが違います");
         }
         retried = true;
         continue;
@@ -88,7 +88,7 @@ export class WsmanClient {
         throw new Error(
           f
             ? `AMT: ${f}`
-            : `AMT の WS-Man が ${res.status}: ${text.slice(0, 200)}`,
+            : `AMT の WS-Man がエラーを返しました(${res.status}): ${text.slice(0, 200)}`,
         );
       }
       const f = fault(text);
@@ -101,7 +101,8 @@ export class WsmanClient {
   async power(): Promise<PowerInfo> {
     const first = await this.call(enumerate(RESOURCE.associatedPower));
     const ctx = element(first, "EnumerationContext");
-    if (!ctx) throw new Error("AMT の列挙の返事に EnumerationContext が無い");
+    if (!ctx)
+      throw new Error("AMT の列挙の返事に EnumerationContext がありません");
     return parsePower(await this.call(pull(RESOURCE.associatedPower, ctx)));
   }
 
