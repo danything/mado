@@ -9,3 +9,5 @@ obj/
 logs/
 # WebTransport の試験(tools/wt-e2e/run.sh)が書く
 tools/wt-e2e/.ca.crt
+# 試験の出力 (tools/rdp-input-smoke.ts、tools/amt-e2e/ui.cjs)
+out/

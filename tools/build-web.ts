@@ -19,11 +19,13 @@ if (!worker.success || !workerFile) {
   throw new Error("Worker のビルドに失敗");
 }
 
-// 2. 画面。rfxpool.ts の __RFX_WORKER__ が Worker の URL になる
+// 2. 画面。rfxpool.ts の __RFX_WORKER__ が Worker の URL になる。
+// SOL の端末(xterm.js)は AMT の画面で SOL を開くときに import() で読むので、別のかたまりに分ける
 const page = await Bun.build({
   entrypoints: ["web/index.html"],
   outdir: "dist/web",
   minify: true,
+  splitting: true,
   define: { __RFX_WORKER__: JSON.stringify(`/${basename(workerFile.path)}`) },
 });
 if (!page.success) {

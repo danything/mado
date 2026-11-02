@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace Mado.Tests;
 
 public class ConfigTests
@@ -113,4 +115,61 @@ public class ConfigTests
     [Arguments("https://md.example.com:444/")]
     public async Task SameOrigin_は外を指したら_origin_の根にする(string pathAndQuery) =>
         await Assert.That(Config.SameOrigin("https://md.example.com", pathAndQuery)).IsEqualTo("https://md.example.com/");
+
+    [Test]
+    public async Task AMT_の先は_tls_で_port_が決まる()
+    {
+        var c = Load($$"""{ {{Base}}, "targets": [{ "name": "pc", "host": "10.0.0.20" }, { "name": "z", "type": "amt", "host": "10.10.0.3" }, { "name": "t", "type": "amt", "host": "10.10.0.4", "tls": true, "cert_sha256": "ab:CD {{new string('0', 60)}}" }] }""");
+        await Assert.That(c.Targets[0]).IsEqualTo(new Target("pc", "10.0.0.20", 3389));
+        await Assert.That(c.Targets[1]).IsEqualTo(new Target("z", "10.10.0.3", 16992, TargetKind.Amt));
+        await Assert.That(c.Targets[1].RedirectPort).IsEqualTo(16994);
+        await Assert.That(c.Targets[1].Type).IsEqualTo("amt");
+        await Assert.That(c.Targets[2]).IsEqualTo(new Target("t", "10.10.0.4", 16993, TargetKind.Amt, true, "ABCD" + new string('0', 60)));
+        await Assert.That(c.Targets[2].RedirectPort).IsEqualTo(16995);
+    }
+
+    [Test]
+    public async Task RDP_と_AMT_の先は種類で引き分ける()
+    {
+        var c = Load($$"""{ {{Base}}, "targets": [{ "name": "pc", "host": "10.0.0.20" }, { "name": "z", "type": "amt", "host": "10.10.0.3" }] }""");
+        await Assert.That(c.Rdp("pc")?.Name).IsEqualTo("pc");
+        await Assert.That(c.Rdp("z")).IsNull();
+        await Assert.That(c.Amt("z")?.Name).IsEqualTo("z");
+        await Assert.That(c.Amt("pc")).IsNull();
+        await Assert.That(c.Amt("10.10.0.3")).IsNull();
+        await Assert.That(c.Amt(null)).IsNull();
+    }
+
+    [Test]
+    [Arguments("{ \"host\": \"x\", \"type\": \"vnc\" }", "rdp か amt")]
+    [Arguments("{ \"host\": \"x\", \"type\": \"amt\", \"port\": 16992 }", "port は書かない")]
+    [Arguments("{ \"host\": \"x\", \"type\": \"amt\", \"cert_sha256\": \"zz\" }", "64 文字")]
+    [Arguments("{ \"host\": \"x\", \"type\": \"amt\", \"cert_sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\" }", "tls が true のときだけ")]
+    [Arguments("{ \"host\": \"x\", \"tls\": true }", "type が amt のときだけ")]
+    public async Task AMT_の先の間違いは起動時に止める(string target, string message)
+    {
+        var e = Assert.Throws<ConfigException>(() => Load($"{{ {Base}, \"targets\": [{target}] }}"));
+        await Assert.That(e.Message).Contains(message);
+    }
+
+    /// <summary>
+    /// 中継のトークンは先の名前だけを持つ。AMT の先のトークンを RDP の中継に出しても、使う側が種類で引くのでつながらない。
+    /// 使い捨てで、別のユーザーには使えない
+    /// </summary>
+    [Test]
+    public async Task 中継のトークンは使い捨てで種類の違う中継には使えない()
+    {
+        var c = Load($$"""{ {{Base}}, "targets": [{ "name": "pc", "host": "10.0.0.20" }, { "name": "z", "type": "amt", "host": "10.10.0.3" }] }""");
+        var tokens = new RelayTokens(new Signer(RandomNumberGenerator.GetBytes(32)), 60);
+        var token = tokens.Issue(new RelayToken("u1", "z", "j1", "u"));
+        await Assert.That(tokens.Consume(token, "u2")).IsNull();
+        var t = tokens.Consume(token, "u1");
+        await Assert.That(t?.Target).IsEqualTo("z");
+        await Assert.That(c.Rdp(t!.Target)).IsNull();
+        await Assert.That(c.Amt(t.Target)?.Host).IsEqualTo("10.10.0.3");
+        await Assert.That(tokens.Consume(token, "u1")).IsNull();
+        // 別の鍵で署名したものは通らない
+        var other = new RelayTokens(new Signer(RandomNumberGenerator.GetBytes(32)), 60).Issue(new RelayToken("u1", "z", "j2"));
+        await Assert.That(tokens.Consume(other, "u1")).IsNull();
+    }
 }
