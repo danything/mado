@@ -2,6 +2,7 @@
 
 OIDC でログインして、ブラウザから RDP するゲートウェイ。Windows のサービスとして動き、MSI で入れる。
 Intel AMT の機械も並べられ、電源の操作、SOL(シリアルの端末)、IDE-R(手元の ISO を CD として見せて起動する)が使える([docs/amt.md](docs/amt.md))。
+AMT の先で Talos が動いていれば、`talosctl dashboard` も同じ端末で開ける([docs/talos.md](docs/talos.md))。
 
 | つなぐ前                                                           | つないだ画面                                                       |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
@@ -25,6 +26,7 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
 - AMT のパスワードも同じで、ブラウザが HTTP Digest の応答を計算する。mado は決まった AMT の WS-Man(`/wsman`)とリダイレクト(SOL)の port にだけ中継する。AMT の port は外に開けない([docs/amt.md](docs/amt.md#ネットワークとセキュリティ))
+- Talos のダッシュボードは、mado が `talosctl dashboard` を ConPTY で動かして中継する。コマンドは mado.json で決まり、ブラウザは選べない。talosconfig は `os:reader` だけのものを DPAPI で保護して置き、名前付きパイプで talosctl に渡す(ディスクに平文を書かない。[docs/talos.md](docs/talos.md#鍵の扱い))
 - mado は RDP サーバーの証明書を検証しない(自己署名なので)。代わりにブラウザが、つなぐ先ごとに証明書の SHA-256 の指紋を覚えて比べる(trust on first use)。はじめての先では証明書を見せて信頼するかを聞き、前と違えば強く警告する。断ればユーザー名もパスワードも使わない。mado と RDP サーバーの間に割り込まれても、気づかずに認証を渡さないため。詳しくは [docs/rdp-client.md](docs/rdp-client.md#rdp-サーバーの証明書)
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
 
@@ -68,18 +70,18 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
 }
 ```
 
-| 項目           | 内容                                                                                                                                                                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host`         | 外から開くホスト名。証明書と OIDC の戻り先に使う                                                                                                                                                                                      |
-| `data_dir`     | 証明書、ACME のアカウント、セッションの鍵を置く場所。既定は設定ファイルと同じ場所の `data`                                                                                                                                            |
-| `acme.email`   | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う                                                                                                                                                                     |
-| `oidc`         | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない                                                                   |
-| `targets`      | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら一覧は出ない。省略するとこのマシン(127.0.0.1:3389)。`"type": "amt"` で Intel AMT の先(`tls`、`cert_sha256`。[docs/amt.md](docs/amt.md#設定))                                 |
-| `listen`       | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける)。MSI が開けるファイアウォールは TCP 80 / 443 と UDP 443 だけなので、port を変えたら自分で開ける                                                      |
-| `status.port`  | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、外向きの origin、起動した時刻、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う  |
-| `update`       | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }`                                                                                                                                                    |
-| `tls`          | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用                                                                                                                                                             |
-| `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く |
+| 項目           | 内容                                                                                                                                                                                                                                                                                           |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`         | 外から開くホスト名。証明書と OIDC の戻り先に使う                                                                                                                                                                                                                                               |
+| `data_dir`     | 証明書、ACME のアカウント、セッションの鍵を置く場所。既定は設定ファイルと同じ場所の `data`                                                                                                                                                                                                     |
+| `acme.email`   | Let's Encrypt の連絡先。`acme.staging: true` で試験用の環境を使う                                                                                                                                                                                                                              |
+| `oidc`         | `issuer`、`client_id`、`client_secret`(または `client_secret_file`。1 行目を読む)。`required_role` を書くと、ID トークンの `roles` にその値が無いユーザーは入れない                                                                                                                            |
+| `targets`      | つなぐ先。`name`、`host`、`port`(既定 3389)。1 つだけなら一覧は出ない。省略するとこのマシン(127.0.0.1:3389)。`"type": "amt"` で Intel AMT の先(`tls`、`cert_sha256`。[docs/amt.md](docs/amt.md#設定))。AMT の先に `talos` を書くと Talos のダッシュボード([docs/talos.md](docs/talos.md#設定)) |
+| `listen`       | 待ち受け。既定は `{ "https": 443, "http": 80, "hostname": "::" }`(IPv4 も受ける)。MSI が開けるファイアウォールは TCP 80 / 443 と UDP 443 だけなので、port を変えたら自分で開ける                                                                                                               |
+| `status.port`  | ローカルからだけ使える状態の API(既定 8788、`0` で無効)。`GET /status` で版、外向きの origin、起動した時刻、接続数、証明書の残り日数、更新の有無を返す。`POST /update`(ヘッダー `x-mado: 1`)で更新をすぐ確認する。タスクトレイが使う                                                           |
+| `update`       | 自動更新。既定は `{ "enabled": true, "check_hours": 6, "repo": "danything/mado" }`                                                                                                                                                                                                             |
+| `tls`          | `"off"` で TLS と ACME を使わず http で待ち受ける。localhost で試すとき用                                                                                                                                                                                                                      |
+| `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く                                                          |
 
 IdP には戻り先として `https://<host>/callback` を登録する。Entra ID ならアプリロールを作ってユーザーに割り当て、その値を `required_role` に書く。
 `/logout` は mado のセッションの Cookie を消すだけで、IdP からはログアウトしない。

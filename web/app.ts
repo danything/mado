@@ -31,8 +31,15 @@ import {
   usernameFor,
 } from "./remember";
 
-/** つなぐ先。rdp は Windows の PC、amt は Intel AMT(電源と SOL) */
-type TargetInfo = { name: string; type: "rdp" | "amt" };
+/**
+ * つなぐ先。rdp は Windows の PC、amt は Intel AMT(電源と SOL)。
+ * talos は AMT の先で Talos のダッシュボードが使えるときだけある(notAfter は talosconfig の証明書の期限)
+ */
+type TargetInfo = {
+  name: string;
+  type: "rdp" | "amt";
+  talos?: { notAfter?: string };
+};
 
 type SessionInfo = {
   name: string;
@@ -246,6 +253,7 @@ async function openAmt(login: Login): Promise<void> {
           `/api/token?target=${encodeURIComponent(target)}`,
         )
       ).token,
+    talos: session.targets.find((t) => t.name === login.target)?.talos,
   });
   try {
     await view.open();

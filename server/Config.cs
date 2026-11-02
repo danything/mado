@@ -8,9 +8,11 @@ internal enum TargetKind { Rdp, Amt }
 /// <summary>
 /// つなぐ先。画面で名前を選ぶ。RDP は Port が RDP の port。
 /// AMT は Port が WS-Man(16992、TLS なら 16993)で、SOL などのリダイレクトは RedirectPort(16994、TLS なら 16995)。
-/// CertSha256 は AMT に TLS でつなぐとき、証明書(leaf の DER)の SHA-256 で確かめる指紋。無ければ確かめない
+/// CertSha256 は AMT に TLS でつなぐとき、証明書(leaf の DER)の SHA-256 で確かめる指紋。無ければ確かめない。
+/// Talos は AMT の先で動く Talos のダッシュボード(talosctl dashboard)の設定。無ければ出さない(Talos.cs)
 /// </summary>
-internal sealed record Target(string Name, string Host, int Port, TargetKind Kind = TargetKind.Rdp, bool Tls = false, string? CertSha256 = null)
+internal sealed record Target(string Name, string Host, int Port, TargetKind Kind = TargetKind.Rdp, bool Tls = false, string? CertSha256 = null,
+    TalosOptions? Talos = null)
 {
     public const int AmtHttp = 16992, AmtHttps = 16993, AmtRedirect = 16994, AmtRedirectTls = 16995;
 
@@ -123,6 +125,7 @@ internal sealed record Config(
 
     static List<Target> ReadTargets(Raw raw, string file)
     {
+        var dir = Path.GetDirectoryName(file)!;
         if (raw.Targets is null) return [new Target("localhost", "127.0.0.1", 3389)];
         if (raw.Targets.Count == 0) throw new ConfigException($"{file}: targets は 1 つ以上の配列");
         var seen = new HashSet<string>();
@@ -136,7 +139,8 @@ internal sealed record Config(
             switch (t.Type ?? "rdp")
             {
                 case "rdp":
-                    if (t.Tls is not null || t.CertSha256 is not null) throw new ConfigException($"{at}: tls と cert_sha256 は type が amt のときだけ");
+                    if (t.Tls is not null || t.CertSha256 is not null || t.Talos is not null)
+                        throw new ConfigException($"{at}: tls・cert_sha256・talos は type が amt のときだけ");
                     var port = t.Port ?? 3389;
                     if (port is < 1 or > 65535) throw new ConfigException($"{at}.port は 1〜65535 の整数");
                     return new Target(name, t.Host, port);
@@ -147,11 +151,31 @@ internal sealed record Config(
                     var pin = t.CertSha256 is null ? null : NormalizeFingerprint(t.CertSha256)
                         ?? throw new ConfigException($"{at}.cert_sha256 は SHA-256 の 16 進(64 文字。: や空白は無視する)");
                     if (pin is not null && !tls) throw new ConfigException($"{at}.cert_sha256 は tls が true のときだけ");
-                    return new Target(name, t.Host, tls ? Target.AmtHttps : Target.AmtHttp, TargetKind.Amt, tls, pin);
+                    return new Target(name, t.Host, tls ? Target.AmtHttps : Target.AmtHttp, TargetKind.Amt, tls, pin,
+                        t.Talos is null ? null : ReadTalos(t.Talos, $"{at}.talos", dir));
                 default:
                     throw new ConfigException($"{at}.type は rdp か amt");
             }
         })];
+    }
+
+    /// <summary>
+    /// AMT の先の talos。talosctl に渡すのはこの値だけで、ブラウザからは何も足せない。
+    /// node と endpoints はアドレスかホスト名だけ(- で始まる値は talosctl のフラグに読まれるので弾く)。endpoints の既定は node
+    /// </summary>
+    static TalosOptions ReadTalos(RawTalos t, string at, string dir)
+    {
+        if (string.IsNullOrEmpty(t.Talosconfig)) throw new ConfigException($"{at}.talosconfig が要る(DPAPI で保護した talosconfig の場所)");
+        if (string.IsNullOrEmpty(t.Node)) throw new ConfigException($"{at}.node が要る");
+        if (!TalosOptions.IsHost(t.Node)) throw new ConfigException($"{at}.node はアドレスかホスト名 ({t.Node})");
+        List<string> endpoints = t.Endpoints is null ? [t.Node] : [.. t.Endpoints];
+        if (endpoints.Count == 0) throw new ConfigException($"{at}.endpoints は 1 つ以上の配列");
+        foreach (var e in endpoints)
+            if (!TalosOptions.IsHost(e)) throw new ConfigException($"{at}.endpoints はアドレスかホスト名の配列 ({e})");
+        if (t.Talosctl == "") throw new ConfigException($"{at}.talosctl は空でない文字列(書かなければ PATH から探す)");
+        return new TalosOptions(
+            Path.GetFullPath(t.Talosconfig, dir), t.Node, endpoints,
+            t.Talosctl is null ? null : Path.GetFullPath(t.Talosctl, dir));
     }
 
     /// <summary>指紋を大文字の 16 進 64 文字にする。: や空白は無視する。形が違えば null</summary>
@@ -223,6 +247,17 @@ internal sealed record Config(
         /// <summary>AMT だけ。true で 16993 / 16995(TLS)</summary>
         public bool? Tls { get; set; }
         public string? CertSha256 { get; set; }
+        /// <summary>AMT だけ。Talos のダッシュボード</summary>
+        public RawTalos? Talos { get; set; }
+    }
+    internal sealed class RawTalos
+    {
+        /// <summary>DPAPI で保護した talosconfig。相対なら設定ファイルの場所から</summary>
+        public string? Talosconfig { get; set; }
+        public string? Node { get; set; }
+        public List<string>? Endpoints { get; set; }
+        /// <summary>talosctl.exe の場所。無ければ PATH から探す</summary>
+        public string? Talosctl { get; set; }
     }
     internal sealed class RawStatus { public int? Port { get; set; } }
 }
