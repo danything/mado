@@ -24,6 +24,8 @@ internal sealed partial class MadoJson : JsonSerializerContext;
 [JsonSerializable(typeof(User))]
 [JsonSerializable(typeof(Pending))]
 [JsonSerializable(typeof(RelayToken))]
+[JsonSerializable(typeof(TalosHello))]
+[JsonSerializable(typeof(TalosResize))]
 [JsonSerializable(typeof(OidcDiscovery))]
 [JsonSerializable(typeof(OidcToken))]
 [JsonSerializable(typeof(Jwks))]
@@ -42,7 +44,12 @@ internal sealed record SessionInfo(
 
 internal sealed record TargetInfo(
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("type")] string Type);
+    [property: JsonPropertyName("type")] string Type,
+    // AMT の先で Talos のダッシュボードが使えるときだけある
+    [property: JsonPropertyName("talos")] TalosInfo? Talos = null);
+
+/// <summary>Talos のダッシュボード。notAfter は talosconfig の証明書の期限(ISO 8601)。読めなければ無い</summary>
+internal sealed record TalosInfo([property: JsonPropertyName("notAfter")] string? NotAfter);
 
 internal sealed record TokenInfo([property: JsonPropertyName("token")] string Token);
 

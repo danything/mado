@@ -832,7 +832,8 @@ dialog[open] > article {
   font-size: 0.8125rem;
 }
 #ider-stop[hidden],
-#amt-enable-redirection[hidden] {
+#amt-enable-redirection[hidden],
+#amt-dash[hidden] {
   display: none;
 }
 /* SOL のバーは引っ込めず、端末の上に並べる(重ねない)。地は端末と同じ黒で、影は要らない */

@@ -10,6 +10,7 @@
 //   https://<host>/wt (UDP)     同じ中継を WebTransport(HTTP/3)で。WebTransportRelay.cs と Quic/
 //   https://<host>/api/amt/<name>/wsman  Intel AMT の WS-Man(電源)の中継。Amt.cs
 //   wss://<host>/ws/amt         Intel AMT のリダイレクト(SOL)の中継。Amt.cs
+//   wss://<host>/ws/talos       Talos のダッシュボード(talosctl dashboard を ConPTY で動かす)。Talos.cs と ConPty.cs
 //   http://<host>/.well-known/acme-challenge/*  Let's Encrypt の確認。80 番のほかの道は https へ回す
 //   http://127.0.0.1:8788/status  この PC の中からだけ見られる状態。POST /update で更新をすぐ確かめる
 
@@ -41,6 +42,12 @@ log.Write($"mado {version}: {config.File} を読んだ({config.Host}、つなぐ
 
 foreach (var t in config.Targets.Where(t => t is { Kind: TargetKind.Amt, Tls: true, CertSha256: null }))
     log.Write($"注意: {t.Name} は tls だが cert_sha256 が無いので、AMT の証明書を確かめない(docs/amt.md)");
+
+// Talos のダッシュボードの talosconfig の期限。中身はログに出さない
+foreach (var t in config.Targets.Where(t => t.Talos is not null))
+    log.Write(TalosSecret.NotAfterOf(t.Talos!.Talosconfig) is { } until
+        ? $"talos: {t.Name} の talosconfig は {until:yyyy-MM-dd} まで(残り {(int)(until - DateTimeOffset.UtcNow).TotalDays} 日)"
+        : $"talos: {t.Name} の talosconfig を開けない({t.Talos!.Talosconfig})。ダッシュボードは使えない(docs/talos.md)");
 
 var signer = Signer.Open(config.DataDir);
 var origin = config.Origin;
@@ -113,6 +120,10 @@ CookieOptions Cookie(int maxAge) => new()
 Target? RdpOf(string? name) => config.Rdp(name);
 var wsman = new AmtWsman();
 app.Lifetime.ApplicationStopping.Register(wsman.Dispose);
+
+// 画面に出すつなぐ先。Talos のダッシュボードがある先には、talosconfig の期限も付ける
+TargetInfo TargetInfoOf(Target t) => new(t.Name, t.Type,
+    t.Talos is null ? null : new TalosInfo(TalosSecret.NotAfterOf(t.Talos.Talosconfig)?.ToString("yyyy-MM-ddTHH:mm:ssZ")));
 
 // 中継の使い捨てのトークン。使い回しを弾く
 var tokens = new RelayTokens(signer, RelayTokenSeconds);
@@ -213,7 +224,7 @@ app.MapGet("/api/session", (HttpContext ctx) =>
     ctx.Response.Headers.CacheControl = "no-store";
     if (SessionOf(ctx) is not { } s) return NeedLogin();
     var ws = (origin.StartsWith("https") ? "wss" : "ws") + origin[(origin.IndexOf(':'))..] + "/ws";
-    return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(t => new TargetInfo(t.Name, t.Type))], ws, wt is { IsListening: true } ? wtUrl : null), ApiJson.Default.SessionInfo);
+    return Results.Json(new SessionInfo(s.Name, version, [.. config.Targets.Select(TargetInfoOf)], ws, wt is { IsListening: true } ? wtUrl : null), ApiJson.Default.SessionInfo);
 });
 
 app.MapGet("/api/token", (HttpContext ctx) =>
@@ -286,6 +297,20 @@ app.Map(AmtRelay.Path, async (HttpContext ctx) =>
     if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で接続してください").ExecuteAsync(ctx); return; }
     using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
     await AmtRelay.Serve(user.Name, new WebSocketChannel(ws), auth => tokens.Consume(auth, user.Sub) is { } t ? config.Amt(t.Target) : null,
+        log.Write, CountSession, ctx.RequestAborted);
+});
+
+// Talos のダッシュボード。最初のテキストのメッセージが /api/token のトークンと端末の大きさ。
+// 動かすコマンドは mado.json の talos だけで決まり、ブラウザからは大きさとキー入力しか渡らない
+TerminalStarter startTalos = (talos, cols, rows, _) => TalosTerminal.Start(talos, cols, rows, log.Write);
+app.Map(TalosRelay.Path, async (HttpContext ctx) =>
+{
+    if (ctx.Request.Headers.Origin != origin) { await Text(403, "origin が違います").ExecuteAsync(ctx); return; }
+    if (SessionOf(ctx) is not { } user) { await Text(401, "ログインしていません").ExecuteAsync(ctx); return; }
+    if (!ctx.WebSockets.IsWebSocketRequest) { await Text(400, "WebSocket で接続してください").ExecuteAsync(ctx); return; }
+    using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+    await TalosRelay.Serve(user.Name, ws, auth => tokens.Consume(auth, user.Sub) is { } t ? config.Amt(t.Target) : null,
+        startTalos,
         log.Write, CountSession, ctx.RequestAborted);
 });
 
