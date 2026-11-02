@@ -3,11 +3,11 @@
 // サーバーからの PDU は ZGFX で包まれて来る。こちらから送る Caps と Frame Acknowledge は包まない。
 // 描画は GfxOps に任せる。ブラウザでは canvas、試験では偽物を使う。H.264 の復号は AvcDecoder に任せる。ブラウザでは VideoDecoder を使う。
 
-import { FrameLatency, gfxTimestampMs } from "./autoscale";
 import { bgraToRgba, decodePlanar } from "./bitmap";
 import { Reader, Writer } from "./bytes";
 import { ClearDecoder } from "./clearcodec";
 import type { DynamicChannel, DynamicHandler } from "./dvc";
+import { FrameLatency, gfxTimestampMs } from "./latency";
 import {
   parseProgressive,
   ProgressiveFrame,
