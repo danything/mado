@@ -118,6 +118,10 @@ html,
 body {
   height: 100%;
 }
+/* つないでいる間(RDP・AMT)は窓いっぱいの 1 枚なので巻かない。開いたメニューの影などで数 px はみ出して、巻き取りの棒が出ていた */
+html:has(#home[hidden]) {
+  overflow: hidden;
+}
 body {
   display: flex;
   flex-direction: column;
@@ -847,7 +851,14 @@ dialog[open] > article {
   min-height: 0;
   padding: 0.5rem;
 }
-/* xterm.js がキー入力を受ける隠れた欄に、共通の焦点の線が付いて左上に青い点が出ていた。端末はカーソルの点滅で焦点が分かる */
+/* xterm.js がキー入力を受ける隠れた欄。xterm.js は日本語の変換窓のために端末のカーソルの位置へ動かすが、そこに青い点が
+ * 出て文字に重なった(焦点の線を消しても残った。OS か IME がこの欄の入力位置に描いているとみられる)。
+ * SOL では変換窓は要らないので、画面の外に置く。端末はカーソルの点滅で焦点が分かる */
+#sol .xterm-helper-textarea {
+  left: -9999em !important;
+  top: 0 !important;
+  caret-color: transparent;
+}
 #sol :focus-visible {
   outline: none;
 }
