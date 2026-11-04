@@ -9,7 +9,7 @@
     "format": "oxlint --fix && bun fmt"
   },
   "devDependencies": {
-    "@anyblades/blades": "3.1.0",
+    "@anyblades/blades": "3.1.1",
     "@types/bun": "^1.4.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
