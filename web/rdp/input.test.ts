@@ -88,8 +88,20 @@ describe("マウス", () => {
     );
   });
   test("ホイール: 下へ回すと負", () => {
-    expect(hex(input.mouseWheel(100))).toBe("20" + "8803" + "0000" + "0000");
-    expect(hex(input.mouseWheel(-100))).toBe("20" + "7802" + "0000" + "0000");
+    expect(input.mouseWheel(1).map(hex)).toEqual([
+      "20" + "8803" + "0000" + "0000",
+    ]);
+    expect(input.mouseWheel(-1).map(hex)).toEqual([
+      "20" + "7802" + "0000" + "0000",
+    ]);
+  });
+  test("ホイール: ノッチごとに 1 つ、0 なら送らない", () => {
+    expect(input.mouseWheel(3)).toHaveLength(3);
+    expect(input.mouseWheel(0)).toHaveLength(0);
+    expect(input.mouseWheel(-2, true).map(hex)).toEqual([
+      "20" + "8805" + "0000" + "0000",
+      "20" + "8805" + "0000" + "0000",
+    ]);
   });
   test("座標は 0〜65535 に収める", () => {
     expect(hex(input.mouseMove(-5, 70000))).toBe(
