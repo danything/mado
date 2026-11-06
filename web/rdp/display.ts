@@ -271,14 +271,26 @@ export function bindInput(
     held.add(e.button);
     button(e, true);
   };
+  // タッチパッドや滑らかなスクロールは小さい量を何度も送ってくるので、ためて 1 ノッチ分になったら送る
+  const wheel = { x: 0, y: 0 };
+  const take = (axis: "x" | "y", delta: number): number => {
+    // 向きが変わったら、たまった分は捨てる
+    if (Math.sign(delta) !== Math.sign(wheel[axis])) wheel[axis] = 0;
+    wheel[axis] += delta;
+    const notches = Math.trunc(wheel[axis] / input.WHEEL_NOTCH_PX);
+    wheel[axis] -= notches * input.WHEEL_NOTCH_PX;
+    return notches;
+  };
   const onWheel = (e: WheelEvent) => {
-    const events: Uint8Array[] = [];
-    // deltaMode 1 は行単位。1 行を 40px とみなす
-    const k = e.deltaMode === 1 ? 40 : 1;
-    if (e.deltaY) events.push(input.mouseWheel(e.deltaY * k));
-    if (e.deltaX) events.push(input.mouseWheel(e.deltaX * k, true));
-    if (events.length) client.sendInput(events);
     e.preventDefault();
+    // deltaMode 1 は行単位で 1 行を 40px、2 はページ単位で 1 ページを 1 ノッチとみなす
+    const k =
+      e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? input.WHEEL_NOTCH_PX : 1;
+    const events = [
+      ...input.mouseWheel(take("y", e.deltaY * k)),
+      ...input.mouseWheel(take("x", e.deltaX * k), true),
+    ];
+    if (events.length) client.sendInput(events);
   };
   const onMenu = (e: Event) => e.preventDefault();
   const onBlur = () => {

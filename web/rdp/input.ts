@@ -187,19 +187,22 @@ export function mouseButton(
   return mouse((down ? PTR.DOWN : 0) | flag, x, y);
 }
 
-/** ホイール。delta は WheelEvent.deltaY で、下へ回すと正。RDP は 1 ノッチが 120 で、上へ回すと正 */
-export function mouseWheel(delta: number, horizontal = false): Uint8Array {
-  // 100 ピクセルを 1 ノッチ(120)とする。1 回の上限は 255
-  const rotation = Math.min(
-    255,
-    Math.max(1, Math.round(Math.abs(delta) / 100)) * 120,
-  );
+/** ホイールの 1 ノッチにあたるピクセル数 */
+export const WHEEL_NOTCH_PX = 100;
+
+/**
+ * ホイール。notches はノッチ数で、下(横は右)へ回すと正。
+ * RDP は 1 ノッチが 120 で、1 回に送れるのは 1 ノッチ(下へは 255 まで入るが 2 ノッチには足りない)なので、ノッチごとに 1 つずつ作る
+ */
+export function mouseWheel(notches: number, horizontal = false): Uint8Array[] {
   // 縦は向きが逆で、下へ回すと RDP では負になる。横は右へ回すと正のまま
-  const negative = horizontal ? delta < 0 : delta > 0;
+  const negative = horizontal ? notches < 0 : notches > 0;
   const flags =
     (horizontal ? PTR.HWHEEL : PTR.WHEEL) |
-    (negative ? PTR.WHEEL_NEGATIVE | ((0x100 - rotation) & 0xff) : rotation);
-  return mouse(flags, 0, 0);
+    (negative ? PTR.WHEEL_NEGATIVE | (0x100 - 120) : 120);
+  return Array.from({ length: Math.abs(Math.trunc(notches)) }, () =>
+    mouse(flags, 0, 0),
+  );
 }
 
 function mouse(flags: number, x: number, y: number): Uint8Array {
