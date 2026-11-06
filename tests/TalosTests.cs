@@ -447,9 +447,10 @@ public class TalosTests
         if (!OperatingSystem.IsWindows()) return;
         var secret = "context: mado-pipe-test\n"u8.ToArray();
         var pipe = ConfigPipe.Start([.. secret], _ => { });
-        // ほかのプロセス(ここでは試験自身)が先に開いても渡さず、切って同じ口で待ち直す(1 つは動かすプロセスに残す)
+        // ほかのプロセス(ここでは試験自身)が先に開いても渡さず、切って同じ口で待ち直す
+        // type は様子見と読み出しで 2 回開くので、口は 2 つ動かすプロセスに残す(1 つだと、切られた口が空く前に 2 回目が来ると開けない)
         var others = new List<System.IO.Pipes.NamedPipeClientStream>();
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < 2; i++)
         {
             var o = new System.IO.Pipes.NamedPipeClientStream(".", pipe.Path[@"\.\pipe\".Length..], System.IO.Pipes.PipeDirection.In);
             await o.ConnectAsync(5000);
