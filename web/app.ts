@@ -13,6 +13,7 @@ import {
   serializePins,
   type Verdict,
 } from "./certpin";
+import { holdTab } from "./hold-tab";
 import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
@@ -407,6 +408,8 @@ async function runSession(
       watchDiag(() => diagText(client, gfxClient, pool.async, rdp.transport)),
     );
     stops.push(bindInput(display.canvas, client, display));
+    // つないでいる間は Ctrl+W などでタブを失わない(hold-tab.ts)
+    stops.push(holdTab());
     stops.push(watchClipboard(display.canvas, channels));
     // 窓の大きさが変わったら RDP の解像度も変える。混んでいても解像度は下げない(rdp/latency.ts)
     const resize = (w: number, h: number) => {
