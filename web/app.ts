@@ -233,6 +233,8 @@ form.addEventListener("submit", async (e) => {
     field("password").value = "";
     return;
   }
+  // 全画面にすると Ctrl+T・Ctrl+W なども接続先へ送れる(hold-tab.ts)。押した直後でないと断られるので、つなぐ前に入る
+  void document.documentElement.requestFullscreen?.().catch(() => {});
   setNote(status, "接続しています…");
   switches.length = 0;
   // H.264 は、ブラウザが復号できるときだけ頼む
@@ -251,6 +253,8 @@ form.addEventListener("submit", async (e) => {
   }
   current = undefined;
   display.clear();
+  if (document.fullscreenElement)
+    void document.exitFullscreen().catch(() => {});
   submit.removeAttribute("aria-busy");
   toolbar.hidden = true;
   screen.classList.add("idle");
