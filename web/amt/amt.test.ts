@@ -25,7 +25,7 @@ import {
   RedirectAuthError,
   SolSession,
 } from "./redirect";
-import { explainRedirectError, powerButtons } from "./view";
+import { explainRedirectError, POWER_ACTIONS, powerButtons } from "./view";
 import {
   bootSettingFields,
   clearBootOrder,
@@ -179,6 +179,12 @@ describe("WS-Man の封筒", () => {
     expect(
       powerButtons({ state: 2, available: [] }).map((a) => a.value),
     ).toEqual([10, 8]);
+  });
+
+  test("1 回押しで実行するのは電源オンだけ。動いている PC に影響する操作は 2 回押し", () => {
+    expect(POWER_ACTIONS.filter((a) => a.once).map((a) => a.value)).toEqual([
+      2,
+    ]);
   });
 });
 

@@ -388,9 +388,38 @@ select:focus {
 #login label {
   margin: 0;
 }
-#login :is(input:not([type="radio"]), select) {
+#login :is(input:not([type="radio"], [type="checkbox"]), select) {
   margin: 0;
   height: 2.875rem;
+}
+/* 保存のチェックと「保存を消去」。事実と控えの操作なので、小さい字で 1 行に並べる(囲まない) */
+#save-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: var(--mado-btn-h-sm);
+  font-size: 0.875rem;
+}
+#save-field[hidden] {
+  display: none;
+}
+#save-field label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+#save-field input {
+  margin: 0;
+  flex: none;
+  /* チェックの色は主の色(藍)。土台の既定の青にしない */
+  --pico-primary-background: var(--mado-primary);
+  --pico-primary-border: var(--mado-primary);
+}
+#save-note {
+  margin: 0;
+  font-size: 0.875rem;
 }
 #login button[type="submit"] {
   margin-top: 0.375rem;

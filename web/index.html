@@ -59,11 +59,24 @@
             />
             <span id="password-label">パスワード</span>
           </label>
+          <!-- ユーザー名とパスワードの保存(saved-login.ts)。このブラウザの中だけに暗号化して置き、mado には送らない。
+               保存が使えないブラウザと、入れるものが無い先(Talos)では出さない。「保存を消去」は保存があるときだけ -->
+          <div id="save-field" hidden>
+            <label>
+              <input type="checkbox" name="save" />
+              パスワードをこの端末に保存する
+            </label>
+            <button type="button" class="secondary small" id="forget" hidden>
+              保存を消去
+            </button>
+          </div>
+          <p id="save-note" class="note" role="status"></p>
           <button type="submit">接続</button>
           <p id="status" class="note" role="status"></p>
         </form>
         <footer>
-          <a href="/logout">ログアウト</a> · <span id="version"></span>
+          <a href="/logout" id="logout">ログアウト</a> ·
+          <span id="version"></span>
         </footer>
       </div>
     </main>
@@ -124,7 +137,7 @@
           <li><span id="amt-status" class="note" role="status"></span></li>
         </ul>
         <ul>
-          <!-- 電源の操作。いま使えるものだけ並べ、2 回押しで確定する(amt/view.ts の pressPower) -->
+          <!-- 電源の操作。いま使えるものだけ並べる。「電源オン」は 1 回押し、ほかは 2 回押しで確定する(amt/view.ts の pressPower) -->
           <li id="amt-actions"></li>
           <!-- IDE-R: 手元の ISO を CD-ROM として見せて、そこから起動させる。選ぶと確かめる窓が出る -->
           <li>
