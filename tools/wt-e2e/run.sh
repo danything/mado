@@ -36,4 +36,4 @@ EOF
 
 cd /src
 dotnet build server -v q -nologo
-exec dotnet server/bin/Debug/net10.0/mado.dll --config $D/mado.json
+exec dotnet server/bin/Debug/net11.0/mado.dll --config $D/mado.json
