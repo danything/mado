@@ -1,6 +1,7 @@
 // 2 回押しで確定するボタン(AMT と Talos の電源の操作)。窓は出さない(denpa の「聞き返しの 2 回目」と同じ)。
 // 1 回目でボタンの文を「もう一度押すと再起動」に変え、バーの状態の文にも出す。ARM_MS 以内にもう一度押すと実行し、押さなければ戻す。
 // ボタンは container の中の button[data-power]。値はその操作の key。
+// 動いているものを止めない操作(AMT の「電源オン」)は once を立てて、1 回押しで実行する。
 
 /** 1 回目のあと、2 回目を待つ時間 */
 export const ARM_MS = 3000;
@@ -9,7 +10,13 @@ export const MIN_SECOND_MS = 400;
 
 export type Note = (text: string, kind?: "error" | "ok" | "warn") => void;
 
-export class TwoPress<A extends { label: string }> {
+export class TwoPress<
+  A extends {
+    label: string;
+    /** 1 回押しで実行する。動いている PC に影響しない操作だけに立てる */
+    once?: boolean;
+  },
+> {
   private armed?: {
     action: A;
     timer: ReturnType<typeof setTimeout>;
@@ -72,9 +79,15 @@ export class TwoPress<A extends { label: string }> {
       if (b.dataset.power === this.keyOf(action)) this.paint(b, action);
   }
 
-  /** ボタンを押した。1 回目なら待ち、待っている操作の 2 回目なら run */
+  /** ボタンを押した。1 回目なら待ち、待っている操作の 2 回目なら run。once の操作は 1 回目で run */
   press(action: A): void {
     const key = this.keyOf(action);
+    if (action.once) {
+      // ほかの操作の 2 回目を待っていたら、それは取り消す
+      this.disarm(true);
+      this.run(action);
+      return;
+    }
     if (this.armed && this.keyOf(this.armed.action) === key) {
       // 素早いダブルクリックは 1 回目だけとみなす
       if (performance.now() - this.armed.at < MIN_SECOND_MS) return;

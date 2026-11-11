@@ -74,9 +74,16 @@ async function readTsRequest(s: ByteStream): Promise<TsRequest> {
   const t = parseTsRequest(
     await der.readFrom(s, MAX_PDU, "CredSSP: TSRequest が大きすぎる"),
   );
-  if (t.errorCode !== undefined) throw new Error(ntStatus(t.errorCode));
+  if (t.errorCode !== undefined) throw new LogonError(ntStatus(t.errorCode));
   return t;
 }
+
+/**
+ * サーバーが NTSTATUS を返して認証を断った(ユーザー名かパスワードが違う、アカウントが使えないなど)。
+ * 画面は、保存したパスワードで断られたときに、それを入れ直さないために見分ける。
+ * 古いサーバーは理由を返さずに切ることがあり、そのときはこれにならない
+ */
+export class LogonError extends Error {}
 
 function ntStatus(code: number): string {
   const known: Record<number, string> = {

@@ -26,6 +26,7 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 - つなぐ先は設定の `targets` に書いたものに限る。ブラウザが選んだ先はサーバーが発行するトークンに入れて渡すので、ブラウザから任意の宛先は指定できない
 - Windows のユーザー名とパスワードはブラウザの中で CredSSP に使う。mado には送らない
 - AMT のパスワードも同じで、ブラウザが HTTP Digest の応答を計算する。mado は決まった AMT の WS-Man(`/wsman`)とリダイレクト(SOL)の port にだけ中継する。AMT の port は外に開けない([docs/amt.md](docs/amt.md#ネットワークとセキュリティ))
+- AMT と RDP のユーザー名とパスワードは、つなぐ前の画面で「パスワードをこの端末に保存する」を選んでつながったときだけ、ブラウザの中に保存できる(つなぐ先と種類ごと)。取り出せない AES-GCM の鍵(WebCrypto)で暗号化して IndexedDB に置き、mado には送らない。守れるのは「プロファイルのファイルを読まれても平文は出ない」までで、同じブラウザでページを開ける人と、ページに入り込んだスクリプトからは使える。「保存を消去」と、画面のログアウトで消える([docs/amt.md](docs/amt.md#ユーザー名とパスワードの保存))
 - Talos のダッシュボードは、mado が `talosctl dashboard` を ConPTY で動かして中継する。コマンドは mado.json で決まり、ブラウザは選べない。バーの「シャットダウン」「再起動」は `talosctl shutdown` / `reboot` を決まった引数で動かす(2 回押しで確定)。talosconfig は `os:operator`(設定は変えられない)のものを DPAPI で保護して置き、名前付きパイプで talosctl に渡す(ディスクに平文を書かない。[docs/talos.md](docs/talos.md#鍵の扱い))
 - mado は RDP サーバーの証明書を検証しない(自己署名なので)。代わりにブラウザが、つなぐ先ごとに証明書の SHA-256 の指紋を覚えて比べる(trust on first use)。はじめての先では証明書を見せて信頼するかを聞き、前と違えば強く警告する。断ればユーザー名もパスワードも使わない。mado と RDP サーバーの間に割り込まれても、気づかずに認証を渡さないため。詳しくは [docs/rdp-client.md](docs/rdp-client.md#rdp-サーバーの証明書)
 - 証明書は Let's Encrypt から取り、残り 30 日を切ったら取り直す(HTTP-01)
@@ -90,7 +91,7 @@ MSI を先に入れてもいい。設定が無いとサービスの起動に失�
 | `webtransport` | WebTransport の UDP の port。既定は `tls` が `acme` のとき https と同じ port(443)。`{ "port": 8443 }` で変え、`false` か port `0` で使わない。msquic が読めないときや UDP で待ち受けられないときは、ログに書いて WebSocket だけで動く                                                                              |
 
 IdP には戻り先として `https://<host>/callback` を登録する。Entra ID ならアプリロールを作ってユーザーに割り当て、その値を `required_role` に書く。
-`/logout` は mado のセッションの Cookie を消すだけで、IdP からはログアウトしない。
+`/logout` は mado のセッションの Cookie を消すだけで、IdP からはログアウトしない。画面の「ログアウト」は、`/logout` に移る前に、その端末に保存したパスワードと鍵を消す([docs/amt.md](docs/amt.md#ユーザー名とパスワードの保存))。
 
 ログは `C:\ProgramData\mado\logs\mado.log`。10 MB を超えると `.1` に移す。
 

@@ -1,6 +1,7 @@
 // Intel AMT の画面。SOL の端末(xterm.js)が主で、電源(WS-Man)・IDE-R・リダイレクトの設定は上の常に出ているバー。
 // 開くとすぐ SOL につなぐ。バーは RDP と違って引っ込めない(SOL は画面を広く使う必要が薄く、状態をいつも見せたい)。
-// AMT のユーザー名とパスワードはこの画面を閉じるまでメモリに置くだけで、保存も mado への送信もしない。
+// AMT のユーザー名とパスワードは、この画面ではメモリに置くだけで、mado への送信はしない(Digest の応答はブラウザが計算する)。
+// 保存は、つなぐ前の画面で「この端末に保存する」を選んだときだけ、ブラウザの中に暗号化して置く(saved-login.ts・app.ts)。mado には置かない。
 
 import { WsStream } from "../rdp/stream";
 import { gray, openTerminal, type Tty, type Xterm } from "../term";
@@ -31,11 +32,13 @@ type PowerAction = {
   /** AMT がリクエストできる状態として挙げたときだけ出す(OS 側の対応が要るもの) */
   optional?: boolean;
   danger?: boolean;
+  /** 1 回押しで実行する(two-press.ts)。動いている PC に影響しない「電源オン」だけ */
+  once?: boolean;
 };
 
 // 電源の入れ直し(5)は強制再起動とほぼ同じで紛らわしいので出さない
 export const POWER_ACTIONS: PowerAction[] = [
-  { value: 2, label: "電源オン", description: "電源を入れます" },
+  { value: 2, label: "電源オン", description: "電源を入れます", once: true },
   {
     value: 12,
     label: "シャットダウン",
@@ -96,7 +99,7 @@ export class AmtView {
   private readonly state = $<HTMLElement>("#amt-state");
   private readonly status = $<HTMLElement>("#amt-status");
   private readonly actions = $<HTMLElement>("#amt-actions");
-  /** 電源のボタン。2 回押しで確定する(two-press.ts)。open で作る */
+  /** 電源のボタン。「電源オン」は 1 回押し、ほかは 2 回押しで確定する(two-press.ts)。open で作る */
   private power?: TwoPress<PowerAction>;
   /** 電源の操作を AMT に頼んでいる間。その間は電源のボタンを受けない */
   private powerBusy = false;
@@ -348,7 +351,7 @@ export class AmtView {
     }
   }
 
-  /** 電源のボタンは 2 回押しで確定する(two-press.ts)。AMT に頼んでいる間は受けない */
+  /** 電源のボタンは 2 回押しで確定する。「電源オン」だけは 1 回押し(two-press.ts)。AMT に頼んでいる間は受けない */
   private pressPower(value: number): void {
     const action = POWER_ACTIONS.find((a) => a.value === value);
     if (!action || this.powerBusy) return;

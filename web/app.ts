@@ -1,5 +1,7 @@
 // 画面。web/rdp の RDP クライアントで、mado の /ws(RDCleanPath)を通して PC につなぐ。
 // Windows のユーザー名とパスワードはブラウザの中の CredSSP で使う。mado のサーバーには届かない。
+// 「この端末に保存する」を選んでつながったときだけ、ユーザー名とパスワードをこのブラウザの中に暗号化して置く(saved-login.ts)。
+// 保存したものも mado のサーバーには送らない。
 
 import { AmtAuthError } from "./amt/client";
 import { AmtView } from "./amt/view";
@@ -17,6 +19,7 @@ import { holdTab } from "./hold-tab";
 import { attachChannels, type Channels } from "./rdp/channels";
 import { RdpClient } from "./rdp/client";
 import { connect } from "./rdp/connect";
+import { LogonError } from "./rdp/credssp";
 import { type CertInfo, certInfo } from "./rdp/der";
 import { bindInput, Display, watchSize } from "./rdp/display";
 import { UPDATE } from "./rdp/fastpath";
@@ -30,6 +33,7 @@ import {
   type Remembered,
   usernameFor,
 } from "./remember";
+import { type LoginKind, LoginVault } from "./saved-login";
 import { TalosView } from "./talos/view";
 
 /**
@@ -61,7 +65,7 @@ const screen = $<HTMLElement>("#screen");
 const field = (name: string) =>
   form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement;
 
-/** 前回のつなぐ先と、つなぐ先ごとのユーザー名(remember.ts)。パスワードは覚えない */
+/** 前回のつなぐ先と、つなぐ先ごとのユーザー名(remember.ts)。パスワードはここには置かない(保存するときは saved-login.ts) */
 const REMEMBER = "mado:last";
 
 async function getJson<T>(url: string): Promise<T> {
@@ -120,6 +124,131 @@ try {
     session.targets[0];
   for (const r of targetRadios()) r.checked = r.value === start?.name;
 }
+
+// ---- ユーザー名とパスワードの保存(saved-login.ts) ----
+// 「この端末に保存する」を選んでつながったときだけ、つなぐ先と種類(AMT / RDP)ごとに、このブラウザの中に暗号化して置く。
+// 保存があれば欄に入れておく。つなぐのは今までどおりボタンを押したときだけ(自動ではつながない。AMT は続けて間違えると締め出すため)。
+
+const saveField = $<HTMLElement>("#save-field");
+const saveBox = field("save") as HTMLInputElement;
+const forget = $<HTMLButtonElement>("#forget");
+const saveNote = $<HTMLElement>("#save-note");
+/** 保存の場所。IndexedDB か WebCrypto が使えないブラウザでは undefined で、チェックを出さない(つなぐのは今までどおり) */
+const vault = await LoginVault.open();
+/** 保存するときの種類。入れるものが無い先(Talos)には無い */
+const kindOf = (t: TargetInfo): LoginKind | undefined =>
+  t.type === "talos" ? undefined : t.type;
+// 一覧に無くなった先の保存は残さない
+void vault
+  ?.prune(
+    session.targets.flatMap((t): [LoginKind, string][] => {
+      const kind = kindOf(t);
+      return kind ? [[kind, t.name]] : [];
+    }),
+  )
+  .catch(() => {});
+/** 欄に入れた保存の中身。そのまま送ったか(保存したもので断られたか)と、ほかの先に持ち越さないために覚える */
+let filled: { username: string; password: string } | undefined;
+let showSeq = 0;
+
+/**
+ * 選んでいる先の保存を読んで、欄とチェックに映す。保存があればチェックを入れ、「保存を消去」を出す。
+ * withPassword が false なら欄には入れない(保存したもので断られた直後。同じものをもう一度送らせない)
+ */
+async function showSaved(withPassword = true): Promise<void> {
+  const t = selected();
+  const kind = kindOf(t);
+  const seq = ++showSeq;
+  // 前の先の保存を入れたままなら、ほかの先に持ち越さない
+  if (filled && field("password").value === filled.password)
+    field("password").value = "";
+  filled = undefined;
+  saveField.hidden = !vault || !kind;
+  saveBox.checked = false;
+  forget.hidden = true;
+  if (!vault || !kind) return;
+  const saved = await vault.load(kind, t.name).catch(() => undefined);
+  // 読んでいる間に選び直していたら、そちらに任せる
+  if (seq !== showSeq || !saved) return;
+  saveBox.checked = true;
+  forget.hidden = false;
+  // 読んでいる間に打ち始めていたら、上書きしない
+  if (!withPassword || field("password").value !== "") return;
+  field("username").value = saved.username;
+  field("password").value = saved.password;
+  filled = saved;
+}
+
+forget.addEventListener("click", async () => {
+  const t = selected();
+  const kind = kindOf(t);
+  if (!vault || !kind) return;
+  try {
+    await vault.remove(kind, t.name);
+  } catch {
+    setNote(saveNote, "保存を消去できませんでした", "error");
+    return;
+  }
+  await showSaved();
+  setNote(saveNote, "保存を消去しました", "ok");
+});
+
+/**
+ * つながったあとに 1 度だけ、チェックに合わせて保存する(入っていなければ、前の保存を消す)。
+ * つながる前には保存しない(違うパスワードを保存しない)。settled は、保存が終わるのを待つ
+ */
+function keeper(kind: LoginKind, login: Login, save: boolean) {
+  let done: Promise<void> | undefined;
+  const run = async () => {
+    if (!vault) return;
+    try {
+      if (save)
+        await vault.save(kind, login.target, {
+          username: login.username,
+          password: login.password,
+        });
+      else await vault.remove(kind, login.target);
+    } catch {
+      if (save) setNote(saveNote, "パスワードを保存できませんでした", "warn");
+    }
+  };
+  return {
+    connected: () => void (done ??= run()),
+    settled: () => done ?? Promise.resolve(),
+  };
+}
+type Keeper = ReturnType<typeof keeper>;
+
+/**
+ * つなぎ終わって(またはつなげずに)つなぐ前の画面に戻るとき。パスワードの欄を空にして、保存があれば入れ直す。
+ * 保存したものをそのまま送って認証を断られたときは入れ直さず、入力し直すか保存を消せるようにする
+ */
+async function backToLogin(keep: Keeper, rejected: boolean): Promise<void> {
+  await keep.settled();
+  field("password").value = "";
+  if (rejected)
+    setNote(
+      saveNote,
+      "保存したパスワードでは認証できませんでした。入力し直すか、保存を消去してください",
+      "warn",
+    );
+  await showSaved(!rejected);
+  if (rejected) field("password").focus();
+}
+
+// ログアウト(/logout)は mado のセッションを消す。この端末を使い終えるときなので、保存したパスワードと鍵も消してから移る。
+// 消せなくても(2 秒待って)ログアウトはする
+$<HTMLAnchorElement>("#logout").addEventListener("click", (e) => {
+  if (!vault) return;
+  e.preventDefault();
+  void Promise.race([
+    vault.clear().catch(() => {}),
+    new Promise((r) => setTimeout(r, 2000)),
+  ]).then(() => {
+    location.href = "/logout";
+  });
+});
+
 // つなぐ先を選び直したら、欄の名前と、その先で前に使ったユーザー名にする。
 // AMT のユーザー名は Windows のものと別なので、使ったことのない AMT の先では admin にする。
 // Talos のダッシュボードは入れるものが無い(鍵は mado の PC にある)ので、欄を隠す
@@ -140,6 +269,9 @@ const onTarget = () => {
     : "パスワード";
   (form.querySelector("button[type=submit]") as HTMLElement).textContent =
     amt || talos ? "開く" : "接続";
+  setNote(saveNote, "");
+  // 保存があれば、下で入れたユーザー名のあとから、保存したユーザー名とパスワードを入れる
+  void showSaved();
   if (talos) return;
   const u = amt
     ? (remembered.usernames[t.name] ?? "admin")
@@ -176,7 +308,7 @@ const MODE_NAMES: Record<Mode, string> = {
   bitmap: "ビットマップ / RemoteFX",
 };
 
-/** つないだ相手と認証の情報。つなぎ直しに使う。パスワードは画面を閉じるまでメモリに置くだけで、保存しない */
+/** つないだ相手と認証の情報。つなぎ直しに使う。保存するのは「この端末に保存する」を選んだときだけ(keeper) */
 type Login = {
   target: string;
   username: string;
@@ -184,7 +316,13 @@ type Login = {
 };
 
 /** 1 回のつなぎの終わり方。fallback があれば、その方式でつなぎ直す */
-type SessionEnd = { message: string; fallback?: Mode; error?: boolean };
+type SessionEnd = {
+  message: string;
+  fallback?: Mode;
+  error?: boolean;
+  /** 認証を断られた(rdp/credssp.ts の LogonError) */
+  rejected?: boolean;
+};
 
 /** 方式を切り替えた記録(診断用) */
 const switches: string[] = [];
@@ -227,10 +365,15 @@ form.addEventListener("submit", async (e) => {
   // つないでいる途中に Enter でもう一度送られても、二つ目はつながない
   if (submit.getAttribute("aria-busy") === "true") return;
   submit.setAttribute("aria-busy", "true");
+  setNote(saveNote, "");
+  const keep = keeper(target.type, login, saveBox.checked);
+  // 保存したものをそのまま送るのか。断られたら入れ直さない(backToLogin)
+  const usedSaved =
+    filled?.username === login.username && filled.password === login.password;
   if (target.type === "amt") {
-    await openAmt(login);
+    const rejected = (await openAmt(login, keep)) === "rejected";
     submit.removeAttribute("aria-busy");
-    field("password").value = "";
+    await backToLogin(keep, rejected && usedSaved);
     return;
   }
   // 全画面にすると Ctrl+T・Ctrl+W なども接続先へ送れる(hold-tab.ts)。押した直後でないと断られるので、つなぐ前に入る
@@ -240,10 +383,12 @@ form.addEventListener("submit", async (e) => {
   // H.264 は、ブラウザが復号できるときだけ頼む
   const avc = await avcSupport();
   let mode: Mode = avc ? "avc" : "gfx";
+  let rejected = false;
   for (;;) {
-    const end = await runSession(login, mode, avc?.hardware === true);
+    const end = await runSession(login, mode, avc?.hardware === true, keep);
     if (!end.fallback) {
       setNote(status, end.message, end.error ? "error" : undefined);
+      rejected = end.rejected === true;
       break;
     }
     switches.push(
@@ -259,7 +404,7 @@ form.addEventListener("submit", async (e) => {
   toolbar.hidden = true;
   screen.classList.add("idle");
   home.hidden = false;
-  field("password").value = "";
+  await backToLogin(keep, rejected && usedSaved);
 });
 
 /** 中継の使い捨てのトークン。つなぐ直前に取る */
@@ -308,8 +453,14 @@ async function openTalos(target: TargetInfo): Promise<void> {
   home.hidden = false;
 }
 
-/** AMT の画面を開いて、閉じるまで待つ。最初に電源の状態を読んで、ユーザー名とパスワードを確かめる */
-async function openAmt(login: Login): Promise<void> {
+/**
+ * AMT の画面を開いて、閉じるまで待つ。最初に電源の状態を読んで、ユーザー名とパスワードを確かめる。
+ * AMT に断られたら "rejected"(AMT は続けて間違えると締め出すので、同じものをもう一度は試さない)
+ */
+async function openAmt(
+  login: Login,
+  keep: Keeper,
+): Promise<"closed" | "rejected" | "failed"> {
   setNote(status, "AMT に接続しています…");
   const view = new AmtView(login, { ws: session.ws, newToken });
   try {
@@ -322,18 +473,22 @@ async function openAmt(login: Login): Promise<void> {
         : `AMT に接続できませんでした: ${describe(err)}`,
       "error",
     );
-    return;
+    return err instanceof AmtAuthError ? "rejected" : "failed";
   }
+  // 電源の状態を読めた = ユーザー名とパスワードが合っていた
+  keep.connected();
   setNote(status, "");
   home.hidden = true;
   await view.wait();
   home.hidden = false;
+  return "closed";
 }
 
 async function runSession(
   login: Login,
   mode: Mode,
   hardware: boolean,
+  keep: Keeper,
 ): Promise<SessionEnd> {
   const stops: (() => void)[] = [];
   try {
@@ -374,6 +529,8 @@ async function runSession(
       clearTimeout(timer);
       connecting = undefined;
     });
+    // CredSSP を通ってつながった = ユーザー名とパスワードが合っていた
+    keep.connected();
     const pool = createPool();
     const client = new RdpClient(rdp, display, { pool });
     const gfxClient =
@@ -428,7 +585,11 @@ async function runSession(
     const reason = await client.run();
     return fallback ?? { message: `切断されました: ${reason}` };
   } catch (err) {
-    return { message: `接続できませんでした: ${describe(err)}`, error: true };
+    return {
+      message: `接続できませんでした: ${describe(err)}`,
+      error: true,
+      rejected: err instanceof LogonError,
+    };
   } finally {
     for (const stop of stops) stop();
   }
