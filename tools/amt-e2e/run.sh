@@ -4,7 +4,7 @@
 # session.key は決まった値にして、e2e.ts が Cookie とトークンを作れるようにする。OIDC はログインのときにしか使わないので、でたらめな値でよい。
 #   wslc network create amtnet
 #   wslc run -d --rm --name amt --network amtnet --network-alias amt.test -v "<リポジトリ>:/app" -w /app oven/bun:1 bun tools/amt-e2e/fake-amt.ts
-#   wslc run -d --rm --name mado-amt --network amtnet --network-alias mado.test -v "<リポジトリ>:/src" -w /src mcr.microsoft.com/dotnet/sdk:10.0 sh tools/amt-e2e/run.sh
+#   wslc run -d --rm --name mado-amt --network amtnet --network-alias mado.test -v "<リポジトリ>:/src" -w /src mcr.microsoft.com/dotnet/sdk:11.0 sh tools/amt-e2e/run.sh
 #   wslc run --rm --network amtnet -v "<リポジトリ>:/app" -w /app oven/bun:1 bun tools/amt-e2e/e2e.ts
 # 先に dist/web を作っておく(bun run build:web)。
 set -e
@@ -28,4 +28,4 @@ cat > $D/mado.json <<'EOF'
 }
 EOF
 dotnet build server -v q -nologo
-exec dotnet server/bin/Debug/net10.0/mado.dll --config $D/mado.json
+exec dotnet server/bin/Debug/net11.0/mado.dll --config $D/mado.json

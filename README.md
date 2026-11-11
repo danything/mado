@@ -34,7 +34,7 @@ mado はログインの確認と、ブラウザと RDP サーバーの間の中�
 
 | ディレクトリ     | 内容                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server/`        | .NET 10 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ                           |
+| `server/`        | .NET 11 の Native AOT。Kestrel(`CreateSlimBuilder`)を `UseWindowsService` でサービスにしている。ASP.NET Core の OIDC は AOT で使えないので、OIDC・ACME・DER・RDCleanPath は自前で書いた。WebTransport(HTTP/3、QPACK)も自前で、msquic を直接呼ぶ(`server/Quic/`)。外部パッケージは `Microsoft.Extensions.Hosting.WindowsServices` と msquic(`Microsoft.Native.Quic.MsQuic.Schannel`)だけ                           |
 | `web/`           | 画面。TypeScript と [Blades CSS](https://blades.ninja/)。見た目と言葉の決まりは [docs/design.md](docs/design.md)。RDP クライアントは `web/rdp/`(詳しくは [docs/rdp-client.md](docs/rdp-client.md))、AMT は `web/amt/`(SOL の端末は xterm.js。[docs/amt.md](docs/amt.md))、Talos のダッシュボードは `web/talos/`(端末は SOL と同じ `web/term.ts`。[docs/talos.md](docs/talos.md))。bun でビルドして exe に埋め込む |
 | `tray/`          | タスクトレイ(`mado-tray.exe`、Native AOT)。WinForms は AOT で使えないので `Shell_NotifyIcon` を直接呼ぶ。サインイン時に起動する                                                                                                                                                                                                                                                                                   |
 | `installer/`     | MSI(WiX v5)。サービスの登録、`msquic.dll`、トレイの自動起動、ファイアウォール(TCP 80 / 443、UDP 443)、`C:\ProgramData\mado` の権限                                                                                                                                                                                                                                                                                |
@@ -137,7 +137,7 @@ bun run check                              # tsc、テスト(bun test web)
 
 リリースは `v1.2.3` の形のタグを push すると自動で行う(`git tag v1.2.3 && git push origin v1.2.3`)。版の数字はタグから取るので、csproj は書き換えない。main に入っているコミットに打ったタグだけを出す(`release.yml`)。
 
-bun や .NET が手元に無ければ、`oven/bun` と `mcr.microsoft.com/dotnet/sdk:10.0` のコンテナで同じことができる。
+bun や .NET が手元に無ければ、`oven/bun` と `mcr.microsoft.com/dotnet/sdk:11.0` のコンテナで同じことができる。
 exe(Native AOT)と MSI は Windows でしか作れないので、CI(`windows-latest`)で作る。
 
 ## ライセンス

@@ -137,7 +137,7 @@ addon-fit は枠の大きさから行と桁を出す公式の部品(1KB 足ら�
 wslc network create amtnet   # 「address pool」で失敗したら --subnet 10.231.77.0/24 などを付ける
 wslc run --rm -v "${PWD}:/app" -w /app oven/bun:1 bun run build:web
 wslc run -d --rm --name amt --network amtnet --network-alias amt.test -v "${PWD}:/app" -w /app oven/bun:1 bun tools/amt-e2e/fake-amt.ts
-wslc run -d --rm --name mado-amt --network amtnet --network-alias mado.test -v "${PWD}:/src" -w /src mcr.microsoft.com/dotnet/sdk:10.0 sh tools/amt-e2e/run.sh
+wslc run -d --rm --name mado-amt --network amtnet --network-alias mado.test -v "${PWD}:/src" -w /src mcr.microsoft.com/dotnet/sdk:11.0 sh tools/amt-e2e/run.sh
 wslc run --rm --network amtnet -v "${PWD}:/app" -w /app oven/bun:1 bun tools/amt-e2e/e2e.ts
 wslc run --rm --network amtnet -v "${PWD}:/src" -w /tmp mcr.microsoft.com/playwright:v1.64.1-noble sh -c "npm i playwright@1.64.1 >/dev/null 2>&1 && NODE_PATH=/tmp/node_modules node /src/tools/amt-e2e/ui.cjs"
 ```

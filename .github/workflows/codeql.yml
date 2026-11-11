@@ -30,5 +30,7 @@ jobs:
     uses: 5ym/repo-config/.github/workflows/codeql.yml@main
     with:
       languages: '["actions", "csharp", "javascript-typescript"]'
-      # テストのプロジェクトをビルドすれば server もビルドされる。画面 (dist/web) は無くてもビルドできる。.NET は共有の側の既定 (10.x の最新)
+      # テストのプロジェクトをビルドすれば server もビルドされる。画面 (dist/web) は無くてもビルドできる
       csharp-build: dotnet build tests/Mado.Tests.csproj && dotnet build tray/MadoTray.csproj
+      # 共有の側の既定は 10.x で、net11.0 をビルドできないので渡す (11.x の最新)
+      dotnet-version: 11.x
