@@ -5,7 +5,7 @@
     "": {
       "name": "mado",
       "devDependencies": {
-        "@anyblades/blades": "3.1.2",
+        "@anyblades/blades": "3.1.3",
         "@types/bun": "^1.4.4",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/xterm": "^6.0.0",
@@ -16,7 +16,7 @@
     },
   },
   "packages": {
-    "@anyblades/blades": ["@anyblades/blades@3.1.2", "", {}, "sha512-ZYLAB/0Y6+OXfHGzHmkZtUc3BuIHswuiR3y924v2slbRE3pZENpxFD61ZfeBQRjIUvE0AZvzZilofpl5zXAOQg=="],
+    "@anyblades/blades": ["@anyblades/blades@3.1.3", "", {}, "sha512-Or7QrxkzkW3q26QA9eTmJ+x5Q8ZyJ6dvdIVgg4hLDHmgOjUXLIgn/YOAc8iKl+9pWW+0ks6YYGe9SPtURkrs3g=="],
 
     "@oxlint/binding-android-arm-eabi": ["@oxlint/binding-android-arm-eabi@1.93.0", "", { "os": "android", "cpu": "arm" }, "sha512-KKw70pbD5Pvq3G2lJ+WQ71XPMjCmg37rkSe2+mDqCRP3PoTSdDMuEi4UOnE8JBtyNM7bek61EC2s0Jt7S7u+Sg=="],
 
