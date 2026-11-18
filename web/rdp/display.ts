@@ -1,8 +1,11 @@
 // ブラウザの画面。canvas に描き、ポインタは CSS の cursor で出す。キーとマウスは RDP の入力にする。
+// 指の操作は、相手がタッチの入力(rdpei.ts)を受けるならタッチとして送り、受けないなら touch.ts でマウスとホイールにする。
 
 import type { RdpClient, Screen } from "./client";
 import * as input from "./input";
 import type { Cursor } from "./pointer";
+import type { TouchInput } from "./rdpei";
+import { type TouchAction, TouchGestures } from "./touch";
 
 /** canvas の矩形の左上からの距離を、RDP の座標にする。矩形は fit で拡縮したあとの表示の大きさ */
 export function toRdpPoint(
@@ -46,6 +49,8 @@ export class Display implements Screen {
     this.canvas.style.outline = "none";
     this.canvas.style.display = "block";
     this.canvas.style.margin = "auto";
+    // 指で触れてもブラウザにスクロールや拡大をさせず、ポインタイベントをすべて受ける
+    this.canvas.style.touchAction = "none";
     // desynchronized にすると、描いた絵をブラウザの合成を待たずに出せる。Chromium では 1 フレームほど早く見える。
     // 画面は不透明なので alpha: false にして、下と混ぜる処理を省く
     const ctx = this.canvas.getContext("2d", {
@@ -199,11 +204,15 @@ export function syncModifiers(
   return out;
 }
 
-/** canvas のキーとマウスを RDP の入力にする。戻り値を呼ぶと解除する */
+/** 指を離したあと、ブラウザがまねて出すマウスのイベントを捨てる時間(ms) */
+const MOUSE_AFTER_TOUCH_MS = 800;
+
+/** canvas のキー、マウス、指を RDP の入力にする。touch は相手がタッチの入力のチャネルを開いたときに使う。戻り値を呼ぶと解除する */
 export function bindInput(
   canvas: HTMLCanvasElement,
   client: RdpClient,
   display: Display,
+  touch?: TouchInput,
 ): () => void {
   const down = new Set<string>();
   /** 最後に送った位置。同じ位置へは送らない */
@@ -243,8 +252,19 @@ export function bindInput(
   };
   const onKeyDown = (e: KeyboardEvent) => key(e, true);
   const onKeyUp = (e: KeyboardEvent) => key(e, false);
+  /** 置いている指のポインタの ID */
+  const fingers = new Set<number>();
+  /** 最後に指を離した時刻 */
+  let lastTouch = -Infinity;
+  /**
+   * 指の操作から来たマウスのイベントか。pointerdown で preventDefault しているので、ふつうブラウザはマウスのイベントを出さない。
+   * 出すブラウザがあっても、二重に押さないよう捨てる
+   */
+  const fromTouch = () =>
+    fingers.size > 0 || performance.now() - lastTouch < MOUSE_AFTER_TOUCH_MS;
   // 移動は描画の周期を待たずにすぐ送る。ブラウザが mousemove をまとめる頻度で足りる
   const onMove = (e: MouseEvent) => {
+    if (fromTouch()) return;
     const p = point(e);
     if (p.x === last.x && p.y === last.y) return;
     last = p;
@@ -267,6 +287,7 @@ export function bindInput(
     button(e, false);
   };
   const onDown = (e: MouseEvent) => {
+    if (fromTouch()) return;
     if (held.size === 0) window.addEventListener("mouseup", onUp);
     held.add(e.button);
     button(e, true);
@@ -292,6 +313,76 @@ export function bindInput(
     ];
     if (events.length) client.sendInput(events);
   };
+  // ---- 指 ----
+  const gestures = new TouchGestures();
+  /** 今の指の操作をタッチで送るか、マウスにするか。最初の指を置いたときに決め、全部離すまで変えない */
+  let touchMode: "touch" | "mouse" | undefined;
+  /** touch.ts の動きを、マウスとホイールの入力にして送る。位置は CSS px なので RDP の座標に戻す */
+  const sendGesture = (actions: TouchAction[]) => {
+    if (actions.length === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const events: Uint8Array[] = [];
+    for (const a of actions) {
+      if (a.kind === "wheel") {
+        events.push(
+          ...input.mouseWheel(take("y", a.dy)),
+          ...input.mouseWheel(take("x", a.dx), true),
+        );
+        continue;
+      }
+      const p = toRdpPoint(a.x, a.y, rect, display.width, display.height);
+      if (a.kind === "move") {
+        if (p.x === last.x && p.y === last.y) continue;
+        events.push(input.mouseMove(p.x, p.y));
+      } else {
+        const ev = input.mouseButton(0, a.kind === "down", p.x, p.y);
+        if (ev) events.push(ev);
+      }
+      last = p;
+    }
+    if (events.length) client.sendInput(events);
+  };
+  const onPointerDown = (e: PointerEvent) => {
+    if (e.pointerType !== "touch") return;
+    // ブラウザがまねて出すマウスのイベントを止める
+    e.preventDefault();
+    canvas.focus();
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {
+      // 取れなくても、指のポインタはブラウザが暗黙に捕まえている
+    }
+    if (fingers.size === 0) touchMode = touch?.available ? "touch" : "mouse";
+    fingers.add(e.pointerId);
+    if (touchMode === "touch") {
+      const p = point(e);
+      touch?.down(e.pointerId, p.x, p.y);
+    } else
+      sendGesture(gestures.down(e.pointerId, { x: e.clientX, y: e.clientY }));
+  };
+  const onPointerMove = (e: PointerEvent) => {
+    if (e.pointerType !== "touch" || !fingers.has(e.pointerId)) return;
+    e.preventDefault();
+    if (touchMode === "touch") {
+      const p = point(e);
+      touch?.move(e.pointerId, p.x, p.y);
+    } else
+      sendGesture(gestures.move(e.pointerId, { x: e.clientX, y: e.clientY }));
+  };
+  const endFinger = (e: PointerEvent, canceled: boolean) => {
+    if (e.pointerType !== "touch" || !fingers.delete(e.pointerId)) return;
+    e.preventDefault();
+    lastTouch = performance.now();
+    if (touchMode === "touch") {
+      const p = point(e);
+      if (canceled) touch?.cancel(e.pointerId);
+      else touch?.up(e.pointerId, p.x, p.y);
+    } else if (canceled) sendGesture(gestures.cancel(e.pointerId));
+    else sendGesture(gestures.up(e.pointerId, { x: e.clientX, y: e.clientY }));
+    if (fingers.size === 0) touchMode = undefined;
+  };
+  const onPointerUp = (e: PointerEvent) => endFinger(e, false);
+  const onPointerCancel = (e: PointerEvent) => endFinger(e, true);
   const onMenu = (e: Event) => e.preventDefault();
   const onBlur = () => {
     const ups: Uint8Array[] = [];
@@ -306,6 +397,18 @@ export function bindInput(
       if (ev) ups.push(ev);
     }
     down.clear();
+    // 指を置いたまま焦点が外れたら、その指は取り消されたものとして扱う
+    for (const id of fingers) {
+      if (touchMode === "touch") touch?.cancel(id);
+      else
+        for (const a of gestures.cancel(id))
+          if (a.kind === "up") {
+            const ev = input.mouseButton(0, false, last.x, last.y);
+            if (ev) ups.push(ev);
+          }
+    }
+    fingers.clear();
+    touchMode = undefined;
     if (ups.length) client.sendInput(ups);
   };
 
@@ -316,7 +419,15 @@ export function bindInput(
   canvas.addEventListener("wheel", onWheel, { passive: false });
   canvas.addEventListener("contextmenu", onMenu);
   canvas.addEventListener("blur", onBlur);
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerCancel);
   return () => {
+    canvas.removeEventListener("pointerdown", onPointerDown);
+    canvas.removeEventListener("pointermove", onPointerMove);
+    canvas.removeEventListener("pointerup", onPointerUp);
+    canvas.removeEventListener("pointercancel", onPointerCancel);
     canvas.removeEventListener("keydown", onKeyDown);
     canvas.removeEventListener("keyup", onKeyUp);
     canvas.removeEventListener("mousemove", onMove);
