@@ -18,7 +18,7 @@ export type StaleDeps = {
   notify: (latest: string) => void;
   /** 見えているか。既定は document.visibilityState */
   visible?: () => boolean;
-  /** visibilitychange・pageshow・online を受ける先。既定は document と window */
+  /** visibilitychange・pageshow・online を受ける先。既定は window(document の visibilitychange も泡立って届く) */
   events?: Pick<EventTarget, "addEventListener" | "removeEventListener">;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (id: unknown) => void;
