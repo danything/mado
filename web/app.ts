@@ -562,13 +562,16 @@ async function runSession(
         client.close();
       };
     }
-    const channels = attachChannels(client, writeClipboard, { gfx: gfxClient });
+    const channels = attachChannels(client, writeClipboard, {
+      gfx: gfxClient,
+      touch: navigator.maxTouchPoints,
+    });
     current = { client, channels };
     if (gfxClient) stops.push(() => gfxClient.onClose());
     stops.push(
       watchDiag(() => diagText(client, gfxClient, pool.async, rdp.transport)),
     );
-    stops.push(bindInput(display.canvas, client, display));
+    stops.push(bindInput(display.canvas, client, display, channels.touch));
     // つないでいる間は Ctrl+W などでタブを失わない(hold-tab.ts)
     stops.push(holdTab());
     stops.push(watchClipboard(display.canvas, channels));

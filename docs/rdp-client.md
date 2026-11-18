@@ -1,21 +1,47 @@
 # RDP クライアント(web/rdp)
 
 RDP は `web/rdp/` の TypeScript がすべて話す。mado のサーバーは RDCleanPath で中継するだけ。IronRDP(WASM)は v0.6.0 で外した。
-仕様は Microsoft の公開仕様([MS-RDPBCGR]、[MS-CSSP]、[MS-NLMP]、[MS-RDPRFX]、[MS-RDPEGDI]、[MS-RDPEGFX] など)に従う。分かりにくいところは FreeRDP の実装と照らし合わせる。
+仕様は Microsoft の公開仕様([MS-RDPBCGR]、[MS-CSSP]、[MS-NLMP]、[MS-RDPRFX]、[MS-RDPEGDI]、[MS-RDPEGFX]、[MS-RDPEI] など)に従う。分かりにくいところは FreeRDP の実装と照らし合わせる。
 
 ## 層とファイル
 
-| 層             | 内容                                                                                                                                | ファイル                                                                                     |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| 接続           | RDCleanPath(X.224 の接続要求を送り、接続確認と証明書チェーンを受け取る)、WebTransport / WebSocket の道、TPKT / Fast-Path の切り出し | `rdcleanpath.ts` `x224.ts` `stream.ts`                                                       |
-| 認証           | CredSSP と NTLMv2。MD4 / MD5 / RC4 / HMAC-MD5 は自前。Kerberos は未対応                                                             | `credssp.ts` `ntlm.ts` `crypto.ts` `der.ts`                                                  |
-| 接続シーケンス | MCS / GCC、Client Info、ライセンス、Demand / Confirm Active、同期、Deactivate-Reactivate、回線の自動検出                            | `connect.ts` `mcs.ts` `pdu.ts` `autodetect.ts`                                               |
-| 画面(旧来)     | 旧ビットマップ(planar 32bpp、Interleaved RLE)、RemoteFX(Surface Commands)、Frame Acknowledge、古い更新の間引き、Web Worker での復号 | `bitmap.ts` `rfx.ts` `surface.ts` `rfxpool.ts` `rfx.worker.ts`                               |
-| 画面(GFX)      | ZGFX、GFX のコマンド、AVC420 / AVC444(WebCodecs)、ClearCodec(NSCodec)、Planar、RemoteFX Progressive、混み具合の測定                 | `gfx.ts` `gfx-canvas.ts` `yuv444.ts` `zgfx.ts` `clearcodec.ts` `progressive.ts` `latency.ts` |
-| 入力とポインタ | スキャンコード(JIS / US は OS の配列から判定)、Unicode、マウス、ホイール、ポインタの形                                              | `input.ts` `pointer.ts` `display.ts`                                                         |
-| チャネル       | 静的チャネルの分割、drdynvc、DisplayControl(窓の大きさへの追従)、cliprdr(テキストのみ)                                              | `vchannel.ts` `dvc.ts` `cliprdr.ts` `channels.ts`                                            |
-| バルク圧縮     | MPPC(RDP 4.0 / 5.0)の伸長。Fast-Path、Share Data、静的チャネル                                                                      | `mppc.ts`                                                                                    |
-| 全体           | 受信ループ、画面への振り分け、診断用の統計                                                                                          | `client.ts`                                                                                  |
+| 層             | 内容                                                                                                                                       | ファイル                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 接続           | RDCleanPath(X.224 の接続要求を送り、接続確認と証明書チェーンを受け取る)、WebTransport / WebSocket の道、TPKT / Fast-Path の切り出し        | `rdcleanpath.ts` `x224.ts` `stream.ts`                                                       |
+| 認証           | CredSSP と NTLMv2。MD4 / MD5 / RC4 / HMAC-MD5 は自前。Kerberos は未対応                                                                    | `credssp.ts` `ntlm.ts` `crypto.ts` `der.ts`                                                  |
+| 接続シーケンス | MCS / GCC、Client Info、ライセンス、Demand / Confirm Active、同期、Deactivate-Reactivate、回線の自動検出                                   | `connect.ts` `mcs.ts` `pdu.ts` `autodetect.ts`                                               |
+| 画面(旧来)     | 旧ビットマップ(planar 32bpp、Interleaved RLE)、RemoteFX(Surface Commands)、Frame Acknowledge、古い更新の間引き、Web Worker での復号        | `bitmap.ts` `rfx.ts` `surface.ts` `rfxpool.ts` `rfx.worker.ts`                               |
+| 画面(GFX)      | ZGFX、GFX のコマンド、AVC420 / AVC444(WebCodecs)、ClearCodec(NSCodec)、Planar、RemoteFX Progressive、混み具合の測定                        | `gfx.ts` `gfx-canvas.ts` `yuv444.ts` `zgfx.ts` `clearcodec.ts` `progressive.ts` `latency.ts` |
+| 入力とポインタ | スキャンコード(JIS / US は OS の配列から判定)、Unicode、マウス、ホイール、指(タッチの入力、受けない相手にはマウスとホイール)、ポインタの形 | `input.ts` `pointer.ts` `display.ts` `rdpei.ts` `touch.ts`                                   |
+| チャネル       | 静的チャネルの分割、drdynvc、DisplayControl(窓の大きさへの追従)、Input(タッチ)、cliprdr(テキストのみ)                                      | `vchannel.ts` `dvc.ts` `cliprdr.ts` `channels.ts`                                            |
+| バルク圧縮     | MPPC(RDP 4.0 / 5.0)の伸長。Fast-Path、Share Data、静的チャネル                                                                             | `mppc.ts`                                                                                    |
+| 全体           | 受信ループ、画面への振り分け、診断用の統計                                                                                                 | `client.ts`                                                                                  |
+
+## 指の操作(タッチ)
+
+**相手の Windows がタッチの入力を受けるなら、指の操作をそのままタッチとして送る。** スクロール、ピンチ、長押しは Windows のタッチの操作として効く。
+受けない相手には、指の操作をマウスとホイールにして送る。
+
+- 動的チャネル `Microsoft::Windows::RDS::Input`([MS-RDPEI])を受ける(`rdpei.ts`)。開くのはサーバーで、クライアントは開く求めに答えるだけ。仕様(3.3.3)のとおり、`navigator.maxTouchPoints` が 0 の端末ではチャネルを登録せず、開く求めを断る
+- サーバーの RDPINPUT_SC_READY を受けたら RDPINPUT_CS_READY を返し、そこからタッチを送る。返すバージョンは、知っているもの(V100・V101・V200・V300)のうち、サーバーのバージョンを超えない最大のもの。V300 なら supportedFeatures を読む。ペンは送らない
+- CS_READY の maxTouchContacts は `navigator.maxTouchPoints`(1〜256)。フラグは SHOW_TOUCH_VISUALS だけで、触れた位置を Windows に描かせる。時刻(encodeTime と frameOffset)は送るので、DISABLE_TIMESTAMP_INJECTION は付けない
+- 指はポインタイベントの `pointerType === "touch"` で受ける。canvas は `touch-action: none` で、ブラウザにスクロールや拡大をさせない。`pointerdown` で `preventDefault` し、ブラウザがまねて出すマウスのイベントを止める。それでも指を離して 800ms の間に来たマウスのイベントは捨てる
+- 位置はマウスと同じく、表示の拡縮を戻した RDP の座標(`toRdpPoint`)
+- 接触の ID は、使っていない最小の番号を割り当て、UP を送ったら使い回す。maxTouchContacts を超えた指は送らない
+- フレームは 17ms(60Hz を超えない間隔)ごとに 1 つ送る。前のフレームから 17ms 経っていれば、置いた指はすぐ送る。触れている接触はすべて毎回のフレームに入れ、動いていない指も UPDATE で送る(FreeRDP も 20ms ごとに同じ接触を送り直す)。全部離したら送るのを止める
+- 送っていない移動は、最後の位置 1 つにまとめる。1 つの接触の DOWN・UPDATE・UP は別々のフレームで送る。UP では位置を変えられないので、離した位置が違えば UPDATE で動かしてから UP を送る
+- 状態のフラグは、置いた指が DOWN | INRANGE | INCONTACT、動かしている指が UPDATE | INRANGE | INCONTACT、離した指が UP、ブラウザが取り消した指(`pointercancel`)が UP | CANCELED。指は浮いた状態(hovering)にならないので、DISMISS_HOVERING_TOUCH_CONTACT は送らない(組み立ては `dismissHoveringContact` にある)
+- サーバーが SUSPEND_INPUT を送ってきたら、RESUME_INPUT まで送らない。触れていた指の続きも送らない。中断している間の指の操作はマウスとホイールにする
+- タッチで送るかマウスにするかは、1 本目の指を置いたときに決め、全部離すまで変えない
+
+タッチの入力を受けない相手(xrdp、拡張を切った Windows など)では、SC_READY が来ない。そのときは `touch.ts` で指の操作をマウスとホイールにする。
+
+- 1 本指: 動かさずに離せばその位置で左クリック。8px 以上動かすと、置いた位置から左ボタンのドラッグ
+- 2 本指: 2 本の真ん中が動いた分をホイールにする(指 50px で 1 ノッチ)。指を上へ滑らせるとページは下へ進む。スクロールを始めたら、全部離すまでクリックにしない
+- 1 本目を置いてすぐ 2 本目を置くことがあるので、1 本指は少し動くか離すまで押さない
+- 取り消された指はクリックにしない。ドラッグ中なら最後の位置でボタンを離す
+
+実機の Android と Windows の組み合わせでは、まだ確かめていない。
 
 ## バルク圧縮
 
