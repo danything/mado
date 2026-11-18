@@ -34,6 +34,7 @@ import {
   usernameFor,
 } from "./remember";
 import { type LoginKind, LoginVault } from "./saved-login";
+import { watchStale } from "./stale";
 import { TalosView } from "./talos/view";
 
 /**
@@ -288,6 +289,33 @@ const display = new Display(screen);
 const CONNECT_TIMEOUT_MS = 30_000;
 
 let current: { client: RdpClient; channels: Channels } | undefined;
+/** 窓の大きさが変わって、解像度の変更をサーバーへ送った回数(診断用) */
+let sentResizes = 0;
+
+// mado が更新されたら、開いたままのページも新しいスクリプトに読み直す(stale.ts)。
+// 読み直してよいのは、一覧を出していて、入れかけたパスワードが無いとき(保存したものは読み直しても入る)
+watchStale({
+  loaded: session.version,
+  fetchVersion: async () => {
+    const res = await fetch("/api/session", { cache: "no-store" });
+    return res.ok ? ((await res.json()) as SessionInfo).version : undefined;
+  },
+  idle: () => {
+    const password = field("password").value;
+    return (
+      current === undefined &&
+      !home.hidden &&
+      form.querySelector("button[type=submit]")?.getAttribute("aria-busy") !==
+        "true" &&
+      (password === "" || password === filled?.password)
+    );
+  },
+  reload: () => location.reload(),
+  notify: (latest) => {
+    $<HTMLElement>("#version").textContent =
+      `mado ${session.version}(${latest} が出ています。ページを読み直すと切り替わります)`;
+  },
+});
 /** つないでいる最中の取り消し用 */
 let connecting: AbortController | undefined;
 /** ブラウザのクリップボードとリモートの間で最後にやりとりした文字列。同じ文字列が行き来しないように覚えておく */
@@ -580,6 +608,7 @@ async function runSession(
       const width = even(w);
       // いまと同じ大きさなら送らない。Windows は同じ大きさでも画面を作り直し、GPU があると数十秒絵が来なくなる
       if (width === display.width && h === display.height) return;
+      sentResizes++;
       channels.displayControl.resize(width, h);
     };
     stops.push(watchSize(screen, resize));
@@ -717,7 +746,8 @@ function diagText(
   const mode: Mode = gfx?.active ? (gfx.avcEnabled ? "avc" : "gfx") : "bitmap";
   const lines = [
     `mado ${session.version}  中継: ${transport ?? "-"}  方式: ${MODE_NAMES[mode]}  復号: ${workers ? "Worker" : "メインスレッド"}`,
-    `画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}`,
+    `画面 ${display.canvas.width}x${display.canvas.height}  表示 ${display.canvas.clientWidth}x${display.canvas.clientHeight}  低遅延の描画: ${display.lowLatency ? "使う" : "使わない"}  作り直し=${display.resizes} 解像度の変更=${sentResizes}`,
+    `指: ${current?.channels.touch?.available ? "タッチ(MS-RDPEI)" : "マウスとホイール"}  最大 ${navigator.maxTouchPoints} 本`,
     `更新: ${
       Object.entries(client.stats)
         .map(([k, v]) => `${UPDATE_NAMES[Number(k)] ?? k}=${v}`)

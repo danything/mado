@@ -6,8 +6,10 @@ import { concat, Reader, Writer } from "./bytes";
 import type { RdpClient } from "./client";
 import {
   bindInput,
+  blitReplace,
   type Display,
   fitSize,
+  lowLatencyCanvas,
   syncModifiers,
   toRdpPoint,
 } from "./display";
@@ -49,6 +51,63 @@ describe("fitSize", () => {
   });
   test("0 は 0", () => {
     expect(fitSize(0, 720, 100, 100)).toEqual({ width: 0, height: 0 });
+  });
+});
+
+describe("lowLatencyCanvas", () => {
+  test("Android と ChromeOS では低遅延の canvas を使わない(描きかけが見えてちらつく)", () => {
+    expect(
+      lowLatencyCanvas(
+        "Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 EdgA/130.0.0.0",
+      ),
+    ).toBe(false);
+    expect(
+      lowLatencyCanvas(
+        "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+      ),
+    ).toBe(false);
+  });
+  test("Windows などでは使う", () => {
+    expect(
+      lowLatencyCanvas(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("blitReplace", () => {
+  test("消してから描かず、矩形で切って copy で 1 回で描く", () => {
+    const ops: string[] = [];
+    const ctx = {
+      globalCompositeOperation: "source-over" as GlobalCompositeOperation,
+      save: () => ops.push("save"),
+      restore: () => ops.push("restore"),
+      beginPath: () => ops.push("beginPath"),
+      rect: (...a: number[]) => ops.push(`rect ${a.join(",")}`),
+      clip: () => ops.push("clip"),
+      drawImage: (_src: unknown, ...a: number[]) =>
+        ops.push(`drawImage ${ctx.globalCompositeOperation} ${a.join(",")}`),
+      clearRect: () => ops.push("clearRect"),
+    };
+    blitReplace(
+      ctx as unknown as CanvasRenderingContext2D,
+      {} as CanvasImageSource,
+      1,
+      2,
+      30,
+      40,
+      5,
+      6,
+    );
+    expect(ops).toEqual([
+      "save",
+      "beginPath",
+      "rect 5,6,30,40",
+      "clip",
+      "drawImage copy 1,2,30,40,5,6,30,40",
+      "restore",
+    ]);
   });
 });
 
