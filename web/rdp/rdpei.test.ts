@@ -301,6 +301,8 @@ describe("TouchInput", () => {
     const bad = scReady(PROTOCOL.V200);
     bad[2] = 0x20;
     t.onData(bad, channel);
+    // protocolVersion の無い SC_READY も無視する
+    t.onData(header(EVENTID.SC_READY), channel);
     expect(t.available).toBe(false);
     expect(sent.length).toBe(0);
   });

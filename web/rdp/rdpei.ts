@@ -372,6 +372,8 @@ export class TouchInput implements DynamicHandler {
     if (!h) return;
     switch (h.eventId) {
       case EVENTID.SC_READY: {
+        // protocolVersion の無い SC_READY は、例外にせず無視する
+        if (h.body.left < 4) break;
         const ready = readScReady(h.body);
         this.channel = channel;
         this.version = chooseVersion(ready.protocolVersion);
@@ -538,5 +540,6 @@ export class TouchInput implements DynamicHandler {
     this.contacts.clear();
     this.pointers.clear();
     this.lastFrame = undefined;
+    this.lastSent = -Infinity;
   }
 }

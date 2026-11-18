@@ -258,13 +258,23 @@ export function bindInput(
   let lastTouch = -Infinity;
   /**
    * 指の操作から来たマウスのイベントか。pointerdown で preventDefault しているので、ふつうブラウザはマウスのイベントを出さない。
-   * 出すブラウザがあっても、二重に押さないよう捨てる
+   * 出すブラウザがあっても、二重に押さないよう捨てる。Chromium は sourceCapabilities で分かるので、本物のマウスはすぐ通す。
+   * 分からないブラウザでは、指を置いている間と離して MOUSE_AFTER_TOUCH_MS の間のマウスを捨てる
    */
-  const fromTouch = () =>
-    fingers.size > 0 || performance.now() - lastTouch < MOUSE_AFTER_TOUCH_MS;
+  const fromTouch = (e: MouseEvent) => {
+    const caps = (
+      e as MouseEvent & {
+        sourceCapabilities?: { firesTouchEvents: boolean } | null;
+      }
+    ).sourceCapabilities;
+    if (caps) return caps.firesTouchEvents;
+    return (
+      fingers.size > 0 || performance.now() - lastTouch < MOUSE_AFTER_TOUCH_MS
+    );
+  };
   // 移動は描画の周期を待たずにすぐ送る。ブラウザが mousemove をまとめる頻度で足りる
   const onMove = (e: MouseEvent) => {
-    if (fromTouch()) return;
+    if (fromTouch(e)) return;
     const p = point(e);
     if (p.x === last.x && p.y === last.y) return;
     last = p;
@@ -287,7 +297,7 @@ export function bindInput(
     button(e, false);
   };
   const onDown = (e: MouseEvent) => {
-    if (fromTouch()) return;
+    if (fromTouch(e)) return;
     if (held.size === 0) window.addEventListener("mouseup", onUp);
     held.add(e.button);
     button(e, true);
@@ -407,6 +417,7 @@ export function bindInput(
             if (ev) ups.push(ev);
           }
     }
+    if (fingers.size > 0) lastTouch = performance.now();
     fingers.clear();
     touchMode = undefined;
     if (ups.length) client.sendInput(ups);
