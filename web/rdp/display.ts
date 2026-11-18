@@ -37,11 +37,56 @@ export function fitSize(
   return { width: Math.floor(width * k), height: Math.floor(height * k) };
 }
 
+/**
+ * canvas を desynchronized(低遅延)にしてよいか。Android と ChromeOS の Chromium は、低遅延の canvas を
+ * 画面に直に出す板(front buffer)に描くので、描いている途中の絵がそのまま見える。指でスクロールすると
+ * 変わるところが続けて描き直され、画面がちらつく。ほかの OS では合成を 1 フレーム待たないだけなので使う
+ */
+export function lowLatencyCanvas(userAgent: string): boolean {
+  return !/\bAndroid\b|\bCrOS\b/.test(userAgent);
+}
+
+/**
+ * src の一部で、ctx の矩形を置き換える(下と混ぜない)。消してから描くと、消した黒が一瞬見えることがあるので、
+ * 矩形で切って copy で 1 回で描く。copy は描いた外まで消すので、先に切る
+ */
+export function blitReplace(
+  ctx: Pick<
+    CanvasRenderingContext2D,
+    | "save"
+    | "restore"
+    | "beginPath"
+    | "rect"
+    | "clip"
+    | "drawImage"
+    | "globalCompositeOperation"
+  >,
+  src: CanvasImageSource,
+  sx: number,
+  sy: number,
+  w: number,
+  h: number,
+  dx: number,
+  dy: number,
+): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(dx, dy, w, h);
+  ctx.clip();
+  ctx.globalCompositeOperation = "copy";
+  ctx.drawImage(src, sx, sy, w, h, dx, dy, w, h);
+  ctx.restore();
+}
+
 export class Display implements Screen {
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private cursors = new Map<Cursor, string>();
   private observer: ResizeObserver;
+  /** desynchronized で作ったか(診断用) */
+  readonly lowLatency: boolean;
+  /** canvas の画素数を変えた回数(診断用)。変えると画面は一度消える */
+  resizes = 0;
 
   constructor(private parent: HTMLElement) {
     this.canvas = document.createElement("canvas");
@@ -52,9 +97,11 @@ export class Display implements Screen {
     // 指で触れてもブラウザにスクロールや拡大をさせず、ポインタイベントをすべて受ける
     this.canvas.style.touchAction = "none";
     // desynchronized にすると、描いた絵をブラウザの合成を待たずに出せる。Chromium では 1 フレームほど早く見える。
+    // Android と ChromeOS では描きかけが見えてちらつくので使わない(lowLatencyCanvas)。
     // 画面は不透明なので alpha: false にして、下と混ぜる処理を省く
+    this.lowLatency = lowLatencyCanvas(navigator.userAgent);
     const ctx = this.canvas.getContext("2d", {
-      desynchronized: true,
+      desynchronized: this.lowLatency,
       alpha: false,
     });
     if (!ctx) throw new Error("canvas が使えない");
@@ -76,6 +123,7 @@ export class Display implements Screen {
     if (this.canvas.width === width && this.canvas.height === height) return;
     this.canvas.width = width;
     this.canvas.height = height;
+    this.resizes++;
     this.fit();
   }
 
@@ -110,8 +158,7 @@ export class Display implements Screen {
     dx: number,
     dy: number,
   ): void {
-    this.ctx.clearRect(dx, dy, w, h);
-    this.ctx.drawImage(src, sx, sy, w, h, dx, dy, w, h);
+    blitReplace(this.ctx, src, sx, sy, w, h, dx, dy);
   }
 
   /** blit と同じだが、下を消さずに重ねる。GFX で面が重なるとき、上の面を描くのに使う */
