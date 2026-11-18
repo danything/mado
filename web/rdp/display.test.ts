@@ -246,3 +246,17 @@ describe("bindInput の指", () => {
     expect(b.flush()).toEqual([]);
   });
 });
+
+describe("bindInput の指(中断)", () => {
+  test("SUSPEND_INPUT の間は、指の操作をマウスにする", () => {
+    const b = bindTouch(true);
+    b.touch.onData(new Writer(6).u16(EVENTID.SUSPEND_INPUT).u32(6).done(), {
+      id: 1,
+      send: () => {},
+    });
+    b.canvas.dispatchEvent(pointer("pointerdown", 1, 100, 50));
+    b.canvas.dispatchEvent(pointer("pointerup", 1, 100, 50));
+    expect(b.flush()).toEqual([]);
+    expect(b.mouseFlags()).toEqual([MOVE, LEFT_DOWN, LEFT_UP]);
+  });
+});

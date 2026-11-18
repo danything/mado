@@ -3,6 +3,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { concat, fromHex, hex, Reader, Writer } from "./bytes";
+import { attachChannels } from "./channels";
+import type { RdpClient } from "./client";
 import { DynamicChannels } from "./dvc";
 import {
   chooseVersion,
@@ -454,5 +456,34 @@ describe("TouchInput", () => {
     expect(hex(sent[1] as Uint8Array)).toBe(
       "3004" + hex(csReady(1, PROTOCOL.V200, 5)),
     );
+  });
+});
+
+describe("attachChannels のタッチ", () => {
+  const open = (touch: number) => {
+    const sent: Uint8Array[] = [];
+    const client = {
+      sendChannel: (_name: string, d: Uint8Array) => sent.push(d),
+      onChannel: undefined as
+        ((name: string, data: Uint8Array) => void) | undefined,
+    };
+    const ch = attachChannels(client as unknown as RdpClient, () => {}, {
+      touch,
+    });
+    client.onChannel?.(
+      "drdynvc",
+      concat(fromHex("1004"), new TextEncoder().encode(`${INPUT}\0`)),
+    );
+    return { ch, sent };
+  };
+  test("maxTouchPoints が 1 以上なら、Input のチャネルを受ける", () => {
+    const { ch, sent } = open(5);
+    expect(ch.touch).toBeDefined();
+    expect(hex(sent[0] as Uint8Array)).toBe("100400000000");
+  });
+  test("maxTouchPoints が 0 なら登録せず、開く求めを断る", () => {
+    const { ch, sent } = open(0);
+    expect(ch.touch).toBeUndefined();
+    expect(hex(sent[0] as Uint8Array)).toBe("1004010000c0");
   });
 });
