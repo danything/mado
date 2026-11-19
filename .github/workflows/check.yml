@@ -16,7 +16,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         # bun fmt (bun run lint) は 1.4.4 から
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 11.0.100
