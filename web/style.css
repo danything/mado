@@ -1,7 +1,7 @@
-/* 土台は Blades CSS(Pico CSS の後継。https://blades.ninja/)。見た目の決まりは docs/design.md。
+/* 土台は Blades CSS(Pico CSS の後継。https://blades.dev/)。見た目の決まりは docs/design.md。
  * 合言葉は「塗らない。囲みすぎない。浮かせすぎない。でも、ちゃんと伝わる」(denpa の見た目の決まりを mado に写したもの)。
  * 値はこの頭の --mado-* から選び、画面ごとに新しい値を作らない */
-@import "@anyblades/blades";
+@import "@sveti/blades";
 /* 端末(AMT の SOL と Talos のダッシュボード。term.ts)。xterm.js の決まりの CSS */
 @import "@xterm/xterm/css/xterm.css";
 
